@@ -1,0 +1,27 @@
+server:
+  port: 8081
+
+spring:
+  application:
+    name: ingestion-service
+  datasource:
+    url: jdbc:postgresql://${DB_HOST:localhost}:${DB_PORT:5432}/${DB_NAME:clinicalharmony}
+    username: ${DB_USER:clinicalharmony}
+    password: ${DB_PASSWORD:clinicalharmony}
+    hikari:
+      schema: bronze
+
+camel:
+  springboot:
+    name: ingestion-service
+
+ingestion:
+  hl7:
+    mllp-port: ${HL7_MLLP_PORT:8887}
+    default-source-system: ${HL7_DEFAULT_SOURCE_SYSTEM:UNKNOWN_HL7_SOURCE}
+
+management:
+  endpoints:
+    web:
+      exposure:
+        include: health,info

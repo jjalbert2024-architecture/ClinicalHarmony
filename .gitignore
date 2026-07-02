@@ -17,6 +17,7 @@ build/
 !**/src/main/**
 !**/src/test/**
 HELP.md
+id_file
 
 # --- Node / React (dashboard-ui) ---
 node_modules/

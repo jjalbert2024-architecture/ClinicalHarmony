@@ -14,11 +14,13 @@ public record RawMessageRecord(
         String errorMessage
 ) {
 
-    public static RawMessageRecord accepted(String sourceSystem, String rawPayload, String checksum) {
-        return new RawMessageRecord(sourceSystem, "HL7V2", "TEXT", rawPayload, checksum, "PENDING", null);
+    public static RawMessageRecord accepted(String sourceSystem, String messageType, String messageFormat,
+                                            String rawPayload, String checksum) {
+        return new RawMessageRecord(sourceSystem, messageType, messageFormat, rawPayload, checksum, "PENDING", null);
     }
 
-    public static RawMessageRecord quarantined(String sourceSystem, String rawPayload, String checksum, String errorMessage) {
-        return new RawMessageRecord(sourceSystem, "HL7V2", "TEXT", rawPayload, checksum, "QUARANTINED", errorMessage);
+    public static RawMessageRecord quarantined(String sourceSystem, String messageType, String messageFormat,
+                                               String rawPayload, String checksum, String errorMessage) {
+        return new RawMessageRecord(sourceSystem, messageType, messageFormat, rawPayload, checksum, "QUARANTINED", errorMessage);
     }
 }

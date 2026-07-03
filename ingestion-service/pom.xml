@@ -66,6 +66,13 @@
             <artifactId>camel-mllp-starter</artifactId>
         </dependency>
 
+        <!-- Claims CSV parsing -->
+        <dependency>
+            <groupId>org.apache.commons</groupId>
+            <artifactId>commons-csv</artifactId>
+            <version>1.10.0</version>
+        </dependency>
+
         <!-- HAPI HL7 v2 parsing -->
         <dependency>
             <groupId>ca.uhn.hapi</groupId>

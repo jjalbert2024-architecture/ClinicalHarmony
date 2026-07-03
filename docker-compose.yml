@@ -90,6 +90,8 @@ services:
       DB_PASSWORD: clinicalharmony
       HL7_MLLP_PORT: 8887
       HL7_DEFAULT_SOURCE_SYSTEM: UNKNOWN_HL7_SOURCE
+      FHIR_DEFAULT_SOURCE_SYSTEM: UNKNOWN_FHIR_SOURCE
+      CLAIMS_DEFAULT_SOURCE_SYSTEM: UNKNOWN_CLAIMS_SOURCE
     depends_on:
       postgres:
         condition: service_healthy

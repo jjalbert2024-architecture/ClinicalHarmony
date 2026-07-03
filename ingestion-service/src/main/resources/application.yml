@@ -19,6 +19,10 @@ ingestion:
   hl7:
     mllp-port: ${HL7_MLLP_PORT:8887}
     default-source-system: ${HL7_DEFAULT_SOURCE_SYSTEM:UNKNOWN_HL7_SOURCE}
+  fhir:
+    default-source-system: ${FHIR_DEFAULT_SOURCE_SYSTEM:UNKNOWN_FHIR_SOURCE}
+  claims:
+    default-source-system: ${CLAIMS_DEFAULT_SOURCE_SYSTEM:UNKNOWN_CLAIMS_SOURCE}
 
 management:
   endpoints:

@@ -11,11 +11,6 @@ import org.slf4j.LoggerFactory;
 import org.springframework.beans.factory.annotation.Value;
 import org.springframework.stereotype.Service;
 
-import java.nio.charset.StandardCharsets;
-import java.security.MessageDigest;
-import java.security.NoSuchAlgorithmException;
-import java.util.HexFormat;
-
 /**
  * Parses inbound HL7 v2 payloads, lands them in bronze.raw_messages regardless of whether
  * parsing succeeds (malformed messages are quarantined, not dropped), and produces the
@@ -39,7 +34,7 @@ public class Hl7MessageProcessor {
     }
 
     public Hl7ProcessingResult process(String rawMessage) {
-        String checksum = sha256(rawMessage);
+        String checksum = Checksums.sha256(rawMessage);
         // MLLP senders always use \r per the HL7 spec, but REST/Postman clients commonly
         // submit \n or \r\n instead — normalize for parsing while landing the original
         // bytes in bronze.raw_messages untouched.
@@ -54,14 +49,16 @@ public class Hl7MessageProcessor {
                     ? defaultSourceSystem
                     : sendingFacility;
 
-            long id = repository.insert(RawMessageRecord.accepted(sourceSystem, rawMessage, checksum));
+            long id = repository.insert(
+                    RawMessageRecord.accepted(sourceSystem, "HL7V2", "TEXT", rawMessage, checksum));
             log.info("Landed HL7 message id={} type={} source={}", id, messageType, sourceSystem);
 
             String ack = parser.encode(message.generateACK());
             return new Hl7ProcessingResult(true, id, messageType, ack);
         } catch (Exception e) {
             log.warn("Failed to parse HL7 message, quarantining: {}", e.getMessage());
-            long id = repository.insert(RawMessageRecord.quarantined(defaultSourceSystem, rawMessage, checksum, e.getMessage()));
+            long id = repository.insert(
+                    RawMessageRecord.quarantined(defaultSourceSystem, "HL7V2", "TEXT", rawMessage, checksum, e.getMessage()));
             return new Hl7ProcessingResult(false, id, null, buildGenericNak(normalized, e.getMessage()));
         }
     }
@@ -87,12 +84,4 @@ public class Hl7MessageProcessor {
         }
     }
 
-    private static String sha256(String input) {
-        try {
-            MessageDigest digest = MessageDigest.getInstance("SHA-256");
-            return HexFormat.of().formatHex(digest.digest(input.getBytes(StandardCharsets.UTF_8)));
-        } catch (NoSuchAlgorithmException e) {
-            throw new IllegalStateException("SHA-256 algorithm not available", e);
-        }
-    }
 }

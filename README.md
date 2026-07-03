@@ -40,16 +40,16 @@ Multi-source ingestion              Ontology Validation           Patient Master
 **Services** (each an independently deployable Spring Boot / Apache Camel
 module, orchestrated via Docker Compose):
 
-| Service                     | Responsibility                                              |
-|-----------------------------|---------------------------------------------------------------|
-| `ingestion-service`         | Apache Camel routes for HL7 v2, FHIR JSON, and Claims CSV intake |
-| `ontology-service`          | Validates codes against ICD-10, SNOMED CT, LOINC, RxNorm       |
-| `patient-index-service`     | Patient Master Index — cross-source deduplication              |
-| `fhir-compliance-service`   | HAPI FHIR-based US Core IG conformance and resource generation |
-| `rules-engine-service`      | Evaluates clinical validation rules against Silver entities    |
-| `api-gateway`               | REST API surface consumed by the dashboard                     |
-| `dashboard-ui`              | React dashboard (5 views)                                      |
-| `data-generator`            | Python-based synthetic clinical data generator                 |
+| Service                     | Responsibility                                              | Status |
+|-----------------------------|---------------------------------------------------------------|--------|
+| `ingestion-service`         | Apache Camel routes for HL7 v2, FHIR JSON, and Claims CSV intake | ✅ Implemented |
+| `ontology-service`          | Validates codes against ICD-10, SNOMED CT, LOINC, RxNorm       | Not yet implemented |
+| `patient-index-service`     | Patient Master Index — cross-source deduplication              | Not yet implemented |
+| `fhir-compliance-service`   | HAPI FHIR-based US Core IG conformance and resource generation | Not yet implemented |
+| `rules-engine-service`      | Evaluates clinical validation rules against Silver entities    | Not yet implemented |
+| `api-gateway`               | REST API surface consumed by the dashboard                     | Not yet implemented |
+| `dashboard-ui`              | React dashboard (5 views)                                      | Not yet implemented |
+| `data-generator`            | Python-based synthetic clinical data generator                 | Not yet implemented |
 
 **Data platform**: PostgreSQL, organized as a Bronze → Silver → Gold medallion
 architecture plus a dedicated Ontology schema for reference terminology and
@@ -86,16 +86,52 @@ docker-compose up
 
 Once running:
 
-| Component        | Address                          |
-|-------------------|-----------------------------------|
-| PostgreSQL        | `localhost:5432` (`clinicalharmony` / `clinicalharmony`) |
-| Kafka             | `localhost:9092`                  |
-| API Gateway       | `localhost:8080`                  |
-| Dashboard UI       | `localhost:3000`                  |
+| Component          | Address                                                  |
+|---------------------|-----------------------------------------------------------|
+| PostgreSQL          | `localhost:5432` (`clinicalharmony` / `clinicalharmony`)   |
+| Kafka               | `localhost:9092`                                           |
+| **ingestion-service** | `localhost:8081` (REST) + `localhost:8887` (HL7 v2 MLLP) |
+| API Gateway         | `localhost:8080` (placeholder)                             |
+| Dashboard UI        | `localhost:3000` (placeholder)                             |
 
-> **Status**: This is Phase 1 (Foundation) — data platform and infrastructure
-> are fully defined. Application services currently start as placeholders and
-> will be implemented in subsequent phases.
+> **Status**: Phase 1 (Foundation) and Phase 2 (`ingestion-service`, all three
+> intake formats) are implemented. Every other application service still
+> starts as a placeholder and will be implemented in subsequent phases.
+
+### Try the live ingestion endpoints
+
+`ingestion-service` is the only fully working service right now — every
+payload it accepts (or rejects) lands in `bronze.raw_messages` with a SHA-256
+checksum; malformed payloads are quarantined, never dropped.
+
+```bash
+# Health check
+curl http://localhost:8081/actuator/health
+
+# HL7 v2 (ADT admit message)
+curl -i -X POST http://localhost:8081/api/ingestion/hl7 \
+  -H "Content-Type: text/plain" \
+  --data-binary $'MSH|^~\\&|REG_SYSTEM|CITY_HOSPITAL|CLINICALHARMONY|INGESTION|20260703101500||ADT^A01^ADT_A01|MSG00001|P|2.5\rPID|1||MRN100234^^^CITY_HOSPITAL^MR||DOE^JANE^A||19800515|F\r'
+
+# FHIR JSON (single resource or Bundle)
+curl -i -X POST http://localhost:8081/api/ingestion/fhir \
+  -H "Content-Type: application/json" \
+  -H "X-Source-System: PARTNER_CLINIC" \
+  -d '{"resourceType":"Patient","id":"pat-1","name":[{"family":"Doe","given":["Jane"]}]}'
+
+# Claims CSV (lands one Bronze row per claim line)
+curl -i -X POST http://localhost:8081/api/ingestion/claims \
+  -H "Content-Type: text/plain" \
+  -H "X-Source-System: CLAIMS_VENDOR_A" \
+  --data-binary $'claim_id,member_id,service_date,icd10_code,billed_amount\nCLM-001,MBR-1001,2026-06-01,E11.9,150.00\n'
+```
+
+Then inspect what landed:
+
+```bash
+docker compose exec postgres psql -U clinicalharmony -d clinicalharmony \
+  -c "SELECT id, source_system, message_type, message_format, processing_status FROM bronze.raw_messages ORDER BY id;"
+```
 
 ## Project Structure
 

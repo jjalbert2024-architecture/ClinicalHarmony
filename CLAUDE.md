@@ -36,13 +36,15 @@ The Postgres container auto-runs `docs/db-init/` scripts in lexical order on fir
 
 | Library | Version |
 |---|---|
-| Spring Boot | 3.2.5 |
+| Spring Boot | 3.5.16 |
 | Apache Camel | 4.4.1 |
 | HAPI HL7 v2 | 2.3 (`hapi-structures-v25`) |
 | Apache Commons CSV | 1.10.0 |
 | Java | 17 |
 
 New services should use the same Spring Boot parent version and align Camel via its BOM (`camel-spring-boot-bom`) to avoid dependency conflicts.
+
+**Spring Boot version note (2026-07-03)**: bumped from 3.2.5 (EOL Dec 2024) to 3.5.16 — the last patch ever released for the whole Spring Boot 3.x line, which itself reached EOL June 30, 2026. The actively-supported version is now Spring Boot 4.1.x, but that's a real migration (Jakarta EE 11, Spring Framework 7, removed deprecated APIs) with unverified Camel/HAPI HL7v2 compatibility — deliberately deferred rather than attempted opportunistically. Revisit as its own dedicated task if currency with the ecosystem matters more than migration risk.
 
 ### Environment variables (ingestion-service)
 
@@ -146,7 +148,7 @@ Phases are meant to be fully complete before the next starts. Current state as o
 
 - **Phase 1** (done): Foundation — docker-compose.yml, all 7 `docs/db-init/` SQL scripts, seed data.
 - **Phase 2 / 2b** (done): ingestion-service — all three intake paths (HL7 v2, FHIR JSON, Claims CSV) landing to Bronze.
-- **Phase 3** (next): ontology-service — ICD-10, SNOMED CT, LOINC, RxNorm validators + Value Set Binder. Note: architecture diagram places "US Core IG Check" inside the Ontology Validation Engine; resolve with user before starting whether this belongs here or stays in Phase 5 (fhir-compliance-service).
+- **Phase 3** (next): ontology-service — ICD10Validator, LoincValidator, RxNormValidator, SnomedValidator (each a separate Spring Bean), an OntologyService orchestrator, a ValidationReportBuilder writing to `silver.validation_reports`, REST endpoints on port 8082. Resolved: US Core IG Check stays in Phase 5 (fhir-compliance-service) — the user's concrete Phase 3 spec doesn't include it in ontology-service's scope.
 - **Phase 4**: rules-engine-service
 - **Phase 5**: fhir-compliance-service (US Core IG)
 - **Phase 6**: patient-index-service (PMI + deduplication)

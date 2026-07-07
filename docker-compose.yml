@@ -102,9 +102,17 @@ services:
       - clinicalharmony-net
 
   ontology-service:
-    image: eclipse-temurin:17-jre
+    build:
+      context: ./ontology-service
+      dockerfile: Dockerfile
     container_name: clinicalharmony-ontology-service
-    command: ["sh", "-c", "echo '[placeholder] ontology-service — Phase 3' && sleep infinity"]
+    environment:
+      SPRING_PROFILES_ACTIVE: docker
+      DB_HOST: postgres
+      DB_PORT: 5432
+      DB_NAME: clinicalharmony
+      DB_USER: clinicalharmony
+      DB_PASSWORD: clinicalharmony
     depends_on:
       postgres:
         condition: service_healthy

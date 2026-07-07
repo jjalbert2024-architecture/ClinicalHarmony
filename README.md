@@ -43,7 +43,7 @@ module, orchestrated via Docker Compose):
 | Service                     | Responsibility                                              | Status |
 |-----------------------------|---------------------------------------------------------------|--------|
 | `ingestion-service`         | Apache Camel routes for HL7 v2, FHIR JSON, and Claims CSV intake | ✅ Implemented |
-| `ontology-service`          | Validates codes against ICD-10, SNOMED CT, LOINC, RxNorm       | Not yet implemented |
+| `ontology-service`          | Validates codes against ICD-10, SNOMED CT, LOINC, RxNorm       | ✅ Implemented |
 | `patient-index-service`     | Patient Master Index — cross-source deduplication              | Not yet implemented |
 | `fhir-compliance-service`   | HAPI FHIR-based US Core IG conformance and resource generation | Not yet implemented |
 | `rules-engine-service`      | Evaluates clinical validation rules against Silver entities    | Not yet implemented |
@@ -91,12 +91,14 @@ Once running:
 | PostgreSQL          | `localhost:5432` (`clinicalharmony` / `clinicalharmony`)   |
 | Kafka               | `localhost:9092`                                           |
 | **ingestion-service** | `localhost:8081` (REST) + `localhost:8887` (HL7 v2 MLLP) |
+| **ontology-service** | `localhost:8082`                                          |
 | API Gateway         | `localhost:8080` (placeholder)                             |
 | Dashboard UI        | `localhost:3000` (placeholder)                             |
 
-> **Status**: Phase 1 (Foundation) and Phase 2 (`ingestion-service`, all three
-> intake formats) are implemented. Every other application service still
-> starts as a placeholder and will be implemented in subsequent phases.
+> **Status**: Phase 1 (Foundation), Phase 2 (`ingestion-service`, all three
+> intake formats), and Phase 3 (`ontology-service`, all 4 code validators +
+> cross-terminology mapping) are implemented. Every other application service
+> still starts as a placeholder and will be implemented in subsequent phases.
 
 ### Try the live ingestion endpoints
 
@@ -131,6 +133,43 @@ Then inspect what landed:
 ```bash
 docker compose exec postgres psql -U clinicalharmony -d clinicalharmony \
   -c "SELECT id, source_system, message_type, message_format, processing_status FROM bronze.raw_messages ORDER BY id;"
+```
+
+### Try the live ontology validation endpoints
+
+`ontology-service` validates diagnosis (ICD-10, SNOMED CT), lab (LOINC), and medication
+(RxNorm) codes, and answers cross-terminology mapping queries.
+
+```bash
+# Health check
+curl http://localhost:8082/actuator/health
+
+# Look up a single code directly
+curl http://localhost:8082/api/ontology/codes/icd10/E11.9
+curl http://localhost:8082/api/ontology/codes/loinc/2093-3
+
+# Cross-terminology mapping: SNOMED CT -> ICD-10
+curl "http://localhost:8082/api/ontology/map?source=SNOMED&code=44054006&target=ICD10"
+
+# Validate a whole patient record (mix of valid and deliberately invalid codes)
+curl -X POST http://localhost:8082/api/ontology/validate \
+  -H "Content-Type: application/json" \
+  -d '{
+    "patientId": 555,
+    "conditions": [
+      {"id": 9001, "codeSystem": "ICD-10", "code": "E11.9"},
+      {"id": 9002, "codeSystem": "SNOMED-CT", "code": "999999"}
+    ],
+    "observations": [{"id": 9101, "code": "2093-3"}],
+    "medications": [{"id": 9201, "rxnormCode": "6809"}]
+  }'
+```
+
+Then inspect the findings:
+
+```bash
+docker compose exec postgres psql -U clinicalharmony -d clinicalharmony \
+  -c "SELECT id, entity_type, entity_id, rule_code, severity, patient_id, bad_value FROM silver.validation_reports ORDER BY id;"
 ```
 
 ## Project Structure

@@ -64,6 +64,17 @@ All have sane defaults for local development:
 
 Future services follow the same pattern: `DB_*` env vars for the datasource, a `default-source-system` config key per intake path.
 
+### Environment variables (ontology-service)
+
+| Variable | Default | Purpose |
+|---|---|---|
+| `SPRING_PROFILES_ACTIVE` | `local` | `local` (datasource hardcoded to `localhost:5432`, for `mvn spring-boot:run`) or `docker` (datasource via `DB_*` env vars, set by docker-compose) |
+| `DB_HOST` | `postgres` (docker profile only) | Postgres host |
+| `DB_PORT` | `5432` | Postgres port |
+| `DB_NAME` | `clinicalharmony` | Database name |
+| `DB_USER` | `clinicalharmony` | DB user |
+| `DB_PASSWORD` | `clinicalharmony` | DB password |
+
 ## Architecture
 
 ClinicalHarmony is a Bronze → Silver → Gold medallion pipeline for healthcare data. Each layer is a PostgreSQL schema; each service is a standalone Spring Boot app orchestrated by Docker Compose.
@@ -97,7 +108,7 @@ api-gateway  →  dashboard-ui (React, 5 views)
 | Service | REST port | Notes |
 |---|---|---|
 | ingestion-service | 8081 | + MLLP on 8887 |
-| ontology-service | 8082 | placeholder |
+| ontology-service | 8082 | implemented |
 | fhir-compliance-service | 8083 | placeholder |
 | patient-index-service | 8084 | placeholder |
 | rules-engine-service | 8085 | placeholder |
@@ -108,7 +119,7 @@ Services still showing `[placeholder]` in docker-compose.yml boot a bare `eclips
 
 ### ingestion-service (implemented — Phase 2b)
 
-The only fully implemented service. Three parallel intake paths, all sharing a single `RawMessageRepository` write to `bronze.raw_messages`:
+Three parallel intake paths, all sharing a single `RawMessageRepository` write to `bronze.raw_messages`:
 
 - **HL7 v2 MLLP** — Apache Camel `mllp://` route (`Hl7MllpRoute`) on port 8887; returns a real ACK/NAK over the same TCP connection.
 - **HL7 v2 REST** — `POST /api/ingestion/hl7` (`Hl7IngestionController`), `Content-Type: text/plain`. Normalizes `\n`/`\r\n` → `\r` before parsing (MLLP senders always use `\r`; REST clients often don't).
@@ -118,6 +129,33 @@ The only fully implemented service. Three parallel intake paths, all sharing a s
 All paths: SHA-256 checksum on the raw payload, quarantine (not drop) on parse failure, 201/422 on REST.
 
 `ClaimsMessageProcessor.process()` is `@Transactional`: a DB failure during the write phase rolls back all rows for that file. Parse failures quarantine the whole file as a single row (intentional — a partial claim set is worse for downstream reconciliation than a rejected one).
+
+### ontology-service (implemented — Phase 3)
+
+Validates diagnosis (ICD-10, SNOMED CT), lab (LOINC), and medication (RxNorm) codes, and
+answers cross-terminology mapping queries.
+
+- **4 validators** (`Icd10Validator`, `LoincValidator`, `RxNormValidator`, `SnomedValidator`), each
+  a plain `JdbcTemplate` lookup against its `ontology.*` table, returning a shared `ValidationOutcome`
+  (`valid`, `display`, `category`, `reason`). Null/blank codes rejected before any DB call.
+- **`OntologyService`** — orchestrator. Dispatches each condition to `Icd10Validator` or
+  `SnomedValidator` based on its `codeSystem` ("ICD-10" or "SNOMED-CT"), observations always to
+  `LoincValidator`, medications always to `RxNormValidator`.
+- **`ValidationReportBuilder`** — persists a `silver.validation_reports` row only for *failed*
+  validations, citing the rule violated (`CODE-001` ICD-10, `CODE-002` LOINC, `CODE-003` RxNorm,
+  `CODE-004` SNOMED CT).
+- **`ConceptMappingService`** — cross-terminology lookups via `ontology.concept_mappings`, with a
+  small alias table so `ICD10` and `ICD-10` are both accepted as the `target`/`source` query param.
+- **REST endpoints** (port 8082): `POST /api/ontology/validate` (canonical patient record in,
+  aggregated result + created report ids out), `GET /api/ontology/codes/icd10/{code}` and
+  `/codes/loinc/{code}` (200/404 single-code lookups), `GET /api/ontology/map?source=&code=&target=`.
+- **Spring profiles**: `local` vs `docker` (see env var table above) — this is the first service to
+  use real named profiles rather than just env-var defaults; carry the pattern into later phases.
+- **MDC logging**: `MdcLoggingFilter` stamps a short correlation id into every request's log lines.
+- No canonical Silver-layer patient parser exists yet (no phase has built HL7/FHIR/CSV → `silver.patients`
+  parsing), so `PatientRecordRequest` accepts caller-assigned ids per condition/observation/medication
+  item — these become `entity_id` in any resulting validation report — rather than looking up real
+  persisted Silver rows.
 
 ### Bronze schema invariants
 
@@ -130,11 +168,21 @@ All paths: SHA-256 checksum on the raw payload, quarantine (not drop) on parse f
 
 `RawMessageRepository` uses plain `JdbcTemplate` (not Spring Data JPA / no ORM). The HikariCP pool is configured with `hikari.schema: bronze`, so the Postgres search path is scoped to the Bronze schema automatically. Future services writing to `silver.*` or `gold.*` must set their own `hikari.schema` accordingly (or qualify table names explicitly).
 
+### Ontology schema invariants
+
+Phase 1 only created `ontology.icd10_codes`, `loinc_codes`, `rxnorm_codes`, `clinical_rules`. Phase 3 (`docs/db-init/08` through `12`) added, without wiping any existing data (applied directly to the running container, not via `docker-compose down -v`):
+- `ontology.snomed_codes` (new table: `concept_id`, `term`, `semantic_tag` CHECK IN `disorder`/`finding`/`procedure`)
+- `ontology.concept_mappings` (new table: `source_system`/`source_code`/`target_system`/`target_code`/`mapping_type` CHECK IN `EQUIVALENT`/`BROADER`/`NARROWER`)
+- `CODE-004` rule in `ontology.clinical_rules` (SNOMED CT validation failures — needed because `silver.validation_reports.rule_code` has a hard FK to `clinical_rules`)
+- `patient_id`, `bad_value`, `suggested_value` columns added to `silver.validation_reports` (originally only had a free-text `message` — the Phase 8 Validation Report dashboard view will want these as queryable fields)
+
+`ontology-service` reads `ontology.*` tables and writes `silver.validation_reports` — always fully-qualifies table names in SQL rather than relying solely on `hikari.schema` search-path scoping (same convention as `ingestion-service`).
+
 ### Testing pattern
 
-- **Service-layer tests** (`*ProcessorTest`): plain JUnit 5, `mock(RawMessageRepository.class)`, no Spring context — fast.
-- **Web-layer tests** (`*ControllerTest`): `@WebMvcTest` + `@MockBean` on the processor — Spring MVC slice only, no DB.
-- There are no integration tests yet; the end-to-end path was verified manually against a live container.
+- **Service-layer tests** (`*ProcessorTest` / `*ValidatorTest` / `*ServiceTest`): plain JUnit 5, `mock(...)` the JdbcTemplate/repository, no Spring context — fast.
+- **Web-layer tests** (`*ControllerTest`): `@WebMvcTest` + `@MockBean` on the service layer — Spring MVC slice only, no DB.
+- There are no integration tests yet; the end-to-end path was verified manually against a live container (both services).
 
 ## Local Docker environment
 
@@ -142,14 +190,16 @@ All paths: SHA-256 checksum on the raw payload, quarantine (not drop) on parse f
 
 **Apple Silicon image constraint**: `eclipse-temurin:*-alpine` tags have no arm64 manifest and will fail to pull on this machine. Always use the Debian-based tag (e.g. `eclipse-temurin:17-jre`) for all service Dockerfiles. This applies to Phase 3 onward, not just ingestion-service.
 
+**Network desync after multiple daemon restarts**: after several `open -a Docker` restarts in one session, a container's `HostConfig.NetworkMode` can say it's on `clinicalharmony_clinicalharmony-net` while `NetworkSettings.Networks` is actually empty (`{}`) — other containers then get `UnknownHostException` resolving it by service name, even though the container itself is `Up`/healthy. `docker network connect` and `docker restart` on just the affected container do **not** reliably fix this. The reliable fix: `docker compose down` (no `-v`, volume/data untouched) then `docker compose up -d` again — cheap since it doesn't touch the Postgres volume, and fully resets the network.
+
 ## Build order / phase plan
 
-Phases are meant to be fully complete before the next starts. Current state as of 2026-07-03:
+Phases are meant to be fully complete before the next starts. Current state as of 2026-07-04:
 
 - **Phase 1** (done): Foundation — docker-compose.yml, all 7 `docs/db-init/` SQL scripts, seed data.
 - **Phase 2 / 2b** (done): ingestion-service — all three intake paths (HL7 v2, FHIR JSON, Claims CSV) landing to Bronze.
-- **Phase 3** (next): ontology-service — ICD10Validator, LoincValidator, RxNormValidator, SnomedValidator (each a separate Spring Bean), an OntologyService orchestrator, a ValidationReportBuilder writing to `silver.validation_reports`, REST endpoints on port 8082. Resolved: US Core IG Check stays in Phase 5 (fhir-compliance-service) — the user's concrete Phase 3 spec doesn't include it in ontology-service's scope.
-- **Phase 4**: rules-engine-service
+- **Phase 3** (done): ontology-service — ICD10Validator, LoincValidator, RxNormValidator, SnomedValidator, an OntologyService orchestrator, a ValidationReportBuilder writing to `silver.validation_reports`, a ConceptMappingService for SNOMED CT <-> ICD-10 cross-terminology lookups, REST endpoints on port 8082. Resolved: US Core IG Check stays in Phase 5 (fhir-compliance-service) — the user's concrete Phase 3 spec doesn't include it in ontology-service's scope.
+- **Phase 4** (next): rules-engine-service
 - **Phase 5**: fhir-compliance-service (US Core IG)
 - **Phase 6**: patient-index-service (PMI + deduplication)
 - **Phase 7**: api-gateway

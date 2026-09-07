@@ -75,6 +75,19 @@ Future services follow the same pattern: `DB_*` env vars for the datasource, a `
 | `DB_USER` | `clinicalharmony` | DB user |
 | `DB_PASSWORD` | `clinicalharmony` | DB password |
 
+### Environment variables (rules-engine-service)
+
+| Variable | Default | Purpose |
+|---|---|---|
+| `SPRING_PROFILES_ACTIVE` | `local` | Same `local`/`docker` pattern as ontology-service |
+| `DB_HOST` | `postgres` (docker profile only) | Postgres host |
+| `DB_PORT` | `5432` | Postgres port |
+| `DB_NAME` | `clinicalharmony` | Database name |
+| `DB_USER` | `clinicalharmony` | DB user |
+| `DB_PASSWORD` | `clinicalharmony` | DB password |
+| `ONTOLOGY_SERVICE_HOST` | `ontology-service` (docker profile only) | Host for the ontology-service HTTP call made by `OntologyServiceClient` |
+| `ONTOLOGY_SERVICE_PORT` | `8082` | Port for the same call |
+
 ## Architecture
 
 ClinicalHarmony is a Bronze → Silver → Gold medallion pipeline for healthcare data. Each layer is a PostgreSQL schema; each service is a standalone Spring Boot app orchestrated by Docker Compose.
@@ -109,9 +122,9 @@ api-gateway  →  dashboard-ui (React, 5 views)
 |---|---|---|
 | ingestion-service | 8081 | + MLLP on 8887 |
 | ontology-service | 8082 | implemented |
-| fhir-compliance-service | 8083 | placeholder |
-| patient-index-service | 8084 | placeholder |
-| rules-engine-service | 8085 | placeholder |
+| fhir-compliance-service | 8084 | placeholder |
+| patient-index-service | 8085 | placeholder |
+| rules-engine-service | 8083 | implemented |
 | api-gateway | 8080 | placeholder |
 | dashboard-ui | 3000 | placeholder |
 
@@ -157,6 +170,42 @@ answers cross-terminology mapping queries.
   item — these become `entity_id` in any resulting validation report — rather than looking up real
   persisted Silver rows.
 
+### rules-engine-service (implemented — Phase 4)
+
+Evaluates clinical rules against Silver entities and orchestrates ontology-service's code
+validation alongside them.
+
+- **7 built-in rules**, each a `RuleEvaluator` in `rule/`: `GENDER_PREGNANCY_CONFLICT`,
+  `CANCER_STAGING_COMPLETENESS`, `DIAGNOSIS_DATE_SANITY`, `LAB_REFERENCE_RANGE`,
+  `PATIENT_AGE_CONSISTENCY`, `MEDICATION_ALLERGY_CONFLICT`, `FHIR_USCORE_COMPLETENESS`. Each
+  rule's tunable parameters (code lists, ranges, required fields) live in
+  `ontology.clinical_rules.rule_expression` (JSONB) rather than in Java, parsed by `RuleLoader`
+  into a Jackson `JsonNode` on every load (no caching — a `PUT .../toggle` takes effect
+  immediately).
+- **`RuleExecutor`** — dispatches each *active* clinical_rules row to the `RuleEvaluator` bean
+  whose `ruleCode()` matches, and silently skips active rules with no registered evaluator (e.g.
+  `CODE-001..004`, which ontology-service evaluates; `QUAL-001`/`LOGIC-001`/`IDENT-001`, seeded in
+  Phase 1 but not yet evaluated by anything).
+- Convention followed by every evaluator: one `RuleResult` per applicable entity item (pass or
+  fail); if a rule finds nothing applicable in the request (e.g. no conditions in the ICD-10
+  neoplasm range), it returns a single pass at `PATIENT` level rather than an empty list, so the
+  API response always shows the rule as evaluated.
+- **`OntologyServiceClient`** — calls ontology-service's `POST /api/ontology/validate` over HTTP
+  (Spring's `RestClient`, base URL from `ontology-service.base-url`). Returns the raw JSON
+  response as a `JsonNode` rather than a typed mirror, since the two services share no code.
+- **`RulesOrchestrationService`** — runs ontology validation then rule evaluation, aggregates both
+  into a `ClinicalValidationReport`, persists rule failures via `RuleFindingBuilder`. If
+  ontology-service is unreachable it degrades to rules-only rather than failing the request
+  (`ontologyValidationAvailable: false` on the response) — same fail-open posture as any
+  cross-service call in a pipeline where downstream stages shouldn't block on an upstream
+  read-only check being briefly down.
+- **REST endpoints** (port 8083): `POST /api/rules/evaluate`, `GET /api/rules` (active rules),
+  `GET /api/rules/{code}`, `PUT /api/rules/{code}/toggle` (flips `is_active`).
+- `PatientRecordRequest` here is a superset of ontology-service's — same caller-assigned-id
+  convention (no Silver-layer parser exists yet), but richer: patient gender/DOB/statedAge,
+  condition staging info, observation reference ranges, allergies, and raw FHIR resource maps,
+  since the rules need clinical context that pure code validation doesn't.
+
 ### Bronze schema invariants
 
 `bronze.raw_messages` CHECK constraints that Java code must match:
@@ -176,13 +225,21 @@ Phase 1 only created `ontology.icd10_codes`, `loinc_codes`, `rxnorm_codes`, `cli
 - `CODE-004` rule in `ontology.clinical_rules` (SNOMED CT validation failures — needed because `silver.validation_reports.rule_code` has a hard FK to `clinical_rules`)
 - `patient_id`, `bad_value`, `suggested_value` columns added to `silver.validation_reports` (originally only had a free-text `message` — the Phase 8 Validation Report dashboard view will want these as queryable fields)
 
-`ontology-service` reads `ontology.*` tables and writes `silver.validation_reports` — always fully-qualifies table names in SQL rather than relying solely on `hikari.schema` search-path scoping (same convention as `ingestion-service`).
+Phase 4 (`docs/db-init/13`) added, same non-destructive pattern (applied directly to the running
+container, not via `docker-compose down -v`):
+- `ontology.clinical_rules.rule_expression` (JSONB, nullable) — rule-specific parameters (code
+  lists, ranges, required fields), so tuning a rule's behavior is a data change, not a code change.
+- 7 new `clinical_rules` rows for rules-engine-service's built-in rules (see that service's
+  section above) — a distinct set from `CODE-*`/`QUAL-001`/`LOGIC-001`/`IDENT-001`, all within the
+  existing `rule_category` CHECK constraint (no enum values needed adding).
+
+`ontology-service` and `rules-engine-service` both read `ontology.*` tables and write `silver.validation_reports` — always fully-qualify table names in SQL rather than relying solely on `hikari.schema` search-path scoping (same convention as `ingestion-service`).
 
 ### Testing pattern
 
-- **Service-layer tests** (`*ProcessorTest` / `*ValidatorTest` / `*ServiceTest`): plain JUnit 5, `mock(...)` the JdbcTemplate/repository, no Spring context — fast.
+- **Service-layer tests** (`*ProcessorTest` / `*ValidatorTest` / `*ServiceTest` / `*RuleTest`): plain JUnit 5, `mock(...)` the JdbcTemplate/repository, no Spring context — fast.
 - **Web-layer tests** (`*ControllerTest`): `@WebMvcTest` + `@MockBean` on the service layer — Spring MVC slice only, no DB.
-- There are no integration tests yet; the end-to-end path was verified manually against a live container (both services).
+- There are no integration tests yet; the end-to-end path was verified manually against a live container (all three implemented services).
 
 ## Local Docker environment
 
@@ -194,13 +251,13 @@ Phase 1 only created `ontology.icd10_codes`, `loinc_codes`, `rxnorm_codes`, `cli
 
 ## Build order / phase plan
 
-Phases are meant to be fully complete before the next starts. Current state as of 2026-07-04:
+Phases are meant to be fully complete before the next starts. Current state as of 2026-07-09:
 
 - **Phase 1** (done): Foundation — docker-compose.yml, all 7 `docs/db-init/` SQL scripts, seed data.
 - **Phase 2 / 2b** (done): ingestion-service — all three intake paths (HL7 v2, FHIR JSON, Claims CSV) landing to Bronze.
 - **Phase 3** (done): ontology-service — ICD10Validator, LoincValidator, RxNormValidator, SnomedValidator, an OntologyService orchestrator, a ValidationReportBuilder writing to `silver.validation_reports`, a ConceptMappingService for SNOMED CT <-> ICD-10 cross-terminology lookups, REST endpoints on port 8082. Resolved: US Core IG Check stays in Phase 5 (fhir-compliance-service) — the user's concrete Phase 3 spec doesn't include it in ontology-service's scope.
-- **Phase 4** (next): rules-engine-service
-- **Phase 5**: fhir-compliance-service (US Core IG)
+- **Phase 4** (done): rules-engine-service — 7 built-in `RuleEvaluator`s, a `RuleExecutor`/`RuleLoader` pair driven by `ontology.clinical_rules.rule_expression` (new JSONB column), an `OntologyServiceClient` + `RulesOrchestrationService` that calls ontology-service then aggregates both validation layers, REST endpoints on port 8083. Runs on port 8083 per the original spec. The earlier 8083 collision was a bug in docker-compose.yml's placeholder ports for fhir-compliance-service and patient-index-service (they had each other's ports) — fixed by correcting those placeholders to 8084/8085 rather than moving rules-engine-service off its assigned port.
+- **Phase 5** (next): fhir-compliance-service (US Core IG)
 - **Phase 6**: patient-index-service (PMI + deduplication)
 - **Phase 7**: api-gateway
 - **Phase 8**: dashboard-ui (React, 5 views)

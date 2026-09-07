@@ -129,7 +129,7 @@ services:
       postgres:
         condition: service_healthy
     ports:
-      - "8083:8083"
+      - "8084:8084"
     networks:
       - clinicalharmony-net
 
@@ -141,19 +141,31 @@ services:
       postgres:
         condition: service_healthy
     ports:
-      - "8084:8084"
+      - "8085:8085"
     networks:
       - clinicalharmony-net
 
   rules-engine-service:
-    image: eclipse-temurin:17-jre
+    build:
+      context: ./rules-engine-service
+      dockerfile: Dockerfile
     container_name: clinicalharmony-rules-engine-service
-    command: ["sh", "-c", "echo '[placeholder] rules-engine-service — Phase 4' && sleep infinity"]
+    environment:
+      SPRING_PROFILES_ACTIVE: docker
+      DB_HOST: postgres
+      DB_PORT: 5432
+      DB_NAME: clinicalharmony
+      DB_USER: clinicalharmony
+      DB_PASSWORD: clinicalharmony
+      ONTOLOGY_SERVICE_HOST: ontology-service
+      ONTOLOGY_SERVICE_PORT: 8082
     depends_on:
       postgres:
         condition: service_healthy
+      ontology-service:
+        condition: service_started
     ports:
-      - "8085:8085"
+      - "8083:8083"
     networks:
       - clinicalharmony-net
 

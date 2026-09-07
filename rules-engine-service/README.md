@@ -28,7 +28,7 @@ Each rule's parameters (code lists, ranges, required fields) live in
 `RuleExecutor` only evaluates active rules it has a registered `RuleEvaluator` for — it silently
 skips rule_codes owned by other services (e.g. `CODE-001..004`, evaluated by ontology-service).
 
-## REST endpoints (port 8085)
+## REST endpoints (port 8083)
 
 - `POST /api/rules/evaluate` — runs ontology-service validation (via HTTP) then rule evaluation
   against a canonical patient record, aggregates both into a `ClinicalValidationReport`, persists

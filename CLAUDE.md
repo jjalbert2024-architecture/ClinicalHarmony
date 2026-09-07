@@ -122,9 +122,9 @@ api-gateway  →  dashboard-ui (React, 5 views)
 |---|---|---|
 | ingestion-service | 8081 | + MLLP on 8887 |
 | ontology-service | 8082 | implemented |
-| fhir-compliance-service | 8083 | placeholder |
-| patient-index-service | 8084 | placeholder |
-| rules-engine-service | 8085 | implemented |
+| fhir-compliance-service | 8084 | placeholder |
+| patient-index-service | 8085 | placeholder |
+| rules-engine-service | 8083 | implemented |
 | api-gateway | 8080 | placeholder |
 | dashboard-ui | 3000 | placeholder |
 
@@ -199,7 +199,7 @@ validation alongside them.
   (`ontologyValidationAvailable: false` on the response) — same fail-open posture as any
   cross-service call in a pipeline where downstream stages shouldn't block on an upstream
   read-only check being briefly down.
-- **REST endpoints** (port 8085): `POST /api/rules/evaluate`, `GET /api/rules` (active rules),
+- **REST endpoints** (port 8083): `POST /api/rules/evaluate`, `GET /api/rules` (active rules),
   `GET /api/rules/{code}`, `PUT /api/rules/{code}/toggle` (flips `is_active`).
 - `PatientRecordRequest` here is a superset of ontology-service's — same caller-assigned-id
   convention (no Silver-layer parser exists yet), but richer: patient gender/DOB/statedAge,
@@ -256,7 +256,7 @@ Phases are meant to be fully complete before the next starts. Current state as o
 - **Phase 1** (done): Foundation — docker-compose.yml, all 7 `docs/db-init/` SQL scripts, seed data.
 - **Phase 2 / 2b** (done): ingestion-service — all three intake paths (HL7 v2, FHIR JSON, Claims CSV) landing to Bronze.
 - **Phase 3** (done): ontology-service — ICD10Validator, LoincValidator, RxNormValidator, SnomedValidator, an OntologyService orchestrator, a ValidationReportBuilder writing to `silver.validation_reports`, a ConceptMappingService for SNOMED CT <-> ICD-10 cross-terminology lookups, REST endpoints on port 8082. Resolved: US Core IG Check stays in Phase 5 (fhir-compliance-service) — the user's concrete Phase 3 spec doesn't include it in ontology-service's scope.
-- **Phase 4** (done): rules-engine-service — 7 built-in `RuleEvaluator`s, a `RuleExecutor`/`RuleLoader` pair driven by `ontology.clinical_rules.rule_expression` (new JSONB column), an `OntologyServiceClient` + `RulesOrchestrationService` that calls ontology-service then aggregates both validation layers, REST endpoints on port 8085. Resolved: service runs on port 8085 (not 8083 as in the original task brief) to avoid colliding with fhir-compliance-service, which docker-compose.yml and this file already reserved 8083 for.
+- **Phase 4** (done): rules-engine-service — 7 built-in `RuleEvaluator`s, a `RuleExecutor`/`RuleLoader` pair driven by `ontology.clinical_rules.rule_expression` (new JSONB column), an `OntologyServiceClient` + `RulesOrchestrationService` that calls ontology-service then aggregates both validation layers, REST endpoints on port 8083. Runs on port 8083 per the original spec. The earlier 8083 collision was a bug in docker-compose.yml's placeholder ports for fhir-compliance-service and patient-index-service (they had each other's ports) — fixed by correcting those placeholders to 8084/8085 rather than moving rules-engine-service off its assigned port.
 - **Phase 5** (next): fhir-compliance-service (US Core IG)
 - **Phase 6**: patient-index-service (PMI + deduplication)
 - **Phase 7**: api-gateway

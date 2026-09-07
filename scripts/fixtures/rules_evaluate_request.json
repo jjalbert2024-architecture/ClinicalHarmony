@@ -1,0 +1,22 @@
+{
+  "patientId": 777,
+  "gender": "male",
+  "dateOfBirth": "1980-01-01",
+  "statedAge": 25,
+  "conditions": [
+    {"id": 1, "codeSystem": "ICD-10", "code": "Z34.90", "onsetDate": "2026-08-01"},
+    {"id": 2, "codeSystem": "ICD-10", "code": "C50.911", "onsetDate": "2027-01-01"}
+  ],
+  "observations": [
+    {"id": 3, "code": "2093-3", "valueNumeric": 350, "effectiveDate": "2026-09-01T10:00:00"}
+  ],
+  "medications": [
+    {"id": 4, "rxnormCode": "6809", "display": "Metformin", "startDate": "2026-08-01"}
+  ],
+  "allergies": [
+    {"rxnormCode": "6809", "substance": "Metformin"}
+  ],
+  "fhirResources": [
+    {"resourceType": "Patient", "id": "p1", "gender": "male"}
+  ]
+}

@@ -1,0 +1,3 @@
+claim_id,member_id,service_date,icd10_code,billed_amount
+CLM-SMOKE-101,MBR-SMOKE-2001,2026-06-01,E11.9,150.00
+CLM-SMOKE-102,MBR-SMOKE-2002,2026-06-02,I10,95.50

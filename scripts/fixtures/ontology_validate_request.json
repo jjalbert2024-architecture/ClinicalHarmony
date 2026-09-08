@@ -1,0 +1,16 @@
+{
+  "patientId": 555,
+  "conditions": [
+    {"id": 9001, "codeSystem": "ICD-10", "code": "E11.9"},
+    {"id": 9002, "codeSystem": "ICD-10", "code": "Z99.999"},
+    {"id": 9003, "codeSystem": "SNOMED-CT", "code": "44054006"}
+  ],
+  "observations": [
+    {"id": 9101, "code": "2093-3"},
+    {"id": 9102, "code": "99999-9"}
+  ],
+  "medications": [
+    {"id": 9201, "rxnormCode": "6809"},
+    {"id": 9202, "rxnormCode": "0000000"}
+  ]
+}

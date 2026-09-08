@@ -239,7 +239,7 @@ container, not via `docker-compose down -v`):
 
 - **Service-layer tests** (`*ProcessorTest` / `*ValidatorTest` / `*ServiceTest` / `*RuleTest`): plain JUnit 5, `mock(...)` the JdbcTemplate/repository, no Spring context — fast.
 - **Web-layer tests** (`*ControllerTest`): `@WebMvcTest` + `@MockBean` on the service layer — Spring MVC slice only, no DB.
-- There are no integration tests yet; the end-to-end path was verified manually against a live container (all three implemented services).
+- **Black-box smoke test** (`scripts/smoke-test.sh`): once the stack is up (`docker-compose up -d`), this hits all three implemented services' REST endpoints over HTTP and asserts on real responses — accept/quarantine outcomes, ontology validation results, all 7 rule-engine evaluations, and the live rule-toggle behavior. Fixture payloads live in `scripts/fixtures/`. This replaces the earlier "verified manually" note — it's now a repeatable, scriptable check, though it's still HTTP-level (no JUnit `@SpringBootTest`/Testcontainers integration tests exist).
 
 ## Local Docker environment
 

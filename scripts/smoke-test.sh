@@ -161,6 +161,30 @@ check_json "toggled-off Patient rule is skipped, not failed" "$TMP/fhir_toggled_
 curl -s -X PUT "$FHIR_COMPLIANCE_URL/api/fhir-compliance/rules/USCORE_PATIENT_COMPLETENESS/toggle" > "$TMP/fhir_restored.json"
 check_json "USCORE_PATIENT_COMPLETENESS restored to active" "$TMP/fhir_restored.json" "d['active']" "True"
 
+section "9. fhir-compliance-service — HL7 validator vs US Core 6.1.0 (Phase 5b)"
+curl -s -X POST "$FHIR_COMPLIANCE_URL/api/fhir/validate" -H "Content-Type: application/json" \
+  -d '{"resourceType":"Patient","name":[{"family":""}]}' > "$TMP/hl7_validate_bad.json"
+check_json "bare Patient is checked against US Core and fails" "$TMP/hl7_validate_bad.json" "d['compliant']" "False"
+check_json "missing gender reported at its FHIRPath with a suggested fix" "$TMP/hl7_validate_bad.json" \
+  "[v['suggestedFix'] is not None for v in d['violations'] if v['location']=='Patient.gender']" "[True]"
+check_json "empty string reported at Patient.name[0].family" "$TMP/hl7_validate_bad.json" \
+  "any(v['location']=='Patient.name[0].family' and v['severity']=='ERROR' for v in d['violations'])" "True"
+curl -s -X POST "$FHIR_COMPLIANCE_URL/api/fhir/validate" -H "Content-Type: application/fhir+json" \
+  -d '{"resourceType":"Patient","identifier":[{"system":"urn:x","value":"1"}],"name":[{"family":"Doe"}],"gender":"female"}' \
+  > "$TMP/hl7_validate_good.json"
+check_json "complete Patient is US Core compliant" "$TMP/hl7_validate_good.json" "d['compliant']" "True"
+check_http "non-FHIR payload rejected (400)" POST "$FHIR_COMPLIANCE_URL/api/fhir/validate" 400 "application/json" '{"foo":1}'
+
+section "10. fhir-compliance-service — Silver → US Core FHIR → Gold (Phase 5b)"
+# Needs docs/db-init/16 + 17 applied (compliance_notes column + seed Silver patients).
+curl -s -X POST "$FHIR_COMPLIANCE_URL/api/fhir/build" > "$TMP/silver_build.json"
+check_json "seed patients SEED-0001/0002 build fully compliant" "$TMP/silver_build.json" \
+  "all(r['compliantCount']==r['resourceCount'] for r in d if r['resources'][0]['fhirId'] in ('silver-patient-1','silver-patient-2'))" "True"
+check_json "deliberately bad seed patient is flagged (blank name + blank code)" "$TMP/silver_build.json" \
+  "sorted(e['location'] for r in d for x in r['resources'] if not x['usCoreCompliant'] for e in x['errors'])" \
+  "['Condition.code', 'Patient.name']"
+check_http "build for unknown Silver patient returns 404" POST "$FHIR_COMPLIANCE_URL/api/fhir/build/patients/999999" 404
+
 echo
 echo "=== Summary: $PASS passed, $FAIL failed ==="
 [[ "$FAIL" -eq 0 ]] && exit 0 || exit 1

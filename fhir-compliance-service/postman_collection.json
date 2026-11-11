@@ -1,11 +1,14 @@
 {
   "info": {
-    "name": "fhir-compliance-service (Phase 5)",
-    "description": "US Core structural validation + FHIR generation for ClinicalHarmony. Import this into Postman, make sure `docker-compose up -d` is running, and run requests top to bottom.",
+    "name": "fhir-compliance-service (Phase 5 + 5b)",
+    "description": "US Core structural validation + FHIR generation for ClinicalHarmony. Import this into Postman, make sure `docker-compose up -d` is running, and run requests top to bottom. Requests 10+ are Phase 5b: the official HL7 FHIR validator against US Core 6.1.0, and Silver → FHIR → Gold builds (needs docs/db-init/16 and 17 applied).",
     "schema": "https://schema.getpostman.com/json/collection/v2.1.0/collection.json"
   },
   "variable": [
-    { "key": "base_url", "value": "http://localhost:8084" }
+    {
+      "key": "base_url",
+      "value": "http://localhost:8084"
+    }
   ],
   "item": [
     {
@@ -36,7 +39,12 @@
       "name": "3. Validate — complete vs incomplete resources",
       "request": {
         "method": "POST",
-        "header": [{ "key": "Content-Type", "value": "application/json" }],
+        "header": [
+          {
+            "key": "Content-Type",
+            "value": "application/json"
+          }
+        ],
         "url": "{{base_url}}/api/fhir-compliance/validate",
         "body": {
           "mode": "raw",
@@ -49,7 +57,12 @@
       "name": "4. Validate — unsupported resource type is skipped, not failed",
       "request": {
         "method": "POST",
-        "header": [{ "key": "Content-Type", "value": "application/json" }],
+        "header": [
+          {
+            "key": "Content-Type",
+            "value": "application/json"
+          }
+        ],
         "url": "{{base_url}}/api/fhir-compliance/validate",
         "body": {
           "mode": "raw",
@@ -62,7 +75,12 @@
       "name": "5. Generate — full patient record, all 7 resource types",
       "request": {
         "method": "POST",
-        "header": [{ "key": "Content-Type", "value": "application/json" }],
+        "header": [
+          {
+            "key": "Content-Type",
+            "value": "application/json"
+          }
+        ],
         "url": "{{base_url}}/api/fhir-compliance/generate",
         "body": {
           "mode": "raw",
@@ -75,7 +93,12 @@
       "name": "6. Generate — minimal record (Patient only)",
       "request": {
         "method": "POST",
-        "header": [{ "key": "Content-Type", "value": "application/json" }],
+        "header": [
+          {
+            "key": "Content-Type",
+            "value": "application/json"
+          }
+        ],
         "url": "{{base_url}}/api/fhir-compliance/generate",
         "body": {
           "mode": "raw",
@@ -96,7 +119,12 @@
       "name": "8. Validate again — toggled-off rule is now skipped",
       "request": {
         "method": "POST",
-        "header": [{ "key": "Content-Type", "value": "application/json" }],
+        "header": [
+          {
+            "key": "Content-Type",
+            "value": "application/json"
+          }
+        ],
         "url": "{{base_url}}/api/fhir-compliance/validate",
         "body": {
           "mode": "raw",
@@ -111,6 +139,114 @@
         "method": "PUT",
         "url": "{{base_url}}/api/fhir-compliance/rules/USCORE_PATIENT_COMPLETENESS/toggle",
         "description": "Expect: 200 OK, `active: true`. Always run this after #7/#8 so the rule catalog is back to its normal state for anyone testing after you."
+      }
+    },
+    {
+      "name": "10. HL7 validate — broken Patient (debugger)",
+      "request": {
+        "method": "POST",
+        "url": "{{base_url}}/api/fhir/validate",
+        "description": "Expect: 200 with compliant=false. No meta.profile, so it's checked against us-core-patient automatically. Violations (errors first) include Patient.gender and Patient.identifier (missing — each with a suggestedFix), and Patient.name[0].family (empty string). Send an X-Correlation-Id header to see it echoed back and stamped on the service's log lines.",
+        "header": [
+          {
+            "key": "Content-Type",
+            "value": "application/json"
+          }
+        ],
+        "body": {
+          "mode": "raw",
+          "raw": "{\n  \"resourceType\": \"Patient\",\n  \"name\": [\n    {\n      \"family\": \"\"\n    }\n  ]\n}",
+          "options": {
+            "raw": {
+              "language": "json"
+            }
+          }
+        }
+      }
+    },
+    {
+      "name": "11. HL7 validate — compliant Patient",
+      "request": {
+        "method": "POST",
+        "url": "{{base_url}}/api/fhir/validate",
+        "description": "Expect: 200, compliant=true, errorCount=0. One WARNING (dom-6: no narrative) is a best-practice note, not a failure.",
+        "header": [
+          {
+            "key": "Content-Type",
+            "value": "application/json"
+          }
+        ],
+        "body": {
+          "mode": "raw",
+          "raw": "{\n  \"resourceType\": \"Patient\",\n  \"id\": \"demo\",\n  \"identifier\": [\n    {\n      \"system\": \"urn:example:mrn\",\n      \"value\": \"12345\"\n    }\n  ],\n  \"name\": [\n    {\n      \"family\": \"Doe\",\n      \"given\": [\n        \"Jane\"\n      ]\n    }\n  ],\n  \"gender\": \"female\",\n  \"birthDate\": \"1980-01-01\"\n}",
+          "options": {
+            "raw": {
+              "language": "json"
+            }
+          }
+        }
+      }
+    },
+    {
+      "name": "12. HL7 validate — lab Observation (terminology warnings)",
+      "request": {
+        "method": "POST",
+        "url": "{{base_url}}/api/fhir/validate",
+        "description": "Expect: 200, compliant=true, profile=us-core-observation-lab (picked because category=laboratory). LOINC code existence is a WARNING (no terminology server here — ontology-service owns that check). Change the UCUM code to 'percent' to see a real ERROR.",
+        "header": [
+          {
+            "key": "Content-Type",
+            "value": "application/json"
+          }
+        ],
+        "body": {
+          "mode": "raw",
+          "raw": "{\n  \"resourceType\": \"Observation\",\n  \"status\": \"final\",\n  \"category\": [\n    {\n      \"coding\": [\n        {\n          \"system\": \"http://terminology.hl7.org/CodeSystem/observation-category\",\n          \"code\": \"laboratory\"\n        }\n      ]\n    }\n  ],\n  \"code\": {\n    \"coding\": [\n      {\n        \"system\": \"http://loinc.org\",\n        \"code\": \"4548-4\"\n      }\n    ]\n  },\n  \"subject\": {\n    \"reference\": \"Patient/demo\"\n  },\n  \"effectiveDateTime\": \"2024-03-10\",\n  \"valueQuantity\": {\n    \"value\": 7.2,\n    \"unit\": \"%\",\n    \"system\": \"http://unitsofmeasure.org\",\n    \"code\": \"%\"\n  }\n}",
+          "options": {
+            "raw": {
+              "language": "json"
+            }
+          }
+        }
+      }
+    },
+    {
+      "name": "13. HL7 validate — not a FHIR resource",
+      "request": {
+        "method": "POST",
+        "url": "{{base_url}}/api/fhir/validate",
+        "description": "Expect: 400 {\"error\":\"Invalid FHIR resource\", ...}. Only unparseable / non-FHIR payloads get 400; a non-compliant resource is still a 200.",
+        "header": [
+          {
+            "key": "Content-Type",
+            "value": "application/json"
+          }
+        ],
+        "body": {
+          "mode": "raw",
+          "raw": "{\n  \"foo\": 1\n}",
+          "options": {
+            "raw": {
+              "language": "json"
+            }
+          }
+        }
+      }
+    },
+    {
+      "name": "14. Build all Silver patients → Gold",
+      "request": {
+        "method": "POST",
+        "url": "{{base_url}}/api/fhir/build",
+        "description": "Expect: 200, one result per silver.patients row. Seed patients SEED-0001 and SEED-0002 are fully compliant; SEED-0003 (deliberately bad) has a non-compliant Patient (Patient.name) and Condition (Condition.code). Then in DBeaver: SELECT resource_type, fhir_id, is_us_core_compliant, compliance_notes FROM gold.fhir_resources WHERE fhir_id LIKE 'silver-%'. Re-running is idempotent (upserts, same 18 rows)."
+      }
+    },
+    {
+      "name": "15. Build one Silver patient",
+      "request": {
+        "method": "POST",
+        "url": "{{base_url}}/api/fhir/build/patients/3",
+        "description": "Expect: 200 for an existing silver.patients id (3 = the deliberately bad seed patient); 404 for an id that doesn't exist."
       }
     }
   ]

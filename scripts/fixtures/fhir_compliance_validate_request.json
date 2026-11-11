@@ -1,0 +1,9 @@
+{
+  "patientId": 900,
+  "fhirResources": [
+    {"resourceType": "Patient", "id": "p1", "identifier": [{"value": "MRN1"}], "name": [{"family": "Doe"}], "gender": "male", "birthDate": "1980-01-01"},
+    {"resourceType": "Patient", "id": "p2", "gender": "female"},
+    {"resourceType": "MedicationRequest", "id": "m1", "status": "active", "intent": "order", "subject": {"reference": "Patient/p1"}, "medicationReference": {"reference": "Medication/1"}},
+    {"resourceType": "MedicationRequest", "id": "m2", "status": "active", "intent": "order", "subject": {"reference": "Patient/p1"}}
+  ]
+}

@@ -1,0 +1,13 @@
+{
+  "patientId": 901,
+  "givenName": "Jane",
+  "familyName": "Smith",
+  "gender": "female",
+  "dateOfBirth": "1975-03-15",
+  "conditions": [{"id": 1, "codeSystem": "ICD-10", "code": "E11.9", "display": "Type 2 diabetes", "onsetDate": "2020-01-01"}],
+  "observations": [{"id": 2, "code": "2093-3", "display": "Cholesterol", "valueNumeric": 190, "unit": "mg/dL", "effectiveDate": "2026-06-01T10:00:00"}],
+  "medications": [{"id": 3, "rxnormCode": "6809", "display": "Metformin", "startDate": "2020-01-01"}],
+  "allergies": [{"id": 4, "rxnormCode": "7980", "substance": "Penicillin"}],
+  "encounters": [{"id": 5, "status": "finished", "classCode": "AMB", "startDate": "2026-06-01", "endDate": "2026-06-01"}],
+  "diagnosticReports": [{"id": 6, "code": "24323-8", "display": "Metabolic panel", "status": "final", "issued": "2026-06-01T12:00:00"}]
+}

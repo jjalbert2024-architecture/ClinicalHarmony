@@ -1,5 +1,6 @@
 #!/usr/bin/env bash
-# End-to-end smoke test for ingestion-service, ontology-service, and rules-engine-service.
+# End-to-end smoke test for ingestion-service, ontology-service, rules-engine-service, and
+# fhir-compliance-service.
 # Assumes the stack is already up: `docker-compose up -d` from the repo root.
 # Usage: ./scripts/smoke-test.sh
 set -uo pipefail
@@ -7,6 +8,7 @@ set -uo pipefail
 INGESTION_URL="${INGESTION_URL:-http://localhost:8081}"
 ONTOLOGY_URL="${ONTOLOGY_URL:-http://localhost:8082}"
 RULES_URL="${RULES_URL:-http://localhost:8083}"
+FHIR_COMPLIANCE_URL="${FHIR_COMPLIANCE_URL:-http://localhost:8084}"
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 FIXTURES="$SCRIPT_DIR/fixtures"
@@ -55,7 +57,7 @@ check_json() {
 section() { echo; echo "=== $1 ==="; }
 
 section "0. Health checks"
-for pair in "ingestion:$INGESTION_URL" "ontology:$ONTOLOGY_URL" "rules-engine:$RULES_URL"; do
+for pair in "ingestion:$INGESTION_URL" "ontology:$ONTOLOGY_URL" "rules-engine:$RULES_URL" "fhir-compliance:$FHIR_COMPLIANCE_URL"; do
   name="${pair%%:*}"; url="${pair#*:}"
   check_http "$name-service is up" GET "$url/actuator/health" 200
 done
@@ -115,6 +117,49 @@ check_json "toggled-off rule is absent from evaluation" "$TMP/toggled_off.json" 
   "'PATIENT_AGE_CONSISTENCY' in [r['ruleCode'] for r in d['ruleResults']]" "False"
 curl -s -X PUT "$RULES_URL/api/rules/PATIENT_AGE_CONSISTENCY/toggle" > "$TMP/restored.json"
 check_json "rule restored to active" "$TMP/restored.json" "d['active']" "True"
+
+section "7. fhir-compliance-service — US Core structural validation"
+curl -s -X POST "$FHIR_COMPLIANCE_URL/api/fhir-compliance/validate" -H "Content-Type: application/json" \
+  --data-binary "@$FIXTURES/fhir_compliance_validate_request.json" > "$TMP/fhir_validate.json"
+check_json "complete Patient (p1) is valid" "$TMP/fhir_validate.json" \
+  "[r for r in d['resourceResults'] if r['resourceId']=='p1'][0]['valid']" "True"
+check_json "incomplete Patient (p2) is invalid" "$TMP/fhir_validate.json" \
+  "[r for r in d['resourceResults'] if r['resourceId']=='p2'][0]['valid']" "False"
+check_json "MedicationRequest satisfying medication[x] anyOf is valid (m1)" "$TMP/fhir_validate.json" \
+  "[r for r in d['resourceResults'] if r['resourceId']=='m1'][0]['valid']" "True"
+check_json "MedicationRequest missing medication[x] is invalid (m2)" "$TMP/fhir_validate.json" \
+  "[r for r in d['resourceResults'] if r['resourceId']=='m2'][0]['valid']" "False"
+
+section "8. fhir-compliance-service — FHIR generation + Gold persistence + rule catalog"
+curl -s -X POST "$FHIR_COMPLIANCE_URL/api/fhir-compliance/generate" -H "Content-Type: application/json" \
+  --data-binary "@$FIXTURES/fhir_compliance_generate_request.json" > "$TMP/fhir_generate.json"
+check_json "generated Bundle has all 7 resource types" "$TMP/fhir_generate.json" \
+  "len(set(e['resource']['resourceType'] for e in d['entry']))" "7"
+
+# Round-trip the generated resources back through /validate — a live cross-check that the
+# generator and validator agree, not just an assumption that generated output is compliant.
+python3 -c "
+import json
+d = json.load(open('$TMP/fhir_generate.json'))
+resources = [e['resource'] for e in d['entry']]
+json.dump({'patientId': 901, 'fhirResources': resources}, open('$TMP/fhir_roundtrip_request.json', 'w'))
+"
+curl -s -X POST "$FHIR_COMPLIANCE_URL/api/fhir-compliance/validate" -H "Content-Type: application/json" \
+  --data-binary "@$TMP/fhir_roundtrip_request.json" > "$TMP/fhir_roundtrip.json"
+check_json "every generated resource round-trips as US Core valid" "$TMP/fhir_roundtrip.json" \
+  "d['allValid']" "True"
+check_http "GET /api/fhir-compliance/rules (7 active USCORE rules)" GET "$FHIR_COMPLIANCE_URL/api/fhir-compliance/rules" 200
+check_json "exactly 7 active USCORE rules" "$TMP/last_response.json" "len(d)" "7"
+check_http "GET unknown rule returns 404" GET "$FHIR_COMPLIANCE_URL/api/fhir-compliance/rules/NOT_A_REAL_RULE" 404
+
+# Toggle off, confirm it's skipped (not failed) from validation, then always restore it.
+curl -s -X PUT "$FHIR_COMPLIANCE_URL/api/fhir-compliance/rules/USCORE_PATIENT_COMPLETENESS/toggle" > /dev/null
+curl -s -X POST "$FHIR_COMPLIANCE_URL/api/fhir-compliance/validate" -H "Content-Type: application/json" \
+  -d '{"patientId": 903, "fhirResources": [{"resourceType": "Patient", "id": "p-incomplete"}]}' > "$TMP/fhir_toggled_off.json"
+check_json "toggled-off Patient rule is skipped, not failed" "$TMP/fhir_toggled_off.json" \
+  "d['allValid']" "True"
+curl -s -X PUT "$FHIR_COMPLIANCE_URL/api/fhir-compliance/rules/USCORE_PATIENT_COMPLETENESS/toggle" > "$TMP/fhir_restored.json"
+check_json "USCORE_PATIENT_COMPLETENESS restored to active" "$TMP/fhir_restored.json" "d['active']" "True"
 
 echo
 echo "=== Summary: $PASS passed, $FAIL failed ==="

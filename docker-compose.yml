@@ -122,9 +122,17 @@ services:
       - clinicalharmony-net
 
   fhir-compliance-service:
-    image: eclipse-temurin:17-jre
+    build:
+      context: ./fhir-compliance-service
+      dockerfile: Dockerfile
     container_name: clinicalharmony-fhir-compliance-service
-    command: ["sh", "-c", "echo '[placeholder] fhir-compliance-service — Phase 5' && sleep infinity"]
+    environment:
+      SPRING_PROFILES_ACTIVE: docker
+      DB_HOST: postgres
+      DB_PORT: 5432
+      DB_NAME: clinicalharmony
+      DB_USER: clinicalharmony
+      DB_PASSWORD: clinicalharmony
     depends_on:
       postgres:
         condition: service_healthy

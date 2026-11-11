@@ -122,7 +122,7 @@ api-gateway  →  dashboard-ui (React, 5 views)
 |---|---|---|
 | ingestion-service | 8081 | + MLLP on 8887 |
 | ontology-service | 8082 | implemented |
-| fhir-compliance-service | 8084 | placeholder |
+| fhir-compliance-service | 8084 | implemented |
 | patient-index-service | 8085 | placeholder |
 | rules-engine-service | 8083 | implemented |
 | api-gateway | 8080 | placeholder |
@@ -206,6 +206,40 @@ validation alongside them.
   condition staging info, observation reference ranges, allergies, and raw FHIR resource maps,
   since the rules need clinical context that pure code validation doesn't.
 
+### fhir-compliance-service (implemented — Phase 5)
+
+Checks FHIR resources for US Core **structural** completeness (required-element presence only —
+no cardinality beyond that, no terminology bindings, no invariants) across all 7 resource types
+this project generates FHIR for, and generates FHIR resources from a canonical patient record.
+
+- **7 `USCORE_*_COMPLETENESS` rules** (`Patient`, `Condition`, `Observation`, `MedicationRequest`,
+  `AllergyIntolerance`, `Encounter`, `DiagnosticReport`), seeded in
+  `docs/db-init/14_seed_fhir_compliance_rules.sql` — a distinct, broader rule family from
+  rules-engine-service's `FHIR_USCORE_COMPLETENESS` (3 resource types, explicitly scoped there as
+  "a cheap Silver-side sanity check" pending this service). Both can coexist; this is the
+  authoritative one.
+- **`UsCoreRuleLoader`** — same fresh-load-every-call, no-caching convention as rules-engine-service's
+  `RuleLoader`, parsing `rule_expression` into a `UsCoreProfile` (resourceType, requiredFields, and
+  `requiredAnyOf` groups for FHIR choice-type elements like MedicationRequest's `medication[x]`).
+- **`UsCoreValidationService`** — matches each submitted resource to its profile by `resourceType`;
+  a type with no active profile is skipped, not failed (same convention as `RuleExecutor`).
+  `checkResource()` is reused by the generator to cross-check its own output rather than assuming
+  the generator is correct by construction.
+- **`FhirBundleGenerator`** — builds resources as plain ordered maps (no HAPI FHIR object model,
+  consistent with how ingestion-service/rules-engine-service already treat FHIR resources) using
+  real canonical terminology system URIs (`http://snomed.info/sct`, `http://loinc.org`, etc.).
+- **`FhirGenerationService`** — persists each generated resource to `gold.fhir_resources`, a table
+  Phase 1 created for exactly this purpose but that no service had written to until now, making
+  this the first service to touch the Gold layer. `master_patient_id` stays null until
+  patient-index-service (Phase 6) populates `gold.master_patients` — the column is nullable for
+  exactly this reason.
+- **REST endpoints** (port 8084): `POST /api/fhir-compliance/validate`, `POST
+  /api/fhir-compliance/generate`, `GET /api/fhir-compliance/rules`, `GET
+  /api/fhir-compliance/rules/{code}`, `PUT /api/fhir-compliance/rules/{code}/toggle`.
+- FHIR resource ids are strings, not the `BIGINT` `silver.validation_reports.entity_id` expects,
+  so validation findings are recorded against the caller-supplied `patientId` (same convention as
+  rules-engine-service's `FHIR_USCORE_COMPLETENESS`).
+
 ### Bronze schema invariants
 
 `bronze.raw_messages` CHECK constraints that Java code must match:
@@ -233,13 +267,19 @@ container, not via `docker-compose down -v`):
   section above) — a distinct set from `CODE-*`/`QUAL-001`/`LOGIC-001`/`IDENT-001`, all within the
   existing `rule_category` CHECK constraint (no enum values needed adding).
 
-`ontology-service` and `rules-engine-service` both read `ontology.*` tables and write `silver.validation_reports` — always fully-qualify table names in SQL rather than relying solely on `hikari.schema` search-path scoping (same convention as `ingestion-service`).
+Phase 5 (`docs/db-init/14`) added 7 more `clinical_rules` rows (`USCORE_*_COMPLETENESS`, see
+fhir-compliance-service's section above) — no new columns needed, reusing `rule_expression` from
+Phase 4. It also made the first-ever write to `gold.fhir_resources`, a table Phase 1 created but
+left unused; no schema change was needed there either, since its columns and unique constraint on
+`(resource_type, fhir_id)` already existed.
+
+`ontology-service` and `rules-engine-service` both read `ontology.*` tables and write `silver.validation_reports` — always fully-qualify table names in SQL rather than relying solely on `hikari.schema` search-path scoping (same convention as `ingestion-service`). `fhir-compliance-service` follows the same convention, additionally writing `gold.fhir_resources`.
 
 ### Testing pattern
 
 - **Service-layer tests** (`*ProcessorTest` / `*ValidatorTest` / `*ServiceTest` / `*RuleTest`): plain JUnit 5, `mock(...)` the JdbcTemplate/repository, no Spring context — fast.
 - **Web-layer tests** (`*ControllerTest`): `@WebMvcTest` + `@MockBean` on the service layer — Spring MVC slice only, no DB.
-- **Black-box smoke test** (`scripts/smoke-test.sh`): once the stack is up (`docker-compose up -d`), this hits all three implemented services' REST endpoints over HTTP and asserts on real responses — accept/quarantine outcomes, ontology validation results, all 7 rule-engine evaluations, and the live rule-toggle behavior. Fixture payloads live in `scripts/fixtures/`. This replaces the earlier "verified manually" note — it's now a repeatable, scriptable check, though it's still HTTP-level (no JUnit `@SpringBootTest`/Testcontainers integration tests exist).
+- **Black-box smoke test** (`scripts/smoke-test.sh`): once the stack is up (`docker-compose up -d`), this hits all four implemented services' REST endpoints over HTTP and asserts on real responses — accept/quarantine outcomes, ontology validation results, all 7 rule-engine evaluations and live rule-toggle behavior, US Core structural validation (including a `requiredAnyOf` choice-type check), and FHIR generation round-tripped back through validation to cross-check the generator against the validator. Fixture payloads live in `scripts/fixtures/`. This replaces the earlier "verified manually" note — it's now a repeatable, scriptable check (37 assertions as of Phase 5), though it's still HTTP-level (no JUnit `@SpringBootTest`/Testcontainers integration tests exist).
 
 ## Local Docker environment
 
@@ -251,14 +291,21 @@ container, not via `docker-compose down -v`):
 
 ## Build order / phase plan
 
-Phases are meant to be fully complete before the next starts. Current state as of 2026-07-09:
+Phases are meant to be fully complete before the next starts. Current state as of 2026-09-08:
 
 - **Phase 1** (done): Foundation — docker-compose.yml, all 7 `docs/db-init/` SQL scripts, seed data.
 - **Phase 2 / 2b** (done): ingestion-service — all three intake paths (HL7 v2, FHIR JSON, Claims CSV) landing to Bronze.
 - **Phase 3** (done): ontology-service — ICD10Validator, LoincValidator, RxNormValidator, SnomedValidator, an OntologyService orchestrator, a ValidationReportBuilder writing to `silver.validation_reports`, a ConceptMappingService for SNOMED CT <-> ICD-10 cross-terminology lookups, REST endpoints on port 8082. Resolved: US Core IG Check stays in Phase 5 (fhir-compliance-service) — the user's concrete Phase 3 spec doesn't include it in ontology-service's scope.
 - **Phase 4** (done): rules-engine-service — 7 built-in `RuleEvaluator`s, a `RuleExecutor`/`RuleLoader` pair driven by `ontology.clinical_rules.rule_expression` (new JSONB column), an `OntologyServiceClient` + `RulesOrchestrationService` that calls ontology-service then aggregates both validation layers, REST endpoints on port 8083. Runs on port 8083 per the original spec. The earlier 8083 collision was a bug in docker-compose.yml's placeholder ports for fhir-compliance-service and patient-index-service (they had each other's ports) — fixed by correcting those placeholders to 8084/8085 rather than moving rules-engine-service off its assigned port.
-- **Phase 5** (next): fhir-compliance-service (US Core IG)
-- **Phase 6**: patient-index-service (PMI + deduplication)
+- **Phase 5** (done): fhir-compliance-service — 7 `USCORE_*_COMPLETENESS` rules covering all 7 US
+  Core resource types (Patient, Condition, Observation, MedicationRequest, AllergyIntolerance,
+  Encounter, DiagnosticReport), a `UsCoreValidationService` for structural required-field
+  validation, and a `FhirBundleGenerator` + `FhirGenerationService` that generates FHIR resources
+  from a canonical patient record and persists them to `gold.fhir_resources` (Phase 1's table,
+  unused until now) — REST endpoints on port 8084. Scoped deliberately as structural-only
+  (required-field presence, not full cardinality/terminology-binding/invariant conformance) per
+  the user's choice during Phase 5 scoping, prioritizing breadth (all 7 resource types) over depth.
+- **Phase 6** (next): patient-index-service (PMI + deduplication)
 - **Phase 7**: api-gateway
 - **Phase 8**: dashboard-ui (React, 5 views)
 - **Phase 9**: data-generator (Python)

@@ -1,0 +1,117 @@
+{
+  "info": {
+    "name": "fhir-compliance-service (Phase 5)",
+    "description": "US Core structural validation + FHIR generation for ClinicalHarmony. Import this into Postman, make sure `docker-compose up -d` is running, and run requests top to bottom.",
+    "schema": "https://schema.getpostman.com/json/collection/v2.1.0/collection.json"
+  },
+  "variable": [
+    { "key": "base_url", "value": "http://localhost:8084" }
+  ],
+  "item": [
+    {
+      "name": "0. Health check",
+      "request": {
+        "method": "GET",
+        "url": "{{base_url}}/actuator/health",
+        "description": "Expect: 200 OK, body `{\"status\":\"UP\"}`. If this fails, the container isn't running — check `docker ps` for clinicalharmony-fhir-compliance-service."
+      }
+    },
+    {
+      "name": "1. List active rules",
+      "request": {
+        "method": "GET",
+        "url": "{{base_url}}/api/fhir-compliance/rules",
+        "description": "Expect: 200 OK, a JSON array of 7 rules — one per US Core resource type (USCORE_PATIENT_COMPLETENESS, USCORE_CONDITION_COMPLETENESS, USCORE_OBSERVATION_COMPLETENESS, USCORE_MEDICATIONREQUEST_COMPLETENESS, USCORE_ALLERGYINTOLERANCE_COMPLETENESS, USCORE_ENCOUNTER_COMPLETENESS, USCORE_DIAGNOSTICREPORT_COMPLETENESS). Each has ruleCode, ruleName, category, severity, active, and expression (the requiredFields list)."
+      }
+    },
+    {
+      "name": "2. Get one rule's required fields",
+      "request": {
+        "method": "GET",
+        "url": "{{base_url}}/api/fhir-compliance/rules/USCORE_PATIENT_COMPLETENESS",
+        "description": "Expect: 200 OK. Look at `expression.requiredFields` — [\"id\",\"identifier\",\"name\",\"gender\",\"birthDate\"]. This is exactly what request #5 below checks a Patient resource against. Try GET .../rules/NOT_A_REAL_CODE afterward — expect 404."
+      }
+    },
+    {
+      "name": "3. Validate — complete vs incomplete resources",
+      "request": {
+        "method": "POST",
+        "header": [{ "key": "Content-Type", "value": "application/json" }],
+        "url": "{{base_url}}/api/fhir-compliance/validate",
+        "body": {
+          "mode": "raw",
+          "raw": "{\n  \"patientId\": 900,\n  \"fhirResources\": [\n    {\"resourceType\": \"Patient\", \"id\": \"p1\", \"identifier\": [{\"value\": \"MRN1\"}], \"name\": [{\"family\": \"Doe\"}], \"gender\": \"male\", \"birthDate\": \"1980-01-01\"},\n    {\"resourceType\": \"Patient\", \"id\": \"p2\", \"gender\": \"female\"},\n    {\"resourceType\": \"MedicationRequest\", \"id\": \"m1\", \"status\": \"active\", \"intent\": \"order\", \"subject\": {\"reference\": \"Patient/p1\"}, \"medicationReference\": {\"reference\": \"Medication/1\"}},\n    {\"resourceType\": \"MedicationRequest\", \"id\": \"m2\", \"status\": \"active\", \"intent\": \"order\", \"subject\": {\"reference\": \"Patient/p1\"}}\n  ]\n}"
+        },
+        "description": "Expect: 200 OK, `allValid: false`. resourceResults has 4 entries — p1 valid:true (has everything), p2 valid:false (missing identifier/name/birthDate — read the `reason` field), m1 valid:true (has medicationReference, satisfying the medication[x] choice), m2 valid:false (missing BOTH medicationCodeableConcept and medicationReference — see how missingFields shows them joined with '|', meaning 'either one would have worked'). validationReportIds has 2 entries (one per failure) — go check `silver.validation_reports` in DBeaver/psql for those ids and you'll see the same reason text persisted there."
+      }
+    },
+    {
+      "name": "4. Validate — unsupported resource type is skipped, not failed",
+      "request": {
+        "method": "POST",
+        "header": [{ "key": "Content-Type", "value": "application/json" }],
+        "url": "{{base_url}}/api/fhir-compliance/validate",
+        "body": {
+          "mode": "raw",
+          "raw": "{\n  \"patientId\": 905,\n  \"fhirResources\": [\n    {\"resourceType\": \"Practitioner\", \"id\": \"prac1\"}\n  ]\n}"
+        },
+        "description": "Expect: 200 OK, `allValid: true`, `resourceResults: []`. Practitioner has no USCORE_* rule registered, so it's silently skipped rather than counted as a failure — same 'skip what you don't own' convention as rules-engine-service's RuleExecutor. This is the behavior request #8 below exercises deliberately via a toggle."
+      }
+    },
+    {
+      "name": "5. Generate — full patient record, all 7 resource types",
+      "request": {
+        "method": "POST",
+        "header": [{ "key": "Content-Type", "value": "application/json" }],
+        "url": "{{base_url}}/api/fhir-compliance/generate",
+        "body": {
+          "mode": "raw",
+          "raw": "{\n  \"patientId\": 901,\n  \"givenName\": \"Jane\",\n  \"familyName\": \"Smith\",\n  \"gender\": \"female\",\n  \"dateOfBirth\": \"1975-03-15\",\n  \"conditions\": [{\"id\": 1, \"codeSystem\": \"ICD-10\", \"code\": \"E11.9\", \"display\": \"Type 2 diabetes\", \"onsetDate\": \"2020-01-01\"}],\n  \"observations\": [{\"id\": 2, \"code\": \"2093-3\", \"display\": \"Cholesterol\", \"valueNumeric\": 190, \"unit\": \"mg/dL\", \"effectiveDate\": \"2026-06-01T10:00:00\"}],\n  \"medications\": [{\"id\": 3, \"rxnormCode\": \"6809\", \"display\": \"Metformin\", \"startDate\": \"2020-01-01\"}],\n  \"allergies\": [{\"id\": 4, \"rxnormCode\": \"7980\", \"substance\": \"Penicillin\"}],\n  \"encounters\": [{\"id\": 5, \"status\": \"finished\", \"classCode\": \"AMB\", \"startDate\": \"2026-06-01\", \"endDate\": \"2026-06-01\"}],\n  \"diagnosticReports\": [{\"id\": 6, \"code\": \"24323-8\", \"display\": \"Metabolic panel\", \"status\": \"final\", \"issued\": \"2026-06-01T12:00:00\"}]\n}"
+        },
+        "description": "Expect: 200 OK, a FHIR Bundle (`resourceType: \"Bundle\"`, `type: \"collection\"`) with 7 entries — one Patient (id patient-901) plus one each of Condition/Observation/MedicationRequest/AllergyIntolerance/Encounter/DiagnosticReport. Note the real terminology system URIs in each `code.coding[0].system` (e.g. http://hl7.org/fhir/sid/icd-10-cm for the Condition). After this call, check `gold.fhir_resources` in psql/DBeaver — you should see all 7 rows with `is_us_core_compliant = true`."
+      }
+    },
+    {
+      "name": "6. Generate — minimal record (Patient only)",
+      "request": {
+        "method": "POST",
+        "header": [{ "key": "Content-Type", "value": "application/json" }],
+        "url": "{{base_url}}/api/fhir-compliance/generate",
+        "body": {
+          "mode": "raw",
+          "raw": "{\n  \"patientId\": 902,\n  \"gender\": \"male\",\n  \"dateOfBirth\": \"1990-05-20\"\n}"
+        },
+        "description": "Expect: 200 OK, a Bundle with exactly 1 entry (just the Patient — no name given, so the `name` field is omitted entirely rather than sent as null; look for that). Confirms every item list is genuinely optional."
+      }
+    },
+    {
+      "name": "7. Toggle a rule off",
+      "request": {
+        "method": "PUT",
+        "url": "{{base_url}}/api/fhir-compliance/rules/USCORE_PATIENT_COMPLETENESS/toggle",
+        "description": "Expect: 200 OK, the rule object with `active: false`. This takes effect immediately — no restart needed."
+      }
+    },
+    {
+      "name": "8. Validate again — toggled-off rule is now skipped",
+      "request": {
+        "method": "POST",
+        "header": [{ "key": "Content-Type", "value": "application/json" }],
+        "url": "{{base_url}}/api/fhir-compliance/validate",
+        "body": {
+          "mode": "raw",
+          "raw": "{\n  \"patientId\": 903,\n  \"fhirResources\": [{\"resourceType\": \"Patient\", \"id\": \"p-incomplete\"}]\n}"
+        },
+        "description": "Run this right after #7. Expect: 200 OK, `allValid: true`, `resourceResults: []` — the SAME incomplete Patient that failed in request #3 is now skipped, because its rule is inactive. This proves the toggle works live. Run request #9 next to restore it before you forget."
+      }
+    },
+    {
+      "name": "9. Toggle the rule back on",
+      "request": {
+        "method": "PUT",
+        "url": "{{base_url}}/api/fhir-compliance/rules/USCORE_PATIENT_COMPLETENESS/toggle",
+        "description": "Expect: 200 OK, `active: true`. Always run this after #7/#8 so the rule catalog is back to its normal state for anyone testing after you."
+      }
+    }
+  ]
+}

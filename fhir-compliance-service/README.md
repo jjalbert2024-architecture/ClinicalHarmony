@@ -38,7 +38,12 @@ fixed values/slices, FHIRPath invariants (e.g. `us-core-21`), datatype rules and
   strings and unknown elements, which are exactly what a debugger needs to report.
 - **Terminology**: no terminology server, so LOINC/SNOMED/RxNorm/ICD-10 code existence is a
   WARNING (`Terminology_PassThrough_TX_Message`) — ontology-service owns that check. Value sets
-  from packages not bundled (VSAC etc.) are likewise warnings. UCUM *is* checked.
+  from packages not bundled (VSAC etc.) are likewise warnings, *except* under a **required**
+  binding, where an unexpandable value set is an ERROR. US Core's OMB race/ethnicity value sets
+  are exactly that case (pure VSAC includes), so the three small VSAC sets they're built from are
+  supplied inline (`config/OmbRaceEthnicityValueSets`) — added in slice 2; before that, *any*
+  Patient with a race/ethnicity extension failed. The ~900-code *detailed* race/ethnicity sets
+  are not supplied, so a `detailed` sub-extension still errors offline. UCUM *is* checked.
 - **Validation records, it doesn't gate**: a non-compliant resource still lands in Gold with
   `is_us_core_compliant = false` and the reasons in `compliance_notes` (migration 16).
 - **Builders map, never invent**: a blank Silver name → no `Patient.name` → a US Core error.
@@ -54,6 +59,51 @@ fixed values/slices, FHIRPath invariants (e.g. `us-core-21`), datatype rules and
 
 Demo data: `docs/db-init/17_seed_silver_clinical_data.sql` (3 Silver patients; `SEED-0003` is
 deliberately non-compliant — blank name, blank condition code).
+
+## Phase 5b — C-CDA → FHIR R4 (slice 2)
+
+| Method | Path | Purpose |
+|---|---|---|
+| `POST` | `/api/fhir/convert/ccda` | A C-CDA R2.1 document (`application/xml` or `text/xml`) in; a FHIR R4 `Bundle` (type `collection`) out, plus each resource's US Core 6.1.0 validation outcome from the slice 1 validator. 200 whether or not compliant; 400 malformed XML / DOCTYPE / non-`ClinicalDocument` root / no `recordTarget/patientRole`; 413 over `ccda.max-document-bytes` (default 5 MB); 415 non-XML |
+
+| C-CDA | FHIR (US Core 6.1.0 profile) |
+|---|---|
+| `recordTarget/patientRole` | `Patient` — identifiers, names, gender, birth date, addresses, telecoms, OMB race/ethnicity extensions, language |
+| Problems section (LOINC `11450-4`), Problem Observation in each Concern Act | `Condition` (problems-health-concerns) — `value` CD + `translation`s as codings, onset/abatement, clinicalStatus, `negationInd` → refuted |
+| Medications section (`10160-0`), each `substanceAdministration` | `MedicationRequest` — RxNorm code, status, intent `order` (`moodCode=EVN` → `reportedBoolean`), author → `requester.display`, dose/route/frequency/sig, start/stop |
+| Results section (`30954-2`), each Result Observation in an organizer | `Observation` (lab) — LOINC code, status, value by `xsi:type` (PQ/INT/ST/CD/BL), interpretation, reference range |
+
+Response shape (summary first, then detail, then the Bundle): `documentId`, `documentTitle`,
+`resourceCount`, `compliantCount`, `allCompliant`, `sections` (what was found per section),
+`notes` (what the transformer couldn't carry over — distinct from validator findings),
+`resources[]` (`fullUrl`, `resourceType`, `resourceId`, `sourceSection`, `validation`), `bundle`.
+
+- **Why hand-written XPath, not a library**: `hapi-fhir-converter` (Maven Central, latest 8.x)
+  only converts between FHIR versions (`VersionCanonicalizer`). The `CCDAConverter` inside its
+  transitive `org.hl7.fhir.convertors` emits DSTU3, needs a DSTU3 worker context, and doesn't
+  handle Problems, Medications or Results at all.
+- **Sections located by LOINC code**, with the section templateIds as a fallback. A section
+  that's absent is a note, not an error; `nullFlavor="NI"` is reported as "no information".
+  Adding Allergies/Encounters later is one more `CcdaSectionMapper`.
+- **Maps, never invents** (same rule as slice 1): a missing `statusCode` → no `status` → a US
+  Core error. An explicit C-CDA `nullFlavor` is information, not a gap, so it maps to FHIR's own
+  "known unknown": gender `unknown`, a name/requester with `data-absent-reason`, an Observation
+  `dataAbsentReason`. A timestamp with a time but no timezone is truncated to its date rather
+  than given an invented offset.
+- **`originalText/reference`** pointers (`#problem1`) are resolved into the section narrative.
+- **Deterministic ids**: UUIDv3 of the C-CDA entry's `id` root/extension, so re-converting a
+  document — or the same entry in a later document from the same source — yields the same
+  resource id. References use the Bundle-internal `urn:uuid:` form.
+- **XXE-safe parsing**: any DOCTYPE is refused outright (C-CDA never needs one); external
+  entities/DTDs off; secure processing on. The body is read as bytes so the XML prolog's
+  encoding is honored.
+- **Not persisted**: Gold writes and lineage are slice 3 (GoldWriter). The Result Organizer
+  would become a `DiagnosticReport`; out of scope here, so only its effectiveTime is used.
+
+Test documents (synthetic, fictional patients, hand-written — no external samples):
+`src/test/resources/ccda/ccd_compliant.xml` (9 resources, all compliant) and
+`ccd_noncompliant.xml` (7 resources, 4 deliberate gaps); copies in `scripts/fixtures/` for the
+smoke test and inline in Postman items 16–21.
 
 ## Endpoints — Phase 5 structural check (port 8084)
 

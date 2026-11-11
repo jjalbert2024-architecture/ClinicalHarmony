@@ -261,6 +261,23 @@ this project generates FHIR for, and generates FHIR resources from a canonical p
 - Builder tests run the **real** validator (`UsCoreValidatorFixture`, built once per JVM), not mocks.
 - `MdcLoggingFilter` here honors an incoming `X-Correlation-Id` header and echoes it back.
 
+### fhir-compliance-service — Phase 5b slice 2 (C-CDA → FHIR)
+
+- **`POST /api/fhir/convert/ccda`** (`application/xml`/`text/xml`) → R4 `collection` Bundle
+  (Patient; Problems `11450-4` → Condition; Medications `10160-0` → MedicationRequest; Results
+  `30954-2` → lab Observation) + each resource's slice 1 validator outcome + transformer `notes`.
+  200 compliant or not; 400 bad XML/DOCTYPE/wrong root/no patientRole; 413; 415. Not persisted.
+- **Hand-written XPath** (`service/ccda/`): `hapi-fhir-converter` is FHIR-version conversion only,
+  and `org.hl7.fhir.convertors`' `CCDAConverter` is DSTU3 without Problems/Meds/Results. One
+  `CcdaSectionMapper` per section, located by LOINC code (templateId fallback).
+- Same "map, never invent" rule as the Silver builders; C-CDA `nullFlavor` → FHIR
+  unknown/data-absent-reason. Deterministic UUIDv3 ids from C-CDA entry ids; `urn:uuid:` refs.
+- **Validator fix (affects `/api/fhir/validate` too)**: US Core's OMB race/ethnicity value sets are
+  pure VSAC includes under a *required* binding, so every Patient with race/ethnicity failed
+  offline. `config/OmbRaceEthnicityValueSets` supplies those 3 small VSAC sets inline; detailed
+  race/ethnicity (~900 codes) still errors offline (noted in the conversion response).
+- Test C-CDAs are synthetic and hand-written (`src/test/resources/ccda/`, copied to `scripts/fixtures/`).
+
 ### Bronze schema invariants
 
 `bronze.raw_messages` CHECK constraints that Java code must match:
@@ -300,7 +317,7 @@ left unused; no schema change was needed there either, since its columns and uni
 
 - **Service-layer tests** (`*ProcessorTest` / `*ValidatorTest` / `*ServiceTest` / `*RuleTest`): plain JUnit 5, `mock(...)` the JdbcTemplate/repository, no Spring context — fast.
 - **Web-layer tests** (`*ControllerTest`): `@WebMvcTest` + `@MockBean` on the service layer — Spring MVC slice only, no DB.
-- **Black-box smoke test** (`scripts/smoke-test.sh`): once the stack is up (`docker-compose up -d`), this hits all four implemented services' REST endpoints over HTTP and asserts on real responses — accept/quarantine outcomes, ontology validation results, all 7 rule-engine evaluations and live rule-toggle behavior, US Core structural validation (including a `requiredAnyOf` choice-type check), and FHIR generation round-tripped back through validation to cross-check the generator against the validator. Fixture payloads live in `scripts/fixtures/`. This replaces the earlier "verified manually" note — it's now a repeatable, scriptable check (45 assertions as of Phase 5b slice 1), though it's still HTTP-level (no JUnit `@SpringBootTest`/Testcontainers integration tests exist).
+- **Black-box smoke test** (`scripts/smoke-test.sh`): once the stack is up (`docker-compose up -d`), this hits all four implemented services' REST endpoints over HTTP and asserts on real responses — accept/quarantine outcomes, ontology validation results, all 7 rule-engine evaluations and live rule-toggle behavior, US Core structural validation (including a `requiredAnyOf` choice-type check), and FHIR generation round-tripped back through validation to cross-check the generator against the validator. Fixture payloads live in `scripts/fixtures/`. This replaces the earlier "verified manually" note — it's now a repeatable, scriptable check (59 assertions as of Phase 5b slice 2), though it's still HTTP-level (no JUnit `@SpringBootTest`/Testcontainers integration tests exist).
 
 ## Local Docker environment
 
@@ -312,7 +329,7 @@ left unused; no schema change was needed there either, since its columns and uni
 
 ## Build order / phase plan
 
-Phases are meant to be fully complete before the next starts. Current state as of 2026-09-08:
+Phases are meant to be fully complete before the next starts. Current state as of 2026-11-11:
 
 - **Phase 1** (done): Foundation — docker-compose.yml, all 7 `docs/db-init/` SQL scripts, seed data.
 - **Phase 2 / 2b** (done): ingestion-service — all three intake paths (HL7 v2, FHIR JSON, Claims CSV) landing to Bronze.
@@ -327,8 +344,9 @@ Phases are meant to be fully complete before the next starts. Current state as o
   (required-field presence, not full cardinality/terminology-binding/invariant conformance) per
   the user's choice during Phase 5 scoping, prioritizing breadth (all 7 resource types) over depth.
 - **Phase 5b** (in progress): the rest of the original Phase 5 plan, in four branches/PRs —
-  (1) `phase-5b-fhir-validator`: HL7 validator vs US Core 6.1.0 + Silver builders (done, awaiting
-  the user's Postman check + PR); (2) CCDA → FHIR transformer; (3) GoldWriter + data_lineage +
+  (1) `phase-5b-fhir-validator`: HL7 validator vs US Core 6.1.0 + Silver builders (done, merged as
+  PR #8); (2) `phase-5b-ccda-transformer`: C-CDA → FHIR (built 2026-11-11, awaiting the user's
+  Postman check + PR); (3) GoldWriter + data_lineage +
   CMS-0057 read endpoints; (4) SMART on FHIR / Keycloak.
 - **Phase 6** (after 5b): patient-index-service (PMI + deduplication)
 - **Phase 7**: api-gateway

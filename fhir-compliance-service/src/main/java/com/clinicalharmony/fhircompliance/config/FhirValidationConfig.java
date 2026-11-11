@@ -53,6 +53,7 @@ public class FhirValidationConfig {
 
         return new ValidationSupportChain(
                 npm,
+                OmbRaceEthnicityValueSets.create(fhirContext),
                 new DefaultProfileValidationSupport(fhirContext),
                 new CommonCodeSystemsTerminologyService(fhirContext),
                 new InMemoryTerminologyServerValidationSupport(fhirContext),

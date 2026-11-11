@@ -185,6 +185,44 @@ check_json "deliberately bad seed patient is flagged (blank name + blank code)" 
   "['Condition.code', 'Patient.name']"
 check_http "build for unknown Silver patient returns 404" POST "$FHIR_COMPLIANCE_URL/api/fhir/build/patients/999999" 404
 
+section "11. fhir-compliance-service — C-CDA → FHIR R4 Bundle (Phase 5b slice 2)"
+CCDA_URL="$FHIR_COMPLIANCE_URL/api/fhir/convert/ccda"
+check_http "complete CCD converts (200)" POST "$CCDA_URL" 200 "application/xml" "$FIXTURES/ccda_compliant.xml"
+cp "$TMP/last_response.json" "$TMP/ccda_good.json"
+check_json "every resource from the complete CCD is US Core compliant" "$TMP/ccda_good.json" "d['allCompliant']" "True"
+check_json "Patient + 3 Conditions + 2 MedicationRequests + 3 Observations" "$TMP/ccda_good.json" \
+  "sorted((t, [r['resourceType'] for r in d['resources']].count(t)) for t in {r['resourceType'] for r in d['resources']})" \
+  "[('Condition', 3), ('MedicationRequest', 2), ('Observation', 3), ('Patient', 1)]"
+check_json "Bundle is a collection and every subject resolves to the Patient entry" "$TMP/ccda_good.json" \
+  "(d['bundle']['type'], {e['resource']['subject']['reference'] for e in d['bundle']['entry'][1:]} == {d['bundle']['entry'][0]['fullUrl']})" \
+  "('collection', True)"
+curl -s -X POST "$CCDA_URL" -H "Content-Type: application/xml" --data-binary "@$FIXTURES/ccda_compliant.xml" > "$TMP/ccda_good_again.json"
+python3 -c "import json; print(json.dumps([r['resourceId'] for r in json.load(open('$TMP/ccda_good.json'))['resources']]))" > "$TMP/ccda_ids_first.json"
+check_json "re-converting the same document yields the same resource ids" "$TMP/ccda_good_again.json" \
+  "[r['resourceId'] for r in d['resources']] == json.load(open('$TMP/ccda_ids_first.json'))" "True"
+
+check_http "incomplete CCD still converts (200 — non-compliance is reported, not rejected)" POST "$CCDA_URL" 200 \
+  "text/xml" "$FIXTURES/ccda_noncompliant.xml"
+cp "$TMP/last_response.json" "$TMP/ccda_bad.json"
+check_json "3 of 7 resources compliant" "$TMP/ccda_bad.json" "(d['compliantCount'], d['resourceCount'])" "(3, 7)"
+check_json "each deliberate gap reported at its FHIRPath" "$TMP/ccda_bad.json" \
+  "sorted(v['location'] for r in d['resources'] for v in r['validation']['violations'] if v['severity']=='ERROR')" \
+  "['Condition.code', 'MedicationRequest.status', 'Observation.status', 'Patient.gender']"
+
+check_http "malformed XML rejected (400)" POST "$CCDA_URL" 400 "application/xml" "$FIXTURES/ccda_malformed.xml"
+check_json "400 body explains it's not well-formed" "$TMP/last_response.json" "d['message'].startswith('Not well-formed XML')" "True"
+check_http "DOCTYPE / XXE payload rejected (400)" POST "$CCDA_URL" 400 "application/xml" \
+  '<?xml version="1.0"?><!DOCTYPE x [<!ENTITY e SYSTEM "file:///etc/passwd">]><ClinicalDocument xmlns="urn:hl7-org:v3">&e;</ClinicalDocument>'
+check_http "XML that isn't a ClinicalDocument rejected (400)" POST "$CCDA_URL" 400 "application/xml" '<Patient xmlns="http://hl7.org/fhir"/>'
+check_http "JSON content type rejected (415)" POST "$CCDA_URL" 415 "application/json" '{"resourceType":"Patient"}'
+echoed="$(curl -s -o /dev/null -D - -X POST "$CCDA_URL" -H "Content-Type: application/xml" -H "X-Correlation-Id: smoke-ccda-1" \
+  --data-binary "@$FIXTURES/ccda_compliant.xml" | tr -d '\r' | awk -F': ' 'tolower($1)=="x-correlation-id"{print $2}')"
+if [[ "$echoed" == "smoke-ccda-1" ]]; then
+  echo "  PASS  caller's X-Correlation-Id echoed back ($echoed)"; PASS=$((PASS + 1))
+else
+  echo "  FAIL  caller's X-Correlation-Id echoed back (got '$echoed')"; FAIL=$((FAIL + 1))
+fi
+
 echo
 echo "=== Summary: $PASS passed, $FAIL failed ==="
 [[ "$FAIL" -eq 0 ]] && exit 0 || exit 1

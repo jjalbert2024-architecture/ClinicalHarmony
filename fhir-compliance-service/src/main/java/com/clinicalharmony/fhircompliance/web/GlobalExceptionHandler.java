@@ -1,9 +1,13 @@
 package com.clinicalharmony.fhircompliance.web;
 
+import com.clinicalharmony.fhircompliance.service.silver.SilverPatientNotFoundException;
+import com.clinicalharmony.fhircompliance.validation.InvalidFhirResourceException;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.springframework.http.HttpStatus;
 import org.springframework.http.ResponseEntity;
+import org.springframework.http.converter.HttpMessageNotReadableException;
+import org.springframework.web.HttpMediaTypeNotSupportedException;
 import org.springframework.validation.FieldError;
 import org.springframework.web.bind.MethodArgumentNotValidException;
 import org.springframework.web.bind.annotation.ExceptionHandler;
@@ -26,6 +30,31 @@ public class GlobalExceptionHandler {
         }
         Map<String, Object> body = Map.of("error", "Validation failed", "fields", fieldErrors);
         return ResponseEntity.status(HttpStatus.BAD_REQUEST).body(body);
+    }
+
+    @ExceptionHandler(InvalidFhirResourceException.class)
+    public ResponseEntity<Map<String, Object>> handleInvalidFhir(InvalidFhirResourceException ex) {
+        log.info("Rejected unparseable FHIR payload: {}", ex.getMessage());
+        return ResponseEntity.status(HttpStatus.BAD_REQUEST)
+                .body(Map.of("error", "Invalid FHIR resource", "message", ex.getMessage()));
+    }
+
+    @ExceptionHandler(SilverPatientNotFoundException.class)
+    public ResponseEntity<Map<String, Object>> handleSilverPatientNotFound(SilverPatientNotFoundException ex) {
+        return ResponseEntity.status(HttpStatus.NOT_FOUND)
+                .body(Map.of("error", "Not found", "message", ex.getMessage()));
+    }
+
+    @ExceptionHandler(HttpMessageNotReadableException.class)
+    public ResponseEntity<Map<String, Object>> handleUnreadable(HttpMessageNotReadableException ex) {
+        return ResponseEntity.status(HttpStatus.BAD_REQUEST)
+                .body(Map.of("error", "Malformed request body", "message", String.valueOf(ex.getMostSpecificCause().getMessage())));
+    }
+
+    @ExceptionHandler(HttpMediaTypeNotSupportedException.class)
+    public ResponseEntity<Map<String, Object>> handleMediaType(HttpMediaTypeNotSupportedException ex) {
+        return ResponseEntity.status(HttpStatus.UNSUPPORTED_MEDIA_TYPE)
+                .body(Map.of("error", "Unsupported media type", "message", String.valueOf(ex.getMessage())));
     }
 
     @ExceptionHandler(Exception.class)

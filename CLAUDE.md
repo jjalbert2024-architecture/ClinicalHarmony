@@ -240,6 +240,27 @@ this project generates FHIR for, and generates FHIR resources from a canonical p
   so validation findings are recorded against the caller-supplied `patientId` (same convention as
   rules-engine-service's `FHIR_USCORE_COMPLETENESS`).
 
+### fhir-compliance-service — Phase 5b slice 1 (HL7 validator)
+
+- **Official HL7 validator vs US Core 6.1.0** (`validation/` package): HAPI FHIR 8.2.0
+  `FhirInstanceValidator` in a `ValidationSupportChain` (NpmPackage US Core → DefaultProfile →
+  CommonCodeSystems → InMemoryTerminology → SnapshotGenerating → UnknownCodeSystemWarning), US Core
+  package bundled at `src/main/resources/packages/` (no network at runtime). Validates the *raw
+  JSON* (HAPI's parser drops empty strings); auto-applies the default US Core profile when
+  `meta.profile` is absent. Unknown code systems (LOINC/SNOMED/RxNorm/ICD-10) are WARNINGs —
+  ontology-service owns code existence.
+- **`POST /api/fhir/validate`** (debugger: severity, FHIRPath location, message, rule,
+  suggestedFix), **`POST /api/fhir/build[/patients/{id}]`** (Silver → US Core
+  Patient/Condition/Observation/MedicationRequest → `gold.fhir_resources` with
+  `compliance_notes` JSONB, migration 16). The Phase 5 `/api/fhir-compliance/*` endpoints are unchanged.
+- **Silver seed** `docs/db-init/17` — nothing populates silver.* yet; `SEED-0003` is deliberately
+  non-compliant. Both 16 and 17 were applied to the running container (non-destructive, idempotent).
+- **pom gotcha**: import `spring-boot-dependencies` *before* `hapi-fhir-bom` in
+  `<dependencyManagement>` — first imported BOM wins, and HAPI's pins Spring Framework 6.1.x.
+  Carry this into any other service that adds HAPI FHIR.
+- Builder tests run the **real** validator (`UsCoreValidatorFixture`, built once per JVM), not mocks.
+- `MdcLoggingFilter` here honors an incoming `X-Correlation-Id` header and echoes it back.
+
 ### Bronze schema invariants
 
 `bronze.raw_messages` CHECK constraints that Java code must match:
@@ -279,7 +300,7 @@ left unused; no schema change was needed there either, since its columns and uni
 
 - **Service-layer tests** (`*ProcessorTest` / `*ValidatorTest` / `*ServiceTest` / `*RuleTest`): plain JUnit 5, `mock(...)` the JdbcTemplate/repository, no Spring context — fast.
 - **Web-layer tests** (`*ControllerTest`): `@WebMvcTest` + `@MockBean` on the service layer — Spring MVC slice only, no DB.
-- **Black-box smoke test** (`scripts/smoke-test.sh`): once the stack is up (`docker-compose up -d`), this hits all four implemented services' REST endpoints over HTTP and asserts on real responses — accept/quarantine outcomes, ontology validation results, all 7 rule-engine evaluations and live rule-toggle behavior, US Core structural validation (including a `requiredAnyOf` choice-type check), and FHIR generation round-tripped back through validation to cross-check the generator against the validator. Fixture payloads live in `scripts/fixtures/`. This replaces the earlier "verified manually" note — it's now a repeatable, scriptable check (37 assertions as of Phase 5), though it's still HTTP-level (no JUnit `@SpringBootTest`/Testcontainers integration tests exist).
+- **Black-box smoke test** (`scripts/smoke-test.sh`): once the stack is up (`docker-compose up -d`), this hits all four implemented services' REST endpoints over HTTP and asserts on real responses — accept/quarantine outcomes, ontology validation results, all 7 rule-engine evaluations and live rule-toggle behavior, US Core structural validation (including a `requiredAnyOf` choice-type check), and FHIR generation round-tripped back through validation to cross-check the generator against the validator. Fixture payloads live in `scripts/fixtures/`. This replaces the earlier "verified manually" note — it's now a repeatable, scriptable check (45 assertions as of Phase 5b slice 1), though it's still HTTP-level (no JUnit `@SpringBootTest`/Testcontainers integration tests exist).
 
 ## Local Docker environment
 
@@ -305,7 +326,11 @@ Phases are meant to be fully complete before the next starts. Current state as o
   unused until now) — REST endpoints on port 8084. Scoped deliberately as structural-only
   (required-field presence, not full cardinality/terminology-binding/invariant conformance) per
   the user's choice during Phase 5 scoping, prioritizing breadth (all 7 resource types) over depth.
-- **Phase 6** (next): patient-index-service (PMI + deduplication)
+- **Phase 5b** (in progress): the rest of the original Phase 5 plan, in four branches/PRs —
+  (1) `phase-5b-fhir-validator`: HL7 validator vs US Core 6.1.0 + Silver builders (done, awaiting
+  the user's Postman check + PR); (2) CCDA → FHIR transformer; (3) GoldWriter + data_lineage +
+  CMS-0057 read endpoints; (4) SMART on FHIR / Keycloak.
+- **Phase 6** (after 5b): patient-index-service (PMI + deduplication)
 - **Phase 7**: api-gateway
 - **Phase 8**: dashboard-ui (React, 5 views)
 - **Phase 9**: data-generator (Python)

@@ -16,11 +16,12 @@ import java.util.List;
 public class GoldFhirResourceRepository {
 
     private static final String UPSERT_SQL = """
-            INSERT INTO gold.fhir_resources (resource_type, fhir_id, resource_json, is_us_core_compliant)
-            VALUES (?, ?, ?::jsonb, ?)
+            INSERT INTO gold.fhir_resources (resource_type, fhir_id, resource_json, is_us_core_compliant, compliance_notes)
+            VALUES (?, ?, ?::jsonb, ?, ?::jsonb)
             ON CONFLICT (resource_type, fhir_id)
             DO UPDATE SET resource_json = EXCLUDED.resource_json,
                           is_us_core_compliant = EXCLUDED.is_us_core_compliant,
+                          compliance_notes = EXCLUDED.compliance_notes,
                           updated_at = now()
             RETURNING id
             """;
@@ -38,7 +39,8 @@ public class GoldFhirResourceRepository {
                 record.resourceType(),
                 record.fhirId(),
                 record.resourceJson(),
-                record.usCoreCompliant()
+                record.usCoreCompliant(),
+                record.complianceNotes()
         );
         return DataAccessUtils.requiredSingleResult(ids);
     }

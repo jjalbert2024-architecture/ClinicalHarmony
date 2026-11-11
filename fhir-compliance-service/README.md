@@ -16,7 +16,46 @@ already treat FHIR resources). It's broader (7 resource types vs. 3) but not dee
 rules-engine-service's `FHIR_USCORE_COMPLETENESS` rule, which was explicitly scoped as a cheap
 Silver-side sanity check pending this service. The two can coexist; this is the authoritative one.
 
-## Endpoints (port 8084)
+## Phase 5b — HL7 validator against US Core 6.1.0 (slice 1)
+
+Alongside the Phase 5 structural check (unchanged, below), this service now runs the **official
+HL7 FHIR validator** (HAPI FHIR 8.2.0's `FhirInstanceValidator`) against the **US Core 6.1.0** IG
+package, bundled at `src/main/resources/packages/hl7.fhir.us.core-6.1.0.tgz` and loaded from the
+classpath — no network access at runtime. This is full profile conformance: cardinality,
+fixed values/slices, FHIRPath invariants (e.g. `us-core-21`), datatype rules and UCUM units.
+
+| Method | Path | Purpose |
+|---|---|---|
+| `POST` | `/api/fhir/validate` | Debugger: one FHIR R4 resource in (`application/json` or `application/fhir+json`), every violation out — `severity`, FHIRPath `location`, `message`, `rule`, `suggestedFix`. 200 even when non-compliant; 400 only for non-FHIR payloads |
+| `POST` | `/api/fhir/build/patients/{silverPatientId}` | Build US Core Patient/Condition/Observation/MedicationRequest from one `silver.patients` row + its children, validate each, upsert to `gold.fhir_resources` with `compliance_notes` (404 if unknown id) |
+| `POST` | `/api/fhir/build` | Same, for every Silver patient (one transaction per patient) |
+
+- **Profile selection**: `meta.profile` if present; otherwise the US Core default for the
+  resourceType (`Observation` → `us-core-observation-lab` when categorized `laboratory`, else
+  `us-core-observation-clinical-result`). Without this, a bare resource would only be checked
+  against base FHIR, where nearly everything is optional.
+- **Validates raw JSON**, not a HAPI-parsed object — HAPI's lenient parser silently drops empty
+  strings and unknown elements, which are exactly what a debugger needs to report.
+- **Terminology**: no terminology server, so LOINC/SNOMED/RxNorm/ICD-10 code existence is a
+  WARNING (`Terminology_PassThrough_TX_Message`) — ontology-service owns that check. Value sets
+  from packages not bundled (VSAC etc.) are likewise warnings. UCUM *is* checked.
+- **Validation records, it doesn't gate**: a non-compliant resource still lands in Gold with
+  `is_us_core_compliant = false` and the reasons in `compliance_notes` (migration 16).
+- **Builders map, never invent**: a blank Silver name → no `Patient.name` → a US Core error.
+  The one exception is US Core's sanctioned pattern for required-but-unknown data: Silver has no
+  prescriber, so `MedicationRequest.requester` carries a `data-absent-reason` (`unknown`)
+  extension to satisfy `us-core-21`.
+- **Deterministic ids** (`silver-patient-<id>`, `silver-condition-<id>`, ...) so rebuilds upsert.
+- **Warm-up**: the validator's ~2 s first-use cost is paid at startup (`FhirValidatorWarmup`).
+- **Correlation ids**: an incoming `X-Correlation-Id` header (safe charset, ≤64 chars) is reused
+  in the logs and echoed in the response; otherwise one is generated.
+- **pom.xml**: Spring Boot's BOM is imported *before* `hapi-fhir-bom`, otherwise HAPI's BOM
+  silently downgrades Spring Framework to 6.1.x.
+
+Demo data: `docs/db-init/17_seed_silver_clinical_data.sql` (3 Silver patients; `SEED-0003` is
+deliberately non-compliant — blank name, blank condition code).
+
+## Endpoints — Phase 5 structural check (port 8084)
 
 | Method | Path | Purpose |
 |---|---|---|

@@ -1,5 +1,7 @@
 package com.clinicalharmony.fhircompliance.web;
 
+import com.clinicalharmony.fhircompliance.service.ccda.CcdaDocumentTooLargeException;
+import com.clinicalharmony.fhircompliance.service.ccda.InvalidCcdaDocumentException;
 import com.clinicalharmony.fhircompliance.service.silver.SilverPatientNotFoundException;
 import com.clinicalharmony.fhircompliance.validation.InvalidFhirResourceException;
 import org.slf4j.Logger;
@@ -37,6 +39,20 @@ public class GlobalExceptionHandler {
         log.info("Rejected unparseable FHIR payload: {}", ex.getMessage());
         return ResponseEntity.status(HttpStatus.BAD_REQUEST)
                 .body(Map.of("error", "Invalid FHIR resource", "message", ex.getMessage()));
+    }
+
+    @ExceptionHandler(InvalidCcdaDocumentException.class)
+    public ResponseEntity<Map<String, Object>> handleInvalidCcda(InvalidCcdaDocumentException ex) {
+        log.info("Rejected C-CDA payload: {}", ex.getMessage());
+        return ResponseEntity.status(HttpStatus.BAD_REQUEST)
+                .body(Map.of("error", "Invalid C-CDA document", "message", ex.getMessage()));
+    }
+
+    @ExceptionHandler(CcdaDocumentTooLargeException.class)
+    public ResponseEntity<Map<String, Object>> handleCcdaTooLarge(CcdaDocumentTooLargeException ex) {
+        log.info("Rejected oversized C-CDA payload: {}", ex.getMessage());
+        return ResponseEntity.status(HttpStatus.PAYLOAD_TOO_LARGE)
+                .body(Map.of("error", "Document too large", "message", ex.getMessage()));
     }
 
     @ExceptionHandler(SilverPatientNotFoundException.class)

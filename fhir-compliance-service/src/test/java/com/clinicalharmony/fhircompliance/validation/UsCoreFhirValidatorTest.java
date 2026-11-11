@@ -28,6 +28,30 @@ class UsCoreFhirValidatorTest {
     }
 
     @Test
+    void ombRaceAndEthnicityCodesValidateOfflineButNonOmbCodesInOmbCategoryFail() {
+        // US Core's omb-* value sets are pure VSAC includes; OmbRaceEthnicityValueSets supplies them.
+        // Without it, the correct OMB code 2106-3 was rejected as "not found in value set".
+        String template = """
+                {"resourceType":"Patient","identifier":[{"system":"urn:example:mrn","value":"1"}],
+                 "name":[{"family":"Doe"}],"gender":"female",
+                 "extension":[
+                  {"url":"http://hl7.org/fhir/us/core/StructureDefinition/us-core-race","extension":[
+                    {"url":"ombCategory","valueCoding":{"system":"urn:oid:2.16.840.1.113883.6.238","code":"%s"}},
+                    {"url":"text","valueString":"x"}]},
+                  {"url":"http://hl7.org/fhir/us/core/StructureDefinition/us-core-ethnicity","extension":[
+                    {"url":"ombCategory","valueCoding":{"system":"urn:oid:2.16.840.1.113883.6.238","code":"2186-5"}},
+                    {"url":"text","valueString":"Not Hispanic or Latino"}]}]}
+                """;
+
+        assertThat(validator.validateJson(template.formatted("2106-3")).compliant()).isTrue();
+        // 2108-9 (European) is a valid CDC code but a *detailed* one: not allowed in ombCategory.
+        FhirValidationOutcome detailedInOmbSlot = validator.validateJson(template.formatted("2108-9"));
+        assertThat(detailedInOmbSlot.compliant()).isFalse();
+        assertThat(detailedInOmbSlot.violations()).filteredOn(v -> "ERROR".equals(v.severity()))
+                .extracting(FhirViolation::location).containsExactly("Patient.extension[0].extension[0].value.ofType(Coding)");
+    }
+
+    @Test
     void bareResourceIsCheckedAgainstUsCoreNotJustBaseFhir() {
         // Valid base R4 — every element is optional there. Only US Core makes these required.
         FhirValidationOutcome outcome = validator.validateJson("{\"resourceType\":\"Patient\"}");

@@ -8,7 +8,7 @@ import java.io.IOException;
 import java.io.UncheckedIOException;
 
 /**
- * One real, fully-wired US Core validator shared across test classes. Building it loads the
+ * One real, fully-wired validator (US Core 6.1.0 + Da Vinci Formulary/DEQM) shared across test classes. Building it loads the
  * US Core package and base R4 definitions (~2-3 s), so it's created once per JVM, not per test.
  * Tests that use it exercise the actual HL7 validator — no mocks — which is the point: the builders'
  * compliant/non-compliant claims are checked against the real thing.
@@ -27,7 +27,7 @@ public final class UsCoreValidatorFixture {
                 FhirContext ctx = config.fhirContext();
                 instance = new UsCoreFhirValidator(ctx,
                         config.fhirValidator(ctx,
-                                config.usCoreValidationSupport(ctx, "classpath:packages/hl7.fhir.us.core-6.1.0.tgz")),
+                                config.usCoreValidationSupport(ctx, FhirValidationConfig.DEFAULT_IG_PACKAGES)),
                         new SuggestedFixAdvisor(), new ObjectMapper());
             } catch (IOException e) {
                 throw new UncheckedIOException(e);

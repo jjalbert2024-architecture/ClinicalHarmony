@@ -1,5 +1,13 @@
 server:
   port: 8084
+  tomcat:
+    # FHIR token search puts '|' in the query string (code=system|code). Tomcat rejects it unencoded
+    # by default with a bare HTML 400; allow it so clients that don't percent-encode it still work.
+    relaxed-query-chars: "|"
+
+gold-writer:
+  # Validate Gold rows seeded with compliance_notes.status = PENDING_VALIDATION (migration 19) on startup.
+  revalidate-pending-on-startup: true
 
 spring:
   application:

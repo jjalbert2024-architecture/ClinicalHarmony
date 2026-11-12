@@ -1,13 +1,17 @@
 package com.clinicalharmony.fhircompliance.service.silver;
 
 import ca.uhn.fhir.context.FhirContext;
-import com.clinicalharmony.fhircompliance.repository.GoldFhirResourceRecord;
-import com.clinicalharmony.fhircompliance.repository.GoldFhirResourceRepository;
+import com.clinicalharmony.fhircompliance.gold.GoldResourceWrite;
+import com.clinicalharmony.fhircompliance.gold.GoldWriter;
+import com.clinicalharmony.fhircompliance.gold.LineageSource;
+import com.clinicalharmony.fhircompliance.gold.LineageStep;
+import com.clinicalharmony.fhircompliance.gold.SilverLineage;
 import com.clinicalharmony.fhircompliance.repository.silver.SilverClinicalRepository;
 import com.clinicalharmony.fhircompliance.repository.silver.SilverConditionRow;
 import com.clinicalharmony.fhircompliance.repository.silver.SilverMedicationRow;
 import com.clinicalharmony.fhircompliance.repository.silver.SilverObservationRow;
 import com.clinicalharmony.fhircompliance.repository.silver.SilverPatientRow;
+import com.clinicalharmony.fhircompliance.repository.silver.SilverTable;
 import com.clinicalharmony.fhircompliance.validation.UsCoreValidatorFixture;
 import com.fasterxml.jackson.databind.JsonNode;
 import com.fasterxml.jackson.databind.ObjectMapper;
@@ -30,6 +34,7 @@ import java.util.Optional;
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.assertThatThrownBy;
 import static org.mockito.ArgumentMatchers.any;
+import static org.mockito.ArgumentMatchers.anyLong;
 import static org.mockito.Mockito.mock;
 import static org.mockito.Mockito.never;
 import static org.mockito.Mockito.times;
@@ -37,13 +42,14 @@ import static org.mockito.Mockito.verify;
 import static org.mockito.Mockito.when;
 
 /**
- * Mocks the DB edges (Silver reads, Gold writes, transactions) but uses the real builders and the
- * real HL7 validator, so the compliance verdicts asserted here are genuine.
+ * Mocks the DB edges (Silver reads, GoldWriter, lineage lookups, transactions) but uses the real
+ * builders and the real HL7 validator, so the compliance verdicts asserted here are genuine.
  */
 class SilverFhirBuildServiceTest {
 
     private SilverClinicalRepository silverRepository;
-    private GoldFhirResourceRepository goldRepository;
+    private GoldWriter goldWriter;
+    private SilverLineage silverLineage;
     private TransactionTemplate transactionTemplate;
     private SilverFhirBuildService service;
     private final ObjectMapper objectMapper = new ObjectMapper();
@@ -52,15 +58,20 @@ class SilverFhirBuildServiceTest {
     @SuppressWarnings("unchecked")
     void setUp() {
         silverRepository = mock(SilverClinicalRepository.class);
-        goldRepository = mock(GoldFhirResourceRepository.class);
+        goldWriter = mock(GoldWriter.class);
+        silverLineage = mock(SilverLineage.class);
         transactionTemplate = mock(TransactionTemplate.class);
         when(transactionTemplate.execute(any())).thenAnswer(inv ->
                 ((TransactionCallback<Object>) inv.getArgument(0)).doInTransaction(new SimpleTransactionStatus()));
-        when(goldRepository.upsert(any())).thenReturn(100L, 101L, 102L, 103L, 104L, 105L);
+        when(goldWriter.writeResource(any())).thenReturn(100L, 101L, 102L, 103L, 104L, 105L);
+        when(goldWriter.ensureProvisionalMaster(any(), any())).thenReturn(7L);
+        when(silverLineage.stepsFor(any(), anyLong())).thenAnswer(inv -> List.of(new LineageStep(LineageStep.SILVER,
+                "2026-11-01T00:00:00Z", "Silver load with no Bronze link (source_system=SEED_EPIC_ADT)", null, null,
+                ((SilverTable) inv.getArgument(0)).ref(inv.getArgument(1)))));
 
         service = new SilverFhirBuildService(silverRepository, new PatientResourceBuilder(),
                 new ConditionResourceBuilder(), new ObservationResourceBuilder(),
-                new MedicationRequestResourceBuilder(), UsCoreValidatorFixture.validator(), goldRepository,
+                new MedicationRequestResourceBuilder(), UsCoreValidatorFixture.validator(), goldWriter, silverLineage,
                 FhirContext.forR4Cached(), objectMapper, transactionTemplate,
                 Clock.fixed(Instant.parse("2026-11-11T12:00:00Z"), ZoneOffset.UTC));
     }
@@ -85,6 +96,7 @@ class SilverFhirBuildServiceTest {
 
         assertThat(result.silverPatientId()).isEqualTo(1L);
         assertThat(result.patientFhirId()).isEqualTo("silver-patient-1");
+        assertThat(result.masterPatientId()).isEqualTo(7L);
         assertThat(result.resourceCount()).isEqualTo(4);
         assertThat(result.compliantCount()).isEqualTo(4);
         assertThat(result.resources()).extracting(BuiltResourceSummary::resourceType)
@@ -92,11 +104,12 @@ class SilverFhirBuildServiceTest {
         assertThat(result.resources()).extracting(BuiltResourceSummary::goldId)
                 .containsExactly(100L, 101L, 102L, 103L);
 
-        ArgumentCaptor<GoldFhirResourceRecord> captor = ArgumentCaptor.forClass(GoldFhirResourceRecord.class);
-        verify(goldRepository, times(4)).upsert(captor.capture());
-        GoldFhirResourceRecord patientRecord = captor.getAllValues().get(0);
+        ArgumentCaptor<GoldResourceWrite> captor = ArgumentCaptor.forClass(GoldResourceWrite.class);
+        verify(goldWriter, times(4)).writeResource(captor.capture());
+        GoldResourceWrite patientRecord = captor.getAllValues().get(0);
         assertThat(patientRecord.fhirId()).isEqualTo("silver-patient-1");
         assertThat(patientRecord.usCoreCompliant()).isTrue();
+        assertThat(captor.getAllValues()).extracting(GoldResourceWrite::masterPatientId).containsOnly(7L);
         assertThat(objectMapper.readTree(patientRecord.resourceJson()).get("resourceType").asText()).isEqualTo("Patient");
 
         JsonNode notes = objectMapper.readTree(patientRecord.complianceNotes());
@@ -107,6 +120,19 @@ class SilverFhirBuildServiceTest {
         assertThat(notes.get("validator").asText()).contains("US Core 6.1.0");
         assertThat(notes.get("violations").isArray()).isTrue();
 
+        // Lineage: each resource traces to its own Silver row, with that row's hash as the Gold input.
+        assertThat(captor.getAllValues()).extracting(GoldResourceWrite::source).containsExactly(
+                LineageSource.silver("patients", 1L, LineageSource.FHIR_MAP),
+                LineageSource.silver("conditions", 10L, LineageSource.FHIR_MAP),
+                LineageSource.silver("observations", 20L, LineageSource.FHIR_MAP),
+                LineageSource.silver("medications", 30L, LineageSource.FHIR_MAP));
+        GoldResourceWrite condition = captor.getAllValues().get(1);
+        assertThat(condition.upstreamSteps()).extracting(LineageStep::ref).containsExactly("silver.conditions/10");
+        assertThat(condition.goldInputHash()).hasSize(64);
+        assertThat(condition.goldTransformer()).contains("ConditionResourceBuilder", "us-core-condition");
+
+        verify(goldWriter).ensureProvisionalMaster(any(), any());
+        verify(goldWriter).linkPatientReferencesToMaster("silver-patient-1", 7L);
         verify(transactionTemplate).execute(any());
     }
 
@@ -127,9 +153,9 @@ class SilverFhirBuildServiceTest {
         assertThat(patient.usCoreCompliant()).isFalse();
         assertThat(patient.errors()).extracting(v -> v.location()).containsExactly("Patient.name");
 
-        ArgumentCaptor<GoldFhirResourceRecord> captor = ArgumentCaptor.forClass(GoldFhirResourceRecord.class);
-        verify(goldRepository, times(2)).upsert(captor.capture());
-        GoldFhirResourceRecord condition = captor.getAllValues().get(1);
+        ArgumentCaptor<GoldResourceWrite> captor = ArgumentCaptor.forClass(GoldResourceWrite.class);
+        verify(goldWriter, times(2)).writeResource(captor.capture());
+        GoldResourceWrite condition = captor.getAllValues().get(1);
         assertThat(condition.usCoreCompliant()).isFalse();
         JsonNode notes = objectMapper.readTree(condition.complianceNotes());
         assertThat(notes.get("compliant").asBoolean()).isFalse();
@@ -143,7 +169,8 @@ class SilverFhirBuildServiceTest {
         assertThatThrownBy(() -> service.buildPatient(99L))
                 .isInstanceOf(SilverPatientNotFoundException.class)
                 .hasMessageContaining("99");
-        verify(goldRepository, never()).upsert(any());
+        verify(goldWriter, never()).writeResource(any());
+        verify(goldWriter, never()).ensureProvisionalMaster(any(), any());
     }
 
     @Test

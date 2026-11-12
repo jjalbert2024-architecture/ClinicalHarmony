@@ -20,9 +20,17 @@ import org.springframework.context.annotation.Configuration;
 import java.io.IOException;
 
 /**
- * Wires the official HL7 FHIR validator (via HAPI FHIR) against the US Core 6.1.0 IG package
- * bundled at {@code src/main/resources/packages/}. The package is loaded from the classpath —
- * no network access at runtime, so the validator behaves identically in Docker and offline.
+ * Wires the official HL7 FHIR validator (via HAPI FHIR) against the IG packages bundled at
+ * {@code src/main/resources/packages/}: US Core 6.1.0, plus (Phase 5b slice 3, for the CMS-0057-F
+ * payer read endpoints) Da Vinci US Drug Formulary 2.1.0 (MedicationKnowledge) and Da Vinci DEQM
+ * 5.0.0 (MeasureReport). Packages are loaded from the classpath — no network access at runtime, so
+ * the validator behaves identically in Docker and offline.
+ *
+ * <p>Only the packages are bundled, not their dependency trees (QI-Core, CRMI, US Core 3.1.1/7.0.0,
+ * Plan-Net, HRex...). That's deliberate: the two profiles used here ({@code usdf-FormularyDrug},
+ * {@code indv-measurereport-deqm}) both derive directly from base R4 and ship with snapshots, so
+ * they validate without those dependencies. Canonicals that can't be resolved locally (e.g. a
+ * QI-Core target profile on MeasureReport.subject) degrade to warnings, see {@link #fhirValidator}.
  *
  * <p>Chain order matters: US Core profiles first, then the base FHIR R4 definitions, then
  * terminology. There is no terminology server (no LOINC/SNOMED/RxNorm/ICD-10 content loaded
@@ -31,6 +39,12 @@ import java.io.IOException;
  */
 @Configuration
 public class FhirValidationConfig {
+
+    /** Comma-separated classpath locations of every IG package the validator loads. */
+    public static final String DEFAULT_IG_PACKAGES =
+            "classpath:packages/hl7.fhir.us.core-6.1.0.tgz,"
+            + "classpath:packages/hl7.fhir.us.davinci-drug-formulary-2.1.0.tgz,"
+            + "classpath:packages/hl7.fhir.us.davinci-deqm-5.0.0.tgz";
 
     private static final Logger log = LoggerFactory.getLogger(FhirValidationConfig.class);
 
@@ -42,16 +56,22 @@ public class FhirValidationConfig {
     @Bean
     public IValidationSupport usCoreValidationSupport(
             FhirContext fhirContext,
-            @Value("${fhir-validator.us-core-package:classpath:packages/hl7.fhir.us.core-6.1.0.tgz}") String usCorePackage)
+            @Value("${fhir-validator.ig-packages:" + DEFAULT_IG_PACKAGES + "}") String igPackages)
             throws IOException {
         NpmPackageValidationSupport npm = new NpmPackageValidationSupport(fhirContext);
-        npm.loadPackageFromClasspath(usCorePackage);
-        log.info("Loaded US Core IG package {}", usCorePackage);
+        for (String pkg : igPackages.split(",")) {
+            if (!pkg.isBlank()) {
+                npm.loadPackageFromClasspath(pkg.trim());
+                log.info("Loaded IG package {}", pkg.trim());
+            }
+        }
 
         UnknownCodeSystemWarningValidationSupport unknownCodeSystems = new UnknownCodeSystemWarningValidationSupport(fhirContext);
         unknownCodeSystems.setNonExistentCodeSystemSeverity(IValidationSupport.IssueSeverity.WARNING);
 
         return new ValidationSupportChain(
+                // Before npm: overrides the Formulary package's filter-based RxNorm value sets.
+                RxNormFormularyValueSets.create(fhirContext),
                 npm,
                 OmbRaceEthnicityValueSets.create(fhirContext),
                 new DefaultProfileValidationSupport(fhirContext),
@@ -63,7 +83,7 @@ public class FhirValidationConfig {
 
     @Bean
     public FhirValidator fhirValidator(FhirContext fhirContext, IValidationSupport usCoreValidationSupport) {
-        FhirInstanceValidator instanceValidator = new FhirInstanceValidator(usCoreValidationSupport);
+        FhirInstanceValidator instanceValidator = new VersionedCanonicalFhirInstanceValidator(usCoreValidationSupport);
         // US Core references profiles/value sets from packages we deliberately don't bundle (VSAC,
         // PHIN VADS, SDC...). Don't fail a resource just because a referenced canonical can't be
         // resolved locally — report it as a warning instead.

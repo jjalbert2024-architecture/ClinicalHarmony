@@ -1,5 +1,6 @@
 package com.clinicalharmony.fhircompliance.web;
 
+import com.clinicalharmony.fhircompliance.gold.GoldRevalidationService;
 import com.clinicalharmony.fhircompliance.service.silver.BuiltResourceSummary;
 import com.clinicalharmony.fhircompliance.service.silver.SilverFhirBuildService;
 import com.clinicalharmony.fhircompliance.service.silver.SilverPatientBuildResult;
@@ -35,6 +36,9 @@ class FhirControllerTest {
 
     @MockitoBean
     private SilverFhirBuildService buildService;
+
+    @MockitoBean
+    private GoldRevalidationService revalidationService;
 
     @Test
     void validateReturnsViolationsWith200EvenWhenNonCompliant() throws Exception {
@@ -93,12 +97,13 @@ class FhirControllerTest {
 
     @Test
     void buildPatientReturnsSummary() throws Exception {
-        when(buildService.buildPatient(1L)).thenReturn(new SilverPatientBuildResult(1L, "silver-patient-1", 1, 1,
+        when(buildService.buildPatient(1L)).thenReturn(new SilverPatientBuildResult(1L, "silver-patient-1", 7L, 1, 1,
                 List.of(new BuiltResourceSummary("Patient", "silver-patient-1", 100L, true, 0, 0, List.of()))));
 
         mockMvc.perform(post("/api/fhir/build/patients/1"))
                 .andExpect(status().isOk())
                 .andExpect(jsonPath("$.patientFhirId").value("silver-patient-1"))
+                .andExpect(jsonPath("$.masterPatientId").value(7))
                 .andExpect(jsonPath("$.resources[0].goldId").value(100));
     }
 
@@ -114,11 +119,25 @@ class FhirControllerTest {
     @Test
     void buildAllReturnsOneResultPerPatient() throws Exception {
         when(buildService.buildAllPatients()).thenReturn(List.of(
-                new SilverPatientBuildResult(1L, "silver-patient-1", 0, 0, List.of()),
-                new SilverPatientBuildResult(2L, "silver-patient-2", 0, 0, List.of())));
+                new SilverPatientBuildResult(1L, "silver-patient-1", 7L, 0, 0, List.of()),
+                new SilverPatientBuildResult(2L, "silver-patient-2", 8L, 0, 0, List.of())));
 
         mockMvc.perform(post("/api/fhir/build"))
                 .andExpect(status().isOk())
                 .andExpect(jsonPath("$.length()").value(2));
+    }
+
+    @Test
+    void revalidateGoldReturnsOneSummaryPerPendingRow() throws Exception {
+        when(revalidationService.revalidatePending()).thenReturn(List.of(
+                new BuiltResourceSummary("Coverage", "cms-coverage-seed-0001", 30L, true, 0, 3, List.of()),
+                new BuiltResourceSummary("PractitionerRole", "cms-practitionerrole-2", 31L, false, 1, 3,
+                        List.of(new FhirViolation("ERROR", "PractitionerRole", "pd-1 failed", "pd-1", null)))));
+
+        mockMvc.perform(post("/api/fhir/gold/revalidate"))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.length()").value(2))
+                .andExpect(jsonPath("$[1].usCoreCompliant").value(false))
+                .andExpect(jsonPath("$[1].errors[0].rule").value("pd-1"));
     }
 }

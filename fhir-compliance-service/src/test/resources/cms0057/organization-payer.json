@@ -1,0 +1,46 @@
+{
+  "resourceType": "Organization",
+  "id": "cms-org-payer",
+  "meta": {
+    "profile": [
+      "http://hl7.org/fhir/us/core/StructureDefinition/us-core-organization"
+    ]
+  },
+  "identifier": [
+    {
+      "system": "http://clinicalharmony.example.org/fhir/sid/payer-id",
+      "value": "CHP-PAYER-001"
+    }
+  ],
+  "active": true,
+  "name": "ClinicalHarmony Health Plan (synthetic)",
+  "type": [
+    {
+      "coding": [
+        {
+          "system": "http://terminology.hl7.org/CodeSystem/organization-type",
+          "code": "pay",
+          "display": "Payer"
+        }
+      ]
+    }
+  ],
+  "telecom": [
+    {
+      "system": "phone",
+      "value": "800-555-0100",
+      "use": "work"
+    }
+  ],
+  "address": [
+    {
+      "line": [
+        "100 Synthetic Plaza"
+      ],
+      "city": "Austin",
+      "state": "TX",
+      "postalCode": "78701",
+      "country": "US"
+    }
+  ]
+}

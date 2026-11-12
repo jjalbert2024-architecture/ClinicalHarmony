@@ -185,4 +185,19 @@ class UsCoreFhirValidatorTest {
         assertThat(UsCoreFhirValidator.shortRule("Validation_VAL_Profile_Minimum")).isEqualTo("Validation_VAL_Profile_Minimum");
         assertThat(UsCoreFhirValidator.shortRule(null)).isNull();
     }
+
+    @Test
+    void onlyUnresolvableSliceProfilesAreDowngradedToWarnings() {
+        assertThat(UsCoreFhirValidator.isUnresolvableSliceProfile("SLICING_CANNOT_BE_EVALUATED",
+                "Slicing cannot be evaluated: Problem with use of resolve() - profile [CanonicalType[x]] on "
+                        + "MeasureReport.extension:message could not be resolved (@char 1)")).isTrue();
+        assertThat(UsCoreFhirValidator.isUnresolvableSliceProfile("SLICING_CANNOT_BE_EVALUATED",
+                "Slicing cannot be evaluated: Unable to resolve profile CanonicalType[x]")).isTrue();
+        // Same rule, different cause: stays an error.
+        assertThat(UsCoreFhirValidator.isUnresolvableSliceProfile("SLICING_CANNOT_BE_EVALUATED",
+                "Slicing cannot be evaluated: discriminator path is invalid")).isFalse();
+        assertThat(UsCoreFhirValidator.isUnresolvableSliceProfile("Validation_VAL_Profile_Minimum",
+                "profile could not be resolved")).isFalse();
+        assertThat(UsCoreFhirValidator.isUnresolvableSliceProfile(null, null)).isFalse();
+    }
 }

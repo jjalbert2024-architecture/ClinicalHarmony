@@ -19,7 +19,8 @@ import java.util.regex.Matcher;
 import java.util.regex.Pattern;
 
 /**
- * Validates FHIR R4 resources against US Core 6.1.0 using the official HL7 validator.
+ * Validates FHIR R4 resources against US Core 6.1.0 (and, for MedicationKnowledge/MeasureReport, the
+ * bundled Da Vinci profiles) using the official HL7 validator.
  *
  * <p>Validation runs on the raw JSON text, not on a HAPI object parsed from it: HAPI's parser
  * silently drops things like empty strings and unknown elements, which are exactly the defects a
@@ -144,9 +145,26 @@ public class UsCoreFhirValidator {
             case INFORMATION -> "INFORMATION";
         };
         String rule = shortRule(m.getMessageId());
+        if ("ERROR".equals(severity) && isUnresolvableSliceProfile(rule, m.getMessage())) {
+            severity = "WARNING";
+        }
         String location = refineLocation(m.getLocationString(), m.getMessage());
         return new FhirViolation(severity, location, m.getMessage(), rule,
                 fixAdvisor.suggest(rule, m.getMessage(), location));
+    }
+
+    /**
+     * A slice the validator can't evaluate because the slice's profile lives in an IG package we
+     * deliberately don't bundle (e.g. DEQM's MeasureReport extension slices pointing at HL7
+     * Extensions 5.2.0, CRMI and R5 cross-version extensions). The core validator raises that as an
+     * ERROR on every extension present, so no DEQM report could ever pass offline. Treated the same
+     * as any other unresolvable canonical ({@code setErrorForUnknownProfiles(false)} in
+     * FhirValidationConfig): reported, but as a WARNING. Narrow on purpose — only the
+     * "profile could not be resolved" variants; a slice that fails for any other reason stays an error.
+     */
+    static boolean isUnresolvableSliceProfile(String rule, String message) {
+        return "SLICING_CANNOT_BE_EVALUATED".equals(rule) && message != null
+                && (message.contains("could not be resolved") || message.contains("Unable to resolve profile"));
     }
 
     /**

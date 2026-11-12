@@ -1,5 +1,7 @@
 package com.clinicalharmony.fhircompliance.web;
 
+import com.clinicalharmony.fhircompliance.gold.GoldRevalidationService;
+import com.clinicalharmony.fhircompliance.service.silver.BuiltResourceSummary;
 import com.clinicalharmony.fhircompliance.service.silver.SilverFhirBuildService;
 import com.clinicalharmony.fhircompliance.service.silver.SilverPatientBuildResult;
 import com.clinicalharmony.fhircompliance.validation.FhirValidationOutcome;
@@ -25,7 +27,11 @@ import java.util.List;
  *   <li>{@code POST /api/fhir/build/patients/{silverPatientId}} — build + validate + persist one
  *       Silver patient's resources into gold.fhir_resources.</li>
  *   <li>{@code POST /api/fhir/build} — same, for every Silver patient.</li>
+ *   <li>{@code POST /api/fhir/gold/revalidate} — validate Gold rows seeded straight into Gold that no
+ *       validator has checked yet (migration 19's CMS-0057 resources); also runs on startup.</li>
  * </ul>
+ *
+ * <p>All Gold writes go through GoldWriter (master patient, resource, lineage).
  */
 @RestController
 @RequestMapping("/api/fhir")
@@ -35,10 +41,13 @@ public class FhirController {
 
     private final UsCoreFhirValidator validator;
     private final SilverFhirBuildService buildService;
+    private final GoldRevalidationService revalidationService;
 
-    public FhirController(UsCoreFhirValidator validator, SilverFhirBuildService buildService) {
+    public FhirController(UsCoreFhirValidator validator, SilverFhirBuildService buildService,
+                          GoldRevalidationService revalidationService) {
         this.validator = validator;
         this.buildService = buildService;
+        this.revalidationService = revalidationService;
     }
 
     @PostMapping(value = "/validate", consumes = {MediaType.APPLICATION_JSON_VALUE, FHIR_JSON},
@@ -55,5 +64,10 @@ public class FhirController {
     @PostMapping(value = "/build", produces = MediaType.APPLICATION_JSON_VALUE)
     public ResponseEntity<List<SilverPatientBuildResult>> buildAll() {
         return ResponseEntity.ok(buildService.buildAllPatients());
+    }
+
+    @PostMapping(value = "/gold/revalidate", produces = MediaType.APPLICATION_JSON_VALUE)
+    public ResponseEntity<List<BuiltResourceSummary>> revalidatePendingGold() {
+        return ResponseEntity.ok(revalidationService.revalidatePending());
     }
 }

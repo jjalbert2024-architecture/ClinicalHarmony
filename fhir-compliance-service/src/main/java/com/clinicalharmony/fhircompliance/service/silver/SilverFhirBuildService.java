@@ -1,14 +1,18 @@
 package com.clinicalharmony.fhircompliance.service.silver;
 
 import ca.uhn.fhir.context.FhirContext;
-import com.clinicalharmony.fhircompliance.repository.GoldFhirResourceRecord;
-import com.clinicalharmony.fhircompliance.repository.GoldFhirResourceRepository;
+import com.clinicalharmony.fhircompliance.gold.ComplianceNotes;
+import com.clinicalharmony.fhircompliance.gold.GoldResourceWrite;
+import com.clinicalharmony.fhircompliance.gold.GoldWriter;
+import com.clinicalharmony.fhircompliance.gold.Hashes;
+import com.clinicalharmony.fhircompliance.gold.LineageSource;
+import com.clinicalharmony.fhircompliance.gold.SilverLineage;
 import com.clinicalharmony.fhircompliance.repository.silver.SilverClinicalRepository;
 import com.clinicalharmony.fhircompliance.repository.silver.SilverPatientRow;
+import com.clinicalharmony.fhircompliance.repository.silver.SilverTable;
 import com.clinicalharmony.fhircompliance.validation.FhirValidationOutcome;
 import com.clinicalharmony.fhircompliance.validation.FhirViolation;
 import com.clinicalharmony.fhircompliance.validation.UsCoreFhirValidator;
-import com.fasterxml.jackson.core.JsonProcessingException;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import org.hl7.fhir.r4.model.Resource;
 import org.slf4j.Logger;
@@ -20,27 +24,26 @@ import org.springframework.transaction.support.TransactionTemplate;
 import java.time.Clock;
 import java.time.Instant;
 import java.util.ArrayList;
-import java.util.LinkedHashMap;
 import java.util.List;
-import java.util.Map;
 
 /**
  * Silver → Gold FHIR materialization: reads one silver.patients row plus its conditions,
  * observations and medications, builds US Core resources, validates each with the HL7 validator,
- * and upserts them into gold.fhir_resources with the findings in {@code compliance_notes}.
+ * and hands them to {@link GoldWriter} — which links them to the patient's (provisional) master,
+ * upserts them into gold.fhir_resources with the findings in {@code compliance_notes}, and writes
+ * each one's gold.data_lineage chain back through Silver (and Bronze, where linked).
  *
  * <p>Validation records, it doesn't gate: a non-compliant resource still lands in Gold, flagged
  * {@code is_us_core_compliant = false} with the reasons attached — dropping it would hide the
  * data-quality problem from the dashboard instead of surfacing it.
  *
- * <p>Each patient's resources are written in one transaction (all or nothing per patient); a
- * build-all run uses a transaction per patient so one bad patient can't block the rest.
+ * <p>Each patient's master, resources and lineage are written in one transaction (all or nothing
+ * per patient); a build-all run uses a transaction per patient so one bad patient can't block the rest.
  */
 @Service
 public class SilverFhirBuildService {
 
     private static final Logger log = LoggerFactory.getLogger(SilverFhirBuildService.class);
-    static final String VALIDATOR_NAME = "HL7 FHIR Validator (HAPI FHIR 8.2.0) / US Core 6.1.0";
 
     private final SilverClinicalRepository silverRepository;
     private final PatientResourceBuilder patientBuilder;
@@ -48,7 +51,8 @@ public class SilverFhirBuildService {
     private final ObservationResourceBuilder observationBuilder;
     private final MedicationRequestResourceBuilder medicationBuilder;
     private final UsCoreFhirValidator validator;
-    private final GoldFhirResourceRepository goldRepository;
+    private final GoldWriter goldWriter;
+    private final SilverLineage silverLineage;
     private final FhirContext fhirContext;
     private final ObjectMapper objectMapper;
     private final TransactionTemplate transactionTemplate;
@@ -61,12 +65,13 @@ public class SilverFhirBuildService {
                                   ObservationResourceBuilder observationBuilder,
                                   MedicationRequestResourceBuilder medicationBuilder,
                                   UsCoreFhirValidator validator,
-                                  GoldFhirResourceRepository goldRepository,
+                                  GoldWriter goldWriter,
+                                  SilverLineage silverLineage,
                                   FhirContext fhirContext,
                                   ObjectMapper objectMapper,
                                   TransactionTemplate transactionTemplate) {
         this(silverRepository, patientBuilder, conditionBuilder, observationBuilder, medicationBuilder, validator,
-                goldRepository, fhirContext, objectMapper, transactionTemplate, Clock.systemUTC());
+                goldWriter, silverLineage, fhirContext, objectMapper, transactionTemplate, Clock.systemUTC());
     }
 
     SilverFhirBuildService(SilverClinicalRepository silverRepository,
@@ -75,7 +80,8 @@ public class SilverFhirBuildService {
                            ObservationResourceBuilder observationBuilder,
                            MedicationRequestResourceBuilder medicationBuilder,
                            UsCoreFhirValidator validator,
-                           GoldFhirResourceRepository goldRepository,
+                           GoldWriter goldWriter,
+                           SilverLineage silverLineage,
                            FhirContext fhirContext,
                            ObjectMapper objectMapper,
                            TransactionTemplate transactionTemplate,
@@ -86,7 +92,8 @@ public class SilverFhirBuildService {
         this.observationBuilder = observationBuilder;
         this.medicationBuilder = medicationBuilder;
         this.validator = validator;
-        this.goldRepository = goldRepository;
+        this.goldWriter = goldWriter;
+        this.silverLineage = silverLineage;
         this.fhirContext = fhirContext;
         this.objectMapper = objectMapper;
         this.transactionTemplate = transactionTemplate;
@@ -111,33 +118,54 @@ public class SilverFhirBuildService {
         return results;
     }
 
-    private SilverPatientBuildResult buildAndPersist(SilverPatientRow patientRow) {
-        String patientFhirId = FhirIds.patient(patientRow.id());
-
-        List<Resource> resources = new ArrayList<>();
-        resources.add(patientBuilder.build(patientRow));
-        silverRepository.findConditions(patientRow.id())
-                .forEach(c -> resources.add(conditionBuilder.build(c, patientFhirId)));
-        silverRepository.findObservations(patientRow.id())
-                .forEach(o -> resources.add(observationBuilder.build(o, patientFhirId)));
-        silverRepository.findMedications(patientRow.id())
-                .forEach(m -> resources.add(medicationBuilder.build(m, patientFhirId)));
-
-        List<BuiltResourceSummary> summaries = resources.stream().map(this::validateAndPersist).toList();
-        int compliant = (int) summaries.stream().filter(BuiltResourceSummary::usCoreCompliant).count();
-        log.info("Silver patient {} → {} FHIR resource(s), {} US Core compliant",
-                patientRow.id(), summaries.size(), compliant);
-        return new SilverPatientBuildResult(patientRow.id(), patientFhirId, summaries.size(), compliant, summaries);
+    /** A built resource plus the Silver row it came from (for lineage). */
+    private record Built(Resource resource, SilverTable table, long silverId, String silverRowHash, String builder) {
     }
 
-    private BuiltResourceSummary validateAndPersist(Resource resource) {
+    private SilverPatientBuildResult buildAndPersist(SilverPatientRow patientRow) {
+        long patientId = patientRow.id();
+        String patientFhirId = FhirIds.patient(patientId);
+        long masterId = goldWriter.ensureProvisionalMaster(patientRow,
+                silverLineage.stepsFor(SilverTable.PATIENTS, patientId));
+
+        List<Built> built = new ArrayList<>();
+        built.add(new Built(patientBuilder.build(patientRow), SilverTable.PATIENTS, patientId,
+                Hashes.sha256Hex(patientRow.toString()), "PatientResourceBuilder"));
+        silverRepository.findConditions(patientId).forEach(c -> built.add(new Built(
+                conditionBuilder.build(c, patientFhirId), SilverTable.CONDITIONS, c.id(),
+                Hashes.sha256Hex(c.toString()), "ConditionResourceBuilder")));
+        silverRepository.findObservations(patientId).forEach(o -> built.add(new Built(
+                observationBuilder.build(o, patientFhirId), SilverTable.OBSERVATIONS, o.id(),
+                Hashes.sha256Hex(o.toString()), "ObservationResourceBuilder")));
+        silverRepository.findMedications(patientId).forEach(m -> built.add(new Built(
+                medicationBuilder.build(m, patientFhirId), SilverTable.MEDICATIONS, m.id(),
+                Hashes.sha256Hex(m.toString()), "MedicationRequestResourceBuilder")));
+
+        List<BuiltResourceSummary> summaries = built.stream().map(b -> validateAndPersist(b, masterId)).toList();
+        // Resources written before this patient had a master (e.g. the CMS-0057 seed's Coverage) get linked now.
+        goldWriter.linkPatientReferencesToMaster(patientFhirId, masterId);
+
+        int compliant = (int) summaries.stream().filter(BuiltResourceSummary::usCoreCompliant).count();
+        log.info("Silver patient {} → master {}, {} FHIR resource(s), {} US Core compliant",
+                patientId, masterId, summaries.size(), compliant);
+        return new SilverPatientBuildResult(patientId, patientFhirId, masterId, summaries.size(), compliant, summaries);
+    }
+
+    private BuiltResourceSummary validateAndPersist(Built built, long masterId) {
+        Resource resource = built.resource();
         String json = fhirContext.newJsonParser().encodeResourceToString(resource);
         FhirValidationOutcome outcome = validator.validateJson(json);
         String resourceType = resource.fhirType();
         String fhirId = resource.getIdElement().getIdPart();
 
-        long goldId = goldRepository.upsert(new GoldFhirResourceRecord(
-                resourceType, fhirId, json, outcome.compliant(), complianceNotesJson(outcome)));
+        long goldId = goldWriter.writeResource(new GoldResourceWrite(
+                resourceType, fhirId, json, outcome.compliant(),
+                ComplianceNotes.toJson(outcome, Instant.now(clock), objectMapper),
+                masterId,
+                LineageSource.silver(built.table().tableName(), built.silverId(), LineageSource.FHIR_MAP),
+                silverLineage.stepsFor(built.table(), built.silverId()),
+                "fhir-compliance-service " + built.builder() + " + HL7 validator (" + outcome.profile() + ")",
+                built.silverRowHash()));
 
         List<FhirViolation> errors = outcome.violations().stream()
                 .filter(v -> "ERROR".equals(v.severity()))
@@ -148,22 +176,5 @@ public class SilverFhirBuildService {
         }
         return new BuiltResourceSummary(resourceType, fhirId, goldId, outcome.compliant(),
                 outcome.errorCount(), outcome.warningCount(), errors);
-    }
-
-    private String complianceNotesJson(FhirValidationOutcome outcome) {
-        Map<String, Object> notes = new LinkedHashMap<>();
-        notes.put("validator", VALIDATOR_NAME);
-        notes.put("profile", outcome.profile());
-        notes.put("validatedAt", Instant.now(clock).toString());
-        notes.put("compliant", outcome.compliant());
-        notes.put("errorCount", outcome.errorCount());
-        notes.put("warningCount", outcome.warningCount());
-        notes.put("violations", outcome.violations());
-        try {
-            return objectMapper.writeValueAsString(notes);
-        } catch (JsonProcessingException e) {
-            throw new IllegalStateException("Failed to serialize compliance notes for "
-                    + outcome.resourceType() + "/" + outcome.resourceId(), e);
-        }
     }
 }

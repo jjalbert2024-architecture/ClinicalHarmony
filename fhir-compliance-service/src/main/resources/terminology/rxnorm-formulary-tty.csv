@@ -1,0 +1,12 @@
+# rxcui,tty,name — RxNorm concepts whose term type (TTY) is known offline. Source: NLM RxNav
+# (rxnav.nlm.nih.gov/REST/rxcui/{rxcui}/properties + related?tty=SCDG+DF), looked up 2026-11-11.
+# Feeds RxNormFormularyValueSets: the Da Vinci Formulary value sets are defined as RxNorm TTY
+# filters, which can't be evaluated without an RxNorm terminology server. Keep in step with the
+# RxNorm rows in docs/db-init/19_seed_cms0057_gold.sql.
+861007,SCD,metformin hydrochloride 500 MG Oral Tablet
+617310,SCD,atorvastatin 20 MG Oral Tablet
+314076,SCD,lisinopril 10 MG Oral Tablet
+1161610,SCDG,metformin Oral Product
+1158284,SCDG,atorvastatin Oral Product
+1164689,SCDG,lisinopril Oral Product
+317541,DF,Oral Tablet

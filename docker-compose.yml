@@ -183,12 +183,32 @@ services:
       - clinicalharmony-net
 
   patient-index-service:
-    image: eclipse-temurin:17-jre
+    build:
+      context: ./patient-index-service
+      dockerfile: Dockerfile
     container_name: clinicalharmony-patient-index-service
-    command: ["sh", "-c", "echo '[placeholder] patient-index-service — Phase 6' && sleep infinity"]
+    environment:
+      SPRING_PROFILES_ACTIVE: docker
+      DB_HOST: postgres
+      DB_PORT: 5432
+      DB_NAME: clinicalharmony
+      DB_USER: clinicalharmony
+      DB_PASSWORD: clinicalharmony
+      # Inbound Bearer tokens: same issuer/JWKS split as fhir-compliance-service.
+      OAUTH_ISSUER_URI: http://localhost:8180/realms/clinicalharmony
+      OAUTH_JWK_SET_URI: http://keycloak:8080/realms/clinicalharmony/protocol/openid-connect/certs
+      # Outbound: every Gold change goes through GoldWriter, with this service's own client token.
+      GOLD_WRITER_BASE_URL: http://fhir-compliance-service:8084
+      OAUTH_TOKEN_URI: http://keycloak:8080/realms/clinicalharmony/protocol/openid-connect/token
+      PMI_CLIENT_ID: patient-index-service
+      PMI_CLIENT_SECRET: patient-index-service-secret  # DEV-ONLY, from keycloak/realm-clinicalharmony.json
     depends_on:
       postgres:
         condition: service_healthy
+      keycloak:
+        condition: service_healthy
+      fhir-compliance-service:
+        condition: service_started
     ports:
       - "8085:8085"
     networks:

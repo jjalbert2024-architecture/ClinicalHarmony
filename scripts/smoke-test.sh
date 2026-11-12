@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
-# End-to-end smoke test for ingestion-service, ontology-service, rules-engine-service, and
-# fhir-compliance-service.
+# End-to-end smoke test for ingestion-service, ontology-service, rules-engine-service,
+# fhir-compliance-service, and patient-index-service.
 # Assumes the stack is already up: `docker-compose up -d` from the repo root.
 # Usage: ./scripts/smoke-test.sh
 set -uo pipefail
@@ -9,6 +9,7 @@ INGESTION_URL="${INGESTION_URL:-http://localhost:8081}"
 ONTOLOGY_URL="${ONTOLOGY_URL:-http://localhost:8082}"
 RULES_URL="${RULES_URL:-http://localhost:8083}"
 FHIR_COMPLIANCE_URL="${FHIR_COMPLIANCE_URL:-http://localhost:8084}"
+PMI_URL="${PMI_URL:-http://localhost:8085}"
 KEYCLOAK_URL="${KEYCLOAK_URL:-http://localhost:8180}"
 TOKEN_URL="$KEYCLOAK_URL/realms/clinicalharmony/protocol/openid-connect/token"
 CLIENT_ID="${CLIENT_ID:-clinicalharmony-app}"
@@ -108,7 +109,7 @@ check_header() {
 }
 
 section "0. Health checks"
-for pair in "ingestion:$INGESTION_URL" "ontology:$ONTOLOGY_URL" "rules-engine:$RULES_URL" "fhir-compliance:$FHIR_COMPLIANCE_URL"; do
+for pair in "ingestion:$INGESTION_URL" "ontology:$ONTOLOGY_URL" "rules-engine:$RULES_URL" "fhir-compliance:$FHIR_COMPLIANCE_URL" "patient-index:$PMI_URL"; do
   name="${pair%%:*}"; url="${pair#*:}"
   check_http "$name-service is up" GET "$url/actuator/health" 200
 done
@@ -286,14 +287,16 @@ fi
 
 section "12. fhir-compliance-service — GoldWriter: provisional masters + lineage (Phase 5b slice 3)"
 # Needs docs/db-init/18 (match_status, nullable lineage source_id, unique lineage/xref indexes).
-check_json "every built Silver patient is linked to its own master" "$TMP/silver_build.json" \
-  "all(r['masterPatientId'] for r in d) and len({r['masterPatientId'] for r in d}) == len(d)" "True"
+# Since Phase 6 the PMI (section 15) merges masters, so "one master per Silver patient" is only
+# guaranteed for masters it hasn't decided yet (PROVISIONAL).
+check_json "every built Silver patient is linked to a master" "$TMP/silver_build.json" \
+  "all(r['masterPatientId'] for r in d)" "True"
 fc_curl -s -X POST "$FHIR_COMPLIANCE_URL/api/fhir/build" > "$TMP/silver_rebuild.json"
 python3 -c "import json; print(json.dumps({str(r['silverPatientId']): r['masterPatientId'] for r in json.load(open('$TMP/silver_build.json'))}))" > "$TMP/masters_first.json"
 check_json "rebuilding reuses the same masters (no duplicates)" "$TMP/silver_rebuild.json" \
   "{str(r['silverPatientId']): r['masterPatientId'] for r in d} == json.load(open('$TMP/masters_first.json'))" "True"
-check_sql "Silver patients have exactly one PROVISIONAL 1:1 master each" \
-  "SELECT count(DISTINCT x.silver_patient_id) = (SELECT count(*) FROM silver.patients) AND bool_and(m.match_status = 'PROVISIONAL' AND m.source_patient_count = 1 AND m.match_confidence_score IS NULL) FROM gold.patient_source_xref x JOIN gold.master_patients m ON m.id = x.master_patient_id" "t"
+check_sql "every Silver patient has exactly one master; PROVISIONAL masters are still 1:1" \
+  "SELECT (SELECT count(DISTINCT silver_patient_id) FROM gold.patient_source_xref) = (SELECT count(*) FROM silver.patients) AND (SELECT coalesce(bool_and(source_patient_count = 1 AND match_confidence_score IS NULL), true) FROM gold.master_patients WHERE match_status = 'PROVISIONAL')" "t"
 check_sql "every Silver-built Gold resource has exactly one FHIR_MAP lineage row" \
   "SELECT (SELECT count(*) FROM gold.fhir_resources WHERE fhir_id LIKE 'silver-%') = (SELECT count(*) FROM gold.data_lineage WHERE transformation_step = 'FHIR_MAP' AND target_table = 'fhir_resources')" "t"
 check_sql "Silver-built lineage chains run SILVER → GOLD (seed rows have no Bronze link)" \
@@ -427,6 +430,110 @@ check_json "  → names clinicalharmony/pipeline.write" "$TMP/last_response.json
 check_http "read-only token on PUT rule toggle → 403" PUT "$FHIR_COMPLIANCE_URL/api/fhir-compliance/rules/USCORE_PATIENT_COMPLETENESS/toggle" 403
 check_http "unsupported type with a valid token still 404s (not 403)" GET "$R4/Claim/123" 404
 TOKEN="$FULL_TOKEN"
+
+section "15. patient-index-service — PMI matching, review, merge/unmerge (Phase 6)"
+# Needs docs/db-init/20 (pmi schema, merge history, PMI_MATCH rule) + 21 (seed duplicates).
+PMI="$PMI_URL/api/pmi"
+
+check_http "matching run (pipeline.write) → 200" POST "$PMI/match/run" 200
+check_json "  → run COMPLETED" "$TMP/last_response.json" "d['run']['status']" "COMPLETED"
+check_sql "seed: claims-feed Maria Garcia (PMI-0001) merged into SEED-0001's master (deterministic, 1.0)" \
+  "SELECT m.match_status || ' ' || g.match_method || ' ' || g.match_confidence_score FROM gold.master_patient_merges g JOIN gold.master_patients m ON m.id = g.survivor_master_id WHERE g.unmerged_at IS NULL AND (SELECT id FROM silver.patients WHERE source_patient_id = 'PMI-0001') = ANY (g.moved_silver_patient_ids) AND g.survivor_master_id = (SELECT x.master_patient_id FROM gold.patient_source_xref x JOIN silver.patients p ON p.id = x.silver_patient_id WHERE p.source_patient_id = 'SEED-0001')" "MATCHED DETERMINISTIC 1.0000"
+check_sql "seed: 'Jim' Wilson + James 'Willson' (same MRN) share SEED-0002's master" \
+  "SELECT count(DISTINCT x.master_patient_id) FROM gold.patient_source_xref x JOIN silver.patients p ON p.id = x.silver_patient_id WHERE p.source_patient_id IN ('SEED-0002', 'PMI-0002', 'PMI-0006')" "1"
+check_sql "seed: opposite-sex twin Mario (PMI-0004) is NOT merged into Maria's master" \
+  "SELECT count(DISTINCT x.master_patient_id) FROM gold.patient_source_xref x JOIN silver.patients p ON p.id = x.silver_patient_id WHERE p.source_patient_id IN ('SEED-0001', 'PMI-0004')" "2"
+
+# Fresh synthetic people every run (random surname + birth date), so re-runs never collide with
+# earlier runs' merges or exclusions: A and A2 are the same person in two feeds (deterministic),
+# B has day/month swapped and no phone (review band), T is A's opposite-sex twin (review band).
+read -r SFX LAST DOB DOB_SWAP PHONE4 < <(python3 -c "
+import random, string
+r = random.SystemRandom()
+sfx = ''.join(r.choice(string.ascii_lowercase) for _ in range(8))
+d = m = 0
+while d == m: d, m = r.randint(1, 12), r.randint(1, 12)
+y = r.randint(1930, 1999)
+print(sfx, 'Smk' + sfx, f'{y}-{m:02d}-{d:02d}', f'{y}-{d:02d}-{m:02d}', r.randint(1000, 9999))")
+psql_id() { docker exec "$PG_CONTAINER" psql -U clinicalharmony -d clinicalharmony -Atqc "$1" | head -1; }
+ins_patient() { # source id first gender dob address phone
+  psql_id "INSERT INTO silver.patients (source_system, source_patient_id, mrn, first_name, last_name, date_of_birth, gender, address_line1, city, state, postal_code, phone) VALUES ('$1', 'SMK-$SFX-$2', 'M$2$SFX', '$3', '$LAST', '$5', '$4', '$6', 'Atlanta', 'GA', '30301', $7) RETURNING id"
+}
+SA="$(ins_patient SMOKE_EPIC A Maria female "$DOB" '12 Harbor Rd' "'404-555-$PHONE4'")"
+SA2="$(ins_patient SMOKE_CLAIMS A2 Maria female "$DOB" '12 Harbor Road' "'(404) 555-$PHONE4'")"
+SB="$(ins_patient SMOKE_LAB B Maria female "$DOB_SWAP" '88 Peachtree St' NULL)"
+ST="$(ins_patient SMOKE_EPIC T Mario male "$DOB" '12 Harbor Rd' "'404-555-$PHONE4'")"
+for id in "$SA" "$SA2" "$SB" "$ST"; do
+  fc_curl -s -o /dev/null -X POST "$FHIR_COMPLIANCE_URL/api/fhir/build/patients/$id"
+done
+master_of() { psql_id "SELECT master_patient_id FROM gold.patient_source_xref WHERE silver_patient_id = $1"; }
+MB_ORIG="$(master_of "$SB")"; MT="$(master_of "$ST")"
+echo "  (synthetic surname $LAST, DOB $DOB; Silver ids A=$SA A2=$SA2 B=$SB T=$ST)"
+
+CORR="smoke-pmi-$SFX"
+pmi_run="$(fc_curl -s -o "$TMP/pmi_run.json" -D - -X POST "$PMI/match/run" -H "X-Correlation-Id: $CORR" | tr -d '\r' | awk -F': ' 'tolower($1)=="x-correlation-id"{print $2}')"
+if [[ "$pmi_run" == "$CORR" ]]; then
+  echo "  PASS  run echoes the caller's X-Correlation-Id ($pmi_run)"; PASS=$((PASS + 1))
+else
+  echo "  FAIL  run echoes the caller's X-Correlation-Id (got '$pmi_run')"; FAIL=$((FAIL + 1))
+fi
+check_json "  → 1 auto-merge, 2 review items, from this run's 4 new masters" "$TMP/pmi_run.json" \
+  "(d['run']['provisionalMasters'] >= 4, d['run']['autoMerges'], d['run']['queuedForReview'])" "(True, 1, 2)"
+MA="$(master_of "$SA")"
+check_sql "A + A2 (same person, two feeds) share one MATCHED master, confidence 1.0000" \
+  "SELECT (SELECT master_patient_id FROM gold.patient_source_xref WHERE silver_patient_id = $SA2) = $MA AND match_status = 'MATCHED' AND match_confidence_score = 1 FROM gold.master_patients WHERE id = $MA" "t"
+if docker logs clinicalharmony-fhir-compliance-service 2>&1 | grep -q "\[$CORR\].*Merged master"; then
+  echo "  PASS  GoldWriter logged the merge under the PMI's correlation id [$CORR]"; PASS=$((PASS + 1))
+else
+  echo "  FAIL  GoldWriter logged the merge under the PMI's correlation id (no [$CORR] 'Merged master' line)"; FAIL=$((FAIL + 1))
+fi
+
+fc_curl -s "$PMI/candidates" > "$TMP/pmi_pending.json"
+CB="$(python3 -c "import json; print(next(c['id'] for c in json.load(open('$TMP/pmi_pending.json')) if $SB in (c['silverPatientAId'], c['silverPatientBId'])))")"
+CT="$(python3 -c "import json; print(next(c['id'] for c in json.load(open('$TMP/pmi_pending.json')) if $ST in (c['silverPatientAId'], c['silverPatientBId'])))")"
+check_json "day/month-swapped record queued for review at 0.6471" "$TMP/pmi_pending.json" \
+  "next(c['score'] for c in d if c['id'] == $CB)" "0.6471"
+check_json "opposite-sex twin queued for review at 0.7143 (gender DISAGREE kept it from auto-merging)" "$TMP/pmi_pending.json" \
+  "next((c['score'], [f['outcome'] for f in c['breakdown']['fields'] if f['field'] == 'gender'][0]) for c in d if c['id'] == $CT)" "(0.7143, 'DISAGREE')"
+check_http "GET /api/pmi/score explains the twin pair" GET "$PMI/score?a=$SA&b=$ST" 200
+check_json "  → REVIEW, per-field breakdown" "$TMP/last_response.json" "(d['decision'], len(d['fields']))" "('REVIEW', 7)"
+
+check_http "reject the twin → 200" POST "$PMI/candidates/$CT/reject" 200 "application/json" '{"reviewer": "smoke", "note": "twin brother"}'
+check_json "  → REJECTED, twin's master confirmed as its own person" "$TMP/last_response.json" \
+  "(d['candidate']['status'], d['confirmedMasterIds'] == [$MT])" "('REJECTED', True)"
+check_sql "  → twin master MATCHED; pair excluded from future runs" \
+  "SELECT (SELECT match_status FROM gold.master_patients WHERE id = $MT) || ' ' || (SELECT reason FROM pmi.match_exclusions WHERE $ST IN (silver_patient_a_id, silver_patient_b_id))" "MATCHED REVIEW_REJECTED"
+check_http "rejecting it again → 409" POST "$PMI/candidates/$CT/reject" 409 "application/json" '{"reviewer": "smoke"}'
+
+check_http "accept the day/month swap → 200 (MANUAL merge via GoldWriter)" POST "$PMI/candidates/$CB/accept" 200 "application/json" '{"reviewer": "smoke", "note": "DOB keyed day-first"}'
+MERGE_B="$(python3 -c "import json; print(json.load(open('$TMP/last_response.json'))['merge']['mergeId'])")"
+check_sql "  → B now under A's master; its FHIR Patient re-linked to that master; PMI_MERGE lineage row" \
+  "SELECT (SELECT master_patient_id FROM gold.patient_source_xref WHERE silver_patient_id = $SB) = $MA AND (SELECT master_patient_id FROM gold.fhir_resources WHERE resource_type = 'Patient' AND fhir_id = 'silver-patient-$SB') = $MA AND EXISTS (SELECT 1 FROM gold.data_lineage WHERE transformation_step = 'PMI_MERGE' AND target_table = 'master_patient_merges' AND target_id = $MERGE_B)" "t"
+check_http "GET master view" GET "$PMI/masters/$MA" 200
+check_json "  → 3 sources, 3 FHIR Patients, 2 live merges, nothing pending" "$TMP/last_response.json" \
+  "(len(d['sources']), len([r for r in d['fhirResources'] if r['resourceType'] == 'Patient']), len([m for m in d['merges'] if m['unmergedAt'] is None]), len(d['pendingCandidates']))" "(3, 3, 2, 0)"
+
+check_http "unmerge B → 200" POST "$PMI/merges/$MERGE_B/unmerge" 200 "application/json" '{"reviewer": "smoke", "reason": "different person after chart review"}'
+check_json "  → B excluded from both of A's records" "$TMP/last_response.json" "d['exclusionsAdded']" "2"
+check_sql "  → B back on its own active MATCHED master, its FHIR Patient with it" \
+  "SELECT (SELECT master_patient_id FROM gold.patient_source_xref WHERE silver_patient_id = $SB) = $MB_ORIG AND is_active AND match_status = 'MATCHED' AND (SELECT master_patient_id FROM gold.fhir_resources WHERE resource_type = 'Patient' AND fhir_id = 'silver-patient-$SB') = $MB_ORIG FROM gold.master_patients WHERE id = $MB_ORIG" "t"
+check_http "unmerging it again → 409" POST "$PMI/merges/$MERGE_B/unmerge" 409 "application/json" '{"reviewer": "smoke", "reason": "again"}'
+fc_curl -s -o /dev/null -X POST "$PMI/match/run"
+check_sql "a later run respects the human decisions (B not re-queued or re-merged)" \
+  "SELECT count(*) FROM pmi.match_candidates WHERE status = 'PENDING' AND $SB IN (silver_patient_a_id, silver_patient_b_id)" "0"
+
+check_http "unknown master → 404" GET "$PMI/masters/999999999" 404
+check_http "merging a MERGED master → 409" POST "$PMI/merge" 409 "application/json" \
+  "{\"survivorMasterId\": $MA, \"absorbedMasterId\": $(psql_id "SELECT absorbed_master_id FROM gold.master_patient_merges WHERE survivor_master_id = $MA AND unmerged_at IS NULL LIMIT 1"), \"reviewer\": \"smoke\"}"
+SAVED_TOKEN="$TOKEN"
+TOKEN=""
+check_http "no token → 401" GET "$PMI/masters" 401
+TOKEN="$(get_token "system/*.rs")"
+check_http "read-only token can read masters (200)" GET "$PMI/masters?status=MATCHED&limit=5" 200
+check_http "read-only token cannot run matching (403)" POST "$PMI/match/run" 403
+check_http "read-only token cannot call GoldWriter's master endpoints directly (403)" POST \
+  "$FHIR_COMPLIANCE_URL/api/fhir/gold/masters/$MA/confirm" 403 "application/json" '{"decidedBy": "smoke"}'
+TOKEN="$SAVED_TOKEN"
 
 echo
 echo "=== Summary: $PASS passed, $FAIL failed ==="

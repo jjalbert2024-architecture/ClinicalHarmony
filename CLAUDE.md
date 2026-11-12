@@ -89,6 +89,17 @@ Future services follow the same pattern: `DB_*` env vars for the datasource, a `
 | `ONTOLOGY_SERVICE_HOST` | `ontology-service` (docker profile only) | Host for the ontology-service HTTP call made by `OntologyServiceClient` |
 | `ONTOLOGY_SERVICE_PORT` | `8082` | Port for the same call |
 
+### Environment variables (patient-index-service)
+
+Same `SPRING_PROFILES_ACTIVE` + `DB_*` + inbound `OAUTH_ISSUER_URI` / `OAUTH_JWK_SET_URI` pattern as
+fhir-compliance-service, plus its outbound GoldWriter client:
+
+| Variable | Default | Purpose |
+|---|---|---|
+| `GOLD_WRITER_BASE_URL` | `http://localhost:8084` | fhir-compliance-service (compose: `http://fhir-compliance-service:8084`) |
+| `OAUTH_TOKEN_URI` | `http://localhost:8180/realms/clinicalharmony/protocol/openid-connect/token` | Its own client_credentials token (compose: `keycloak:8080`) |
+| `PMI_CLIENT_ID` / `PMI_CLIENT_SECRET` | `patient-index-service` / `patient-index-service-secret` | Its Keycloak client (DEV-only secret, in the realm JSON) |
+
 ### Environment variables (fhir-compliance-service)
 
 Same `SPRING_PROFILES_ACTIVE` + `DB_*` pattern as ontology-service, plus (Phase 5b slice 4):
@@ -133,7 +144,7 @@ api-gateway  →  dashboard-ui (React, 5 views)
 | ingestion-service | 8081 | + MLLP on 8887 |
 | ontology-service | 8082 | implemented |
 | fhir-compliance-service | 8084 | implemented |
-| patient-index-service | 8085 | placeholder |
+| patient-index-service | 8085 | implemented (Phase 6) |
 | rules-engine-service | 8083 | implemented |
 | api-gateway | 8080 | placeholder |
 | keycloak | 8180 | realm `clinicalharmony` (Phase 5b slice 4); container port 8080 |
@@ -296,9 +307,10 @@ this project generates FHIR for, and generates FHIR resources from a canonical p
   `/api/fhir-compliance/generate`, and `GoldRevalidationService` (seed rows). Don't add a second
   path. Its methods join the caller's transaction.
 - **Provisional masters**: one `PROVISIONAL` master per `silver.patients` row (migration 18's
-  `match_status`; xref now unique per Silver patient). Phase 6 should pick up `WHERE match_status =
-  'PROVISIONAL'` and set `MATCHED`/`MERGED`. Building a patient back-links any Gold resource
-  referencing `Patient/<id>` (subject/patient/beneficiary) to its master.
+  `match_status`; xref now unique per Silver patient). Building a patient back-links any Gold
+  resource referencing `Patient/<id>` (subject/patient/beneficiary) to its master. Phase 6's PMI
+  decides `MATCHED`/`MERGED`, but GoldWriter applies it (`confirmMaster` / `mergeMasters` /
+  `unmergeMasters`, see patient-index-service below).
 - **Lineage**: one `data_lineage` row per (target, step), upserted (unique index, migration 18).
   `transformation_details = {"target", "steps": [{stage, timestamp, transformer, input_hash,
   output_hash?, ref}]}`, with steps BRONZE→SILVER→GOLD (BRONZE only when `raw_message_id` is set,
@@ -331,7 +343,10 @@ this project generates FHIR for, and generates FHIR resources from a canonical p
   `start-dev --import-realm`, host **8180**. Realm from `keycloak/realm-clinicalharmony.json`
   (re-imported on every fresh container; dev DB inside the container, nothing in Postgres).
   Client `clinicalharmony-app` (confidential, client_credentials only, DEV secret
-  `clinicalharmony-app-secret`); all client scopes OPTIONAL (`system/<Type>.rs` × 5, `system/*.rs`,
+  `clinicalharmony-app-secret`) — plus, since Phase 6, client `patient-index-service` (secret
+  `patient-index-service-secret`, only `clinicalharmony/pipeline.write` offered; the PMI's identity
+  when calling GoldWriter). Adding a client means `docker compose up -d --force-recreate keycloak`
+  (the realm is only imported into a fresh container). All client scopes OPTIONAL (`system/<Type>.rs` × 5, `system/*.rs`,
   `clinicalharmony/pipeline.write`) — clients must request them; mappers add `aud=clinicalharmony-fhir`
   and `sub`. Realm import with explicit `clientScopes` replaces Keycloak's built-ins (no basic/roles
   scopes), hence the client-level `sub` mapper. Keycloak only issues scopes it defines, so `.r`/`.s`
@@ -353,6 +368,42 @@ this project generates FHIR for, and generates FHIR resources from a canonical p
   `@ServiceConnection` Postgres WITHOUT `@Container` so Boot starts it once and both integration
   classes share one context/DB (with `@Container` JUnit would stop it between classes under a cached context).
 - Smoke test: `fc_curl`/`TOKEN` send a Keycloak token on every fhir-compliance call; section 14 = auth.
+
+### patient-index-service (implemented — Phase 6)
+
+Patient Master Index on port 8085. Package `com.clinicalharmony.patientindex`.
+
+- **Never writes `gold.*`** (user decision at Phase 6 scoping — keeps GoldWriter the only Gold
+  writer). Reads `silver.patients` + `gold.*` (SELECT only); its own state is the `pmi` schema; every
+  Gold change is an HTTP call to fhir-compliance-service's `POST /api/fhir/gold/masters/merge`,
+  `/{id}/confirm`, `/merges/{id}/unmerge` (`GoldMasterController` → new `GoldWriter.mergeMasters /
+  confirmMaster / unmergeMasters`, one transaction each, `gold.master_patient_merges` history +
+  `PMI_MERGE`/`PMI_UNMERGE`/`PMI_MATCH` lineage). `client/GoldWriterClient` uses the PMI's OWN
+  Keycloak client (`client/ClientCredentialsTokenProvider`, hand-rolled client_credentials + cache —
+  spring-security-oauth2-client wasn't in ~/.m2, so no download), forwards `X-Correlation-Id` from MDC,
+  refreshes + retries once on 401, maps 4xx → `GoldWriterRejectedException` (status kept), 5xx/IO →
+  `GoldWriterUnavailableException` (→ 502). Uses `JdkClientHttpRequestFactory` because
+  HttpURLConnection throws `HttpRetryException` on a 401 to a streamed POST.
+- **Matching** (`matching/`, user-approved weights; tunable via rule `PMI_MATCH`): blocking (DOB ·
+  Double Metaphone surname + birth year via commons-codec · phone) → deterministic rules
+  (`SAME_SOURCE_MRN`, `EXACT_NAME_DOB_PLUS_PHONE_OR_ZIP`, both blocked by DOB-disagree/sex conflict)
+  → weighted agreement, score = Σ/Σmax over fields present on both; ≥0.85 auto, 0.60–0.85 review.
+  Hand-written `JaroWinkler` (tested against Winkler's published values) + `Nicknames` table.
+  Guard added during the build and approved by the user: `minComparableWeight` 10 — sparse
+  pairs (e.g. DOB-only, 5/5 = 1.0) can't auto-merge, only go to review.
+- **Run semantics** (`MatchingRunService`): only pairs with ≥1 PROVISIONAL master; auto pairs →
+  union-find clusters → merge into the lowest master id; review items deduped per (post-merge)
+  master pair incl. existing PENDING ones; stale PENDING → SUPERSEDED; remaining PROVISIONAL
+  masters confirmed unless awaiting review or in a refused merge. `PmiLock` serializes runs/reviews.
+- **Reviews** (`ReviewService`): accept → MANUAL merge of the *current* masters; reject and unmerge
+  write `pmi.match_exclusions`, which runs honor forever.
+- **Security**: GETs any valid token, POSTs `clinicalharmony/pipeline.write`, health public; same
+  issuer/audience as fhir-compliance-service.
+- **Tests (55)**: unit (matcher seed scenarios at exact scores, blocking, run/review services),
+  `GoldWriterClientTest` against a JDK `HttpServer` stub (`client/StubHttpServer`, no WireMock),
+  `@WebMvcTest` with the real security chain, and `PatientIndexIntegrationTest` (Testcontainers +
+  self-signed JWTs + `FakeGoldWriter` that applies decisions with SQL). The real GoldWriter side is
+  covered by fhir-compliance-service's `GoldMasterIntegrationTest` (270 tests there now).
 
 ### Bronze schema invariants
 
@@ -393,18 +444,25 @@ Phase 4. It also made the first-ever write to `gold.fhir_resources`, a table Pha
 left unused; no schema change was needed there either, since its columns and unique constraint on
 `(resource_type, fhir_id)` already existed.
 
+Phase 6 (`docs/db-init/20`, `21`, same non-destructive pattern, applied to the running container):
+`gold.master_patient_merges` (merge history incl. `moved_silver_patient_ids` / `moved_fhir_resource_ids`
+BIGINT[] so unmerge is exact; partial unique index = one live merge per absorbed master), new
+schema **`pmi`** (`match_runs`, `match_candidates` with a partial unique index on PENDING pairs,
+`match_exclusions`), rule `PMI_MATCH` (category `IDENTITY`, weights/thresholds in `rule_expression`);
+21 seeds 6 cross-source duplicate Silver patients (`PMI-0001..0006`).
+
 `ontology-service` and `rules-engine-service` both read `ontology.*` tables and write `silver.validation_reports` — always fully-qualify table names in SQL rather than relying solely on `hikari.schema` search-path scoping (same convention as `ingestion-service`). `fhir-compliance-service` follows the same convention, additionally writing `gold.fhir_resources`.
 
 ### Testing pattern
 
 - **Service-layer tests** (`*ProcessorTest` / `*ValidatorTest` / `*ServiceTest` / `*RuleTest`): plain JUnit 5, `mock(...)` the JdbcTemplate/repository, no Spring context — fast.
 - **Web-layer tests** (`*ControllerTest`): `@WebMvcTest` + `@MockBean` on the service layer — Spring MVC slice only, no DB.
-- **Integration tests** (`*IntegrationTest`, fhir-compliance-service only so far): `@SpringBootTest`
+- **Integration tests** (`*IntegrationTest`, fhir-compliance-service and patient-index-service): `@SpringBootTest`
   + Testcontainers Postgres initialized from `docs/db-init`, real HTTP via `TestRestTemplate`.
   `@Testcontainers(disabledWithoutDocker = true)`, so `mvn test` still passes without Docker.
   Extend `integration/AbstractIntegrationTest` (shared context + DB) and use its `withScopes(...)` /
   `anonymous()` clients — endpoints are Bearer-protected since Phase 5b slice 4.
-- **Black-box smoke test** (`scripts/smoke-test.sh`): once the stack is up (`docker-compose up -d`), this hits all four implemented services' REST endpoints over HTTP and asserts on real responses — accept/quarantine outcomes, ontology validation results, all 7 rule-engine evaluations and live rule-toggle behavior, US Core structural validation (including a `requiredAnyOf` choice-type check), and FHIR generation round-tripped back through validation to cross-check the generator against the validator. Fixture payloads live in `scripts/fixtures/`. This replaces the earlier "verified manually" note — it's now a repeatable, scriptable check (135 assertions as of Phase 5b slice 4; it fetches a Bearer token from the compose Keycloak for fhir-compliance-service calls). Gold-layer checks with no HTTP surface yet (lineage, masters) use `check_sql` via `docker exec` into `clinicalharmony-postgres`.
+- **Black-box smoke test** (`scripts/smoke-test.sh`): once the stack is up (`docker-compose up -d`), this hits all four implemented services' REST endpoints over HTTP and asserts on real responses — accept/quarantine outcomes, ontology validation results, all 7 rule-engine evaluations and live rule-toggle behavior, US Core structural validation (including a `requiredAnyOf` choice-type check), and FHIR generation round-tripped back through validation to cross-check the generator against the validator. Fixture payloads live in `scripts/fixtures/`. This replaces the earlier "verified manually" note — it's now a repeatable, scriptable check (168 assertions as of Phase 6; it fetches a Bearer token from the compose Keycloak for fhir-compliance-service and patient-index-service calls; section 15 = PMI, which inserts fresh random synthetic patients each run so it stays rerunnable). Gold-layer checks with no HTTP surface yet (lineage, masters) use `check_sql` via `docker exec` into `clinicalharmony-postgres`.
 
 ## Local Docker environment
 
@@ -430,13 +488,14 @@ Phases are meant to be fully complete before the next starts. Current state as o
   unused until now) — REST endpoints on port 8084. Scoped deliberately as structural-only
   (required-field presence, not full cardinality/terminology-binding/invariant conformance) per
   the user's choice during Phase 5 scoping, prioritizing breadth (all 7 resource types) over depth.
-- **Phase 5b** (in progress): the rest of the original Phase 5 plan, in four branches/PRs —
+- **Phase 5b** (done): the rest of the original Phase 5 plan, in four branches/PRs —
   (1) `phase-5b-fhir-validator`: HL7 validator vs US Core 6.1.0 + Silver builders (done, merged as
   PR #8); (2) `phase-5b-ccda-transformer`: C-CDA → FHIR (done, merged as PR #9);
   (3) `phase-5b-gold-writer-cms0057`: GoldWriter + data_lineage + CMS-0057 read endpoints (done,
   merged as PR #10); (4) `phase-5b-smart-oauth`: SMART on FHIR backend services / Keycloak 26.8
-  (built 2026-11-12, awaiting the user's Postman check + PR).
-- **Phase 6** (after 5b): patient-index-service (PMI + deduplication)
+  (done, merged as PR #11).
+- **Phase 6** (built 2026-11-12 on branch `patient-index-service`, awaiting the user's Postman check
+  + PR): patient-index-service (PMI + deduplication) — see its section above.
 - **Phase 7**: api-gateway
 - **Phase 8**: dashboard-ui (React, 5 views)
 - **Phase 9**: data-generator (Python)

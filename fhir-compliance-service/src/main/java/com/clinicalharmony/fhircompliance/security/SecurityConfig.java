@@ -21,7 +21,7 @@ import org.springframework.security.web.SecurityFilterChain;
  *   <tr><td>SMART scope</td><td>{@code /fhir/r4/**}: {@code system/<Type>.r} to read,
  *       {@code .s} to search ({@link SmartScopeAuthorizationManager})</td></tr>
  *   <tr><td>{@code clinicalharmony/pipeline.write}</td><td>everything that writes Gold or rule
- *       config: build, gold/revalidate, fhir-compliance generate + rule toggle</td></tr>
+ *       config: build, gold/revalidate, gold/masters/** (PMI decisions), fhir-compliance generate + rule toggle</td></tr>
  *   <tr><td>any valid token</td><td>{@code POST /api/fhir/convert/ccda} (whole patient
  *       documents, not persisted) and anything not listed</td></tr>
  * </table>
@@ -49,7 +49,8 @@ public class SecurityConfig {
                         .requestMatchers("/error").permitAll()
                         .requestMatchers("/fhir/**").access(new SmartScopeAuthorizationManager())
                         .requestMatchers(HttpMethod.POST, "/api/fhir/build", "/api/fhir/build/**",
-                                "/api/fhir/gold/revalidate", "/api/fhir-compliance/generate").hasAuthority(PIPELINE_WRITE_AUTHORITY)
+                                "/api/fhir/gold/revalidate", "/api/fhir/gold/masters/**",
+                                "/api/fhir-compliance/generate").hasAuthority(PIPELINE_WRITE_AUTHORITY)
                         .requestMatchers(HttpMethod.PUT, "/api/fhir-compliance/rules/*/toggle").hasAuthority(PIPELINE_WRITE_AUTHORITY)
                         .anyRequest().authenticated())
                 .oauth2ResourceServer(oauth -> oauth

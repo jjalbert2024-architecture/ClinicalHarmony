@@ -109,6 +109,32 @@ public class GoldFhirResourceRepository {
     }
 
     /**
+     * PMI merge: moves every Gold resource linked to {@code fromMasterId} onto {@code toMasterId}.
+     * Returns the ids moved, which GoldWriter records on the merge row so an unmerge can move
+     * exactly those back.
+     */
+    public List<Long> repointMaster(long fromMasterId, long toMasterId) {
+        return jdbcTemplate.query("""
+                        UPDATE gold.fhir_resources SET master_patient_id = ?, updated_at = now()
+                        WHERE master_patient_id = ?
+                        RETURNING id
+                        """,
+                (rs, n) -> rs.getLong(1), toMasterId, fromMasterId);
+    }
+
+    /** PMI unmerge: moves these rows back, but only the ones still on {@code fromMasterId}. */
+    public int repointIds(List<Long> ids, long fromMasterId, long toMasterId) {
+        if (ids.isEmpty()) {
+            return 0;
+        }
+        return jdbcTemplate.update("""
+                        UPDATE gold.fhir_resources SET master_patient_id = ?, updated_at = now()
+                        WHERE master_patient_id = ? AND id = ANY (?::bigint[])
+                        """,
+                toMasterId, fromMasterId, PgArrays.bigintArray(ids));
+    }
+
+    /**
      * Search one resource type. Each criterion is an SQL predicate over {@code resource_json} /
      * {@code fhir_id} with {@code ?} placeholders (built by the caller from a whitelist — never
      * from raw request text); all must match.

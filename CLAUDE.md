@@ -494,8 +494,8 @@ Phases are meant to be fully complete before the next starts. Current state as o
   (3) `phase-5b-gold-writer-cms0057`: GoldWriter + data_lineage + CMS-0057 read endpoints (done,
   merged as PR #10); (4) `phase-5b-smart-oauth`: SMART on FHIR backend services / Keycloak 26.8
   (done, merged as PR #11).
-- **Phase 6** (built 2026-11-12 on branch `patient-index-service`, awaiting the user's Postman check
-  + PR): patient-index-service (PMI + deduplication) — see its section above.
+- **Phase 6** (done, merged as PR #12): patient-index-service (PMI + deduplication) — see its
+  section above.
 - **Phase 7**: api-gateway
 - **Phase 8**: dashboard-ui (React, 5 views)
 - **Phase 9**: data-generator (Python)

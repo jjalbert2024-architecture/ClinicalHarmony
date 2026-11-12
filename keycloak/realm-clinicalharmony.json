@@ -1,0 +1,108 @@
+{
+  "realm": "clinicalharmony",
+  "displayName": "ClinicalHarmony",
+  "enabled": true,
+  "sslRequired": "none",
+  "accessTokenLifespan": 300,
+  "registrationAllowed": false,
+  "clientScopes": [
+    {
+      "name": "system/Coverage.rs",
+      "description": "SMART v2: read + search Coverage (CMS-0057-F payer API)",
+      "protocol": "openid-connect",
+      "attributes": { "include.in.token.scope": "true", "display.on.consent.screen": "false" }
+    },
+    {
+      "name": "system/PractitionerRole.rs",
+      "description": "SMART v2: read + search PractitionerRole (CMS-0057-F provider directory)",
+      "protocol": "openid-connect",
+      "attributes": { "include.in.token.scope": "true", "display.on.consent.screen": "false" }
+    },
+    {
+      "name": "system/MedicationKnowledge.rs",
+      "description": "SMART v2: read + search MedicationKnowledge (CMS-0057-F formulary)",
+      "protocol": "openid-connect",
+      "attributes": { "include.in.token.scope": "true", "display.on.consent.screen": "false" }
+    },
+    {
+      "name": "system/MeasureReport.rs",
+      "description": "SMART v2: read + search MeasureReport (DEQM)",
+      "protocol": "openid-connect",
+      "attributes": { "include.in.token.scope": "true", "display.on.consent.screen": "false" }
+    },
+    {
+      "name": "system/Device.rs",
+      "description": "SMART v2: read + search Device",
+      "protocol": "openid-connect",
+      "attributes": { "include.in.token.scope": "true", "display.on.consent.screen": "false" }
+    },
+    {
+      "name": "system/*.rs",
+      "description": "SMART v2: read + search every resource type the server exposes",
+      "protocol": "openid-connect",
+      "attributes": { "include.in.token.scope": "true", "display.on.consent.screen": "false" }
+    },
+    {
+      "name": "clinicalharmony/pipeline.write",
+      "description": "Non-SMART operational scope: build/revalidate Gold, generate FHIR, toggle rules",
+      "protocol": "openid-connect",
+      "attributes": { "include.in.token.scope": "true", "display.on.consent.screen": "false" }
+    }
+  ],
+  "defaultDefaultClientScopes": [],
+  "defaultOptionalClientScopes": [],
+  "clients": [
+    {
+      "clientId": "clinicalharmony-app",
+      "name": "ClinicalHarmony backend service",
+      "description": "Confidential client for SMART Backend Services-style client_credentials access. DEV-ONLY secret.",
+      "enabled": true,
+      "protocol": "openid-connect",
+      "publicClient": false,
+      "clientAuthenticatorType": "client-secret",
+      "secret": "clinicalharmony-app-secret",
+      "serviceAccountsEnabled": true,
+      "standardFlowEnabled": false,
+      "implicitFlowEnabled": false,
+      "directAccessGrantsEnabled": false,
+      "fullScopeAllowed": false,
+      "attributes": {
+        "access.token.lifespan": "300"
+      },
+      "protocolMappers": [
+        {
+          "name": "audience: clinicalharmony-fhir",
+          "protocol": "openid-connect",
+          "protocolMapper": "oidc-audience-mapper",
+          "consentRequired": false,
+          "config": {
+            "included.custom.audience": "clinicalharmony-fhir",
+            "access.token.claim": "true",
+            "id.token.claim": "false",
+            "introspection.token.claim": "true"
+          }
+        },
+        {
+          "name": "sub",
+          "protocol": "openid-connect",
+          "protocolMapper": "oidc-sub-mapper",
+          "consentRequired": false,
+          "config": {
+            "access.token.claim": "true",
+            "introspection.token.claim": "true"
+          }
+        }
+      ],
+      "defaultClientScopes": [],
+      "optionalClientScopes": [
+        "system/Coverage.rs",
+        "system/PractitionerRole.rs",
+        "system/MedicationKnowledge.rs",
+        "system/MeasureReport.rs",
+        "system/Device.rs",
+        "system/*.rs",
+        "clinicalharmony/pipeline.write"
+      ]
+    }
+  ]
+}

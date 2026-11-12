@@ -1,0 +1,285 @@
+{
+  "info": {
+    "name": "ClinicalHarmony · Phase 5b slice 4 — SMART on FHIR (Keycloak)",
+    "description": "SMART on FHIR backend services: Keycloak client_credentials tokens (0b stores a full-scope token; 40 stores a narrow system/Coverage.rs token in narrow_token), the public SMART discovery document, and the 401/403 rules — OperationOutcomes on /fhir/**, plain JSON elsewhere, insufficient_scope naming the missing scope. Make sure `docker-compose up -d` is running. Run '0b. Auth' first: it does a client_credentials grant against Keycloak (realm clinicalharmony, {{keycloak_url}}) and stores the token in the collection variable access_token, which every request inherits via the collection's Bearer auth (public endpoints ignore it). Tokens live 5 minutes — re-run 0b when you get 401s.",
+    "schema": "https://schema.getpostman.com/json/collection/v2.1.0/collection.json"
+  },
+  "auth": {
+    "type": "bearer",
+    "bearer": [
+      {
+        "key": "token",
+        "value": "{{access_token}}",
+        "type": "string"
+      }
+    ]
+  },
+  "item": [
+    {
+      "name": "0. Health check",
+      "request": {
+        "method": "GET",
+        "url": "{{base_url}}/actuator/health",
+        "description": "Expect: 200 OK, body `{\"status\":\"UP\"}`. If this fails, the container isn't running — check `docker ps` for clinicalharmony-fhir-compliance-service."
+      }
+    },
+    {
+      "name": "0b. Auth — get access token (Keycloak client_credentials)",
+      "event": [
+        {
+          "listen": "test",
+          "script": {
+            "type": "text/javascript",
+            "exec": [
+              "pm.test('token issued', () => pm.response.to.have.status(200));",
+              "const body = pm.response.json();",
+              "pm.collectionVariables.set('access_token', body.access_token);",
+              "console.log('scope granted:', body.scope, '| expires_in:', body.expires_in);"
+            ]
+          }
+        }
+      ],
+      "request": {
+        "method": "POST",
+        "auth": {
+          "type": "basic",
+          "basic": [
+            {
+              "key": "username",
+              "value": "{{client_id}}",
+              "type": "string"
+            },
+            {
+              "key": "password",
+              "value": "{{client_secret}}",
+              "type": "string"
+            }
+          ]
+        },
+        "header": [],
+        "body": {
+          "mode": "urlencoded",
+          "urlencoded": [
+            {
+              "key": "grant_type",
+              "value": "client_credentials"
+            },
+            {
+              "key": "scope",
+              "value": "system/*.rs clinicalharmony/pipeline.write"
+            }
+          ]
+        },
+        "url": "{{keycloak_url}}/realms/clinicalharmony/protocol/openid-connect/token",
+        "description": "SMART Backend Services-style client_credentials grant (client secret via HTTP Basic). Requests every SMART read scope plus the clinicalharmony/pipeline.write operational scope; the test script stores the token in {{access_token}}, which the collection's Bearer auth sends on every request. Expect: 200 with access_token, token_type Bearer, expires_in 300, and scope echoing what was granted."
+      }
+    },
+    {
+      "name": "36. SMART — discovery (/.well-known/smart-configuration)",
+      "request": {
+        "method": "GET",
+        "header": [],
+        "url": "{{base_url}}/.well-known/smart-configuration",
+        "description": "Public, no token. Expect: 200 JSON pointing at the Keycloak realm — issuer, token_endpoint, jwks_uri; grant_types_supported [client_credentials]; capabilities incl. client-confidential-symmetric + permission-v2; scopes_supported lists system/<Type>.rs for the 5 CMS-0057 types, system/*.rs and clinicalharmony/pipeline.write.",
+        "auth": {
+          "type": "noauth"
+        }
+      }
+    },
+    {
+      "name": "37. SMART — discovery at the FHIR base (spec location)",
+      "request": {
+        "method": "GET",
+        "header": [],
+        "url": "{{base_url}}/fhir/r4/.well-known/smart-configuration",
+        "description": "Same document at [FHIR base]/.well-known/smart-configuration, where the SMART spec says clients look. Public.",
+        "auth": {
+          "type": "noauth"
+        }
+      }
+    },
+    {
+      "name": "38. Auth — no token on /fhir/r4 → 401 OperationOutcome",
+      "request": {
+        "method": "GET",
+        "header": [
+          {
+            "key": "X-Correlation-Id",
+            "value": "postman-auth-401"
+          }
+        ],
+        "url": "{{base_url}}/fhir/r4/Coverage/cms-coverage-seed-0001",
+        "description": "Expect: 401, application/fhir+json OperationOutcome with issue code 'login', a WWW-Authenticate: Bearer realm=\"clinicalharmony\" header, and the X-Correlation-Id you sent echoed back.",
+        "auth": {
+          "type": "noauth"
+        }
+      }
+    },
+    {
+      "name": "39. Auth — invalid token → 401 invalid_token",
+      "request": {
+        "method": "GET",
+        "header": [],
+        "url": "{{base_url}}/fhir/r4/Coverage/cms-coverage-seed-0001",
+        "description": "Expect: 401 OperationOutcome; WWW-Authenticate carries error=\"invalid_token\" and the reason in error_description.",
+        "auth": {
+          "type": "bearer",
+          "bearer": [
+            {
+              "key": "token",
+              "value": "not-a-real-jwt",
+              "type": "string"
+            }
+          ]
+        }
+      }
+    },
+    {
+      "name": "40. Auth — get a NARROW token (system/Coverage.rs only)",
+      "event": [
+        {
+          "listen": "test",
+          "script": {
+            "type": "text/javascript",
+            "exec": [
+              "pm.test('token issued', () => pm.response.to.have.status(200));",
+              "const body = pm.response.json();",
+              "pm.collectionVariables.set('narrow_token', body.access_token);",
+              "console.log('scope granted:', body.scope, '| expires_in:', body.expires_in);"
+            ]
+          }
+        }
+      ],
+      "request": {
+        "method": "POST",
+        "auth": {
+          "type": "basic",
+          "basic": [
+            {
+              "key": "username",
+              "value": "{{client_id}}",
+              "type": "string"
+            },
+            {
+              "key": "password",
+              "value": "{{client_secret}}",
+              "type": "string"
+            }
+          ]
+        },
+        "header": [],
+        "body": {
+          "mode": "urlencoded",
+          "urlencoded": [
+            {
+              "key": "grant_type",
+              "value": "client_credentials"
+            },
+            {
+              "key": "scope",
+              "value": "system/Coverage.rs"
+            }
+          ]
+        },
+        "url": "{{keycloak_url}}/realms/clinicalharmony/protocol/openid-connect/token",
+        "description": "Stores a token that can only read/search Coverage in {{narrow_token}}, used by requests 41-43."
+      }
+    },
+    {
+      "name": "41. Auth — narrow token reads Coverage → 200",
+      "request": {
+        "method": "GET",
+        "header": [],
+        "url": "{{base_url}}/fhir/r4/Coverage/cms-coverage-seed-0001",
+        "description": "system/Coverage.rs grants both read (r) and search (s) on Coverage. Expect: 200.",
+        "auth": {
+          "type": "bearer",
+          "bearer": [
+            {
+              "key": "token",
+              "value": "{{narrow_token}}",
+              "type": "string"
+            }
+          ]
+        }
+      }
+    },
+    {
+      "name": "42. Auth — narrow token searches MeasureReport → 403",
+      "request": {
+        "method": "GET",
+        "header": [],
+        "url": "{{base_url}}/fhir/r4/MeasureReport?status=complete",
+        "description": "Expect: 403 OperationOutcome with issue code 'forbidden' naming the missing scope (system/MeasureReport.s), and WWW-Authenticate: Bearer ... error=\"insufficient_scope\", scope=\"system/MeasureReport.s\".",
+        "auth": {
+          "type": "bearer",
+          "bearer": [
+            {
+              "key": "token",
+              "value": "{{narrow_token}}",
+              "type": "string"
+            }
+          ]
+        }
+      }
+    },
+    {
+      "name": "43. Auth — narrow token on gold/revalidate → 403 (needs pipeline.write)",
+      "request": {
+        "method": "POST",
+        "header": [],
+        "url": "{{base_url}}/api/fhir/gold/revalidate",
+        "description": "Gold writers need clinicalharmony/pipeline.write. Off /fhir the error keeps this service's usual shape: {\"error\":\"Forbidden\",\"message\":\"...clinicalharmony/pipeline.write\"}.",
+        "auth": {
+          "type": "bearer",
+          "bearer": [
+            {
+              "key": "token",
+              "value": "{{narrow_token}}",
+              "type": "string"
+            }
+          ]
+        }
+      }
+    },
+    {
+      "name": "44. Auth — no token on build → 401 (plain JSON)",
+      "request": {
+        "method": "POST",
+        "header": [],
+        "url": "{{base_url}}/api/fhir/build",
+        "description": "Expect: 401 {\"error\":\"Unauthorized\",...} — not an OperationOutcome, since this isn't a FHIR endpoint.",
+        "auth": {
+          "type": "noauth"
+        }
+      }
+    }
+  ],
+  "variable": [
+    {
+      "key": "base_url",
+      "value": "http://localhost:8084"
+    },
+    {
+      "key": "keycloak_url",
+      "value": "http://localhost:8180"
+    },
+    {
+      "key": "client_id",
+      "value": "clinicalharmony-app"
+    },
+    {
+      "key": "client_secret",
+      "value": "clinicalharmony-app-secret",
+      "description": "DEV-ONLY secret from keycloak/realm-clinicalharmony.json"
+    },
+    {
+      "key": "access_token",
+      "value": ""
+    },
+    {
+      "key": "narrow_token",
+      "value": ""
+    }
+  ]
+}

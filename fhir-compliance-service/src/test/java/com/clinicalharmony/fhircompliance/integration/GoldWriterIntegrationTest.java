@@ -1,23 +1,17 @@
 package com.clinicalharmony.fhircompliance.integration;
 
 import com.clinicalharmony.fhircompliance.gold.Hashes;
+import com.clinicalharmony.fhircompliance.security.SmartScopes;
 import com.fasterxml.jackson.databind.JsonNode;
 import com.fasterxml.jackson.databind.ObjectMapper;
+import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 import org.springframework.beans.factory.annotation.Autowired;
-import org.springframework.boot.test.context.SpringBootTest;
 import org.springframework.boot.test.web.client.TestRestTemplate;
-import org.springframework.boot.testcontainers.service.connection.ServiceConnection;
 import org.springframework.http.HttpStatus;
 import org.springframework.http.ResponseEntity;
 import org.springframework.jdbc.core.JdbcTemplate;
-import org.testcontainers.containers.PostgreSQLContainer;
-import org.testcontainers.junit.jupiter.Container;
-import org.testcontainers.junit.jupiter.Testcontainers;
-import org.testcontainers.utility.DockerImageName;
-import org.testcontainers.utility.MountableFile;
 
-import java.nio.file.Path;
 import java.util.List;
 import java.util.Map;
 
@@ -36,28 +30,22 @@ import static org.assertj.core.api.Assertions.assertThat;
  * <p>CMS-0057: migration 19's seed is validated by GoldWriter on startup and served by the
  * /fhir/r4 read/search endpoints.
  *
- * <p>Needs Docker; skipped (not failed) without it.
+ * <p>Needs Docker; skipped (not failed) without it. Shared setup: AbstractIntegrationTest.
  */
-@SpringBootTest(webEnvironment = SpringBootTest.WebEnvironment.RANDOM_PORT)
-@Testcontainers(disabledWithoutDocker = true)
-class GoldWriterIntegrationTest {
-
-    @Container
-    @ServiceConnection
-    static final PostgreSQLContainer<?> POSTGRES = new PostgreSQLContainer<>(DockerImageName.parse("postgres:16-alpine"))
-            .withDatabaseName("clinicalharmony")
-            .withUsername("clinicalharmony")
-            .withPassword("clinicalharmony")
-            .withCopyFileToContainer(MountableFile.forHostPath(Path.of("..", "docs", "db-init").toAbsolutePath()),
-                    "/docker-entrypoint-initdb.d/");
+class GoldWriterIntegrationTest extends AbstractIntegrationTest {
 
     private static final String ADT = String.join("\r",
             "MSH|^~\\&|EPIC|IT_HOSPITAL|CLINICALHARMONY|CH|20261111090000||ADT^A01|IT-MSG-0001|P|2.5",
             "PID|1||IT-0001^^^IT_HOSPITAL^MR||Nakamura^Kenji||19720315|M|||88 Harbor St^^Seattle^WA^98101||206-555-0177",
             "PV1|1|O");
 
-    @Autowired
+    /** Every call here is authorized; the auth rules themselves are SecurityIntegrationTest's job. */
     private TestRestTemplate http;
+
+    @BeforeEach
+    void authorize() {
+        http = withScopes(SmartScopes.PIPELINE_WRITE, "system/*.rs");
+    }
 
     @Autowired
     private JdbcTemplate jdbc;

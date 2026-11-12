@@ -1,5 +1,6 @@
 package com.clinicalharmony.fhircompliance.web;
 
+import com.clinicalharmony.fhircompliance.security.WebSecurityTestConfig;
 import com.clinicalharmony.fhircompliance.service.ccda.CcdaConversionResult;
 import com.clinicalharmony.fhircompliance.service.ccda.CcdaConversionService;
 import com.clinicalharmony.fhircompliance.service.ccda.CcdaDocumentTooLargeException;
@@ -11,6 +12,7 @@ import com.fasterxml.jackson.databind.ObjectMapper;
 import org.junit.jupiter.api.Test;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.boot.test.autoconfigure.web.servlet.WebMvcTest;
+import org.springframework.context.annotation.Import;
 import org.springframework.http.MediaType;
 import org.springframework.test.context.bean.override.mockito.MockitoBean;
 import org.springframework.test.web.servlet.MockMvc;
@@ -25,6 +27,7 @@ import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.
 import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.status;
 
 @WebMvcTest(CcdaConversionController.class)
+@Import(WebSecurityTestConfig.class)
 class CcdaConversionControllerTest {
 
     private static final String URL = "/api/fhir/convert/ccda";

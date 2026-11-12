@@ -89,6 +89,15 @@ Future services follow the same pattern: `DB_*` env vars for the datasource, a `
 | `ONTOLOGY_SERVICE_HOST` | `ontology-service` (docker profile only) | Host for the ontology-service HTTP call made by `OntologyServiceClient` |
 | `ONTOLOGY_SERVICE_PORT` | `8082` | Port for the same call |
 
+### Environment variables (fhir-compliance-service)
+
+Same `SPRING_PROFILES_ACTIVE` + `DB_*` pattern as ontology-service, plus (Phase 5b slice 4):
+
+| Variable | Default | Purpose |
+|---|---|---|
+| `OAUTH_ISSUER_URI` | `http://localhost:8180/realms/clinicalharmony` | Required `iss` of Bearer JWTs; also the base for SMART discovery URLs |
+| `OAUTH_JWK_SET_URI` | `http://localhost:8180/realms/clinicalharmony/protocol/openid-connect/certs` | Where signing keys are fetched (compose: `http://keycloak:8080/...`) |
+
 ## Architecture
 
 ClinicalHarmony is a Bronze → Silver → Gold medallion pipeline for healthcare data. Each layer is a PostgreSQL schema; each service is a standalone Spring Boot app orchestrated by Docker Compose.
@@ -127,6 +136,7 @@ api-gateway  →  dashboard-ui (React, 5 views)
 | patient-index-service | 8085 | placeholder |
 | rules-engine-service | 8083 | implemented |
 | api-gateway | 8080 | placeholder |
+| keycloak | 8180 | realm `clinicalharmony` (Phase 5b slice 4); container port 8080 |
 | dashboard-ui | 3000 | placeholder |
 
 Services still showing `[placeholder]` in docker-compose.yml boot a bare `eclipse-temurin:17-jre` image and idle. When a service is implemented, replace its `image`/`command` with a `build:` block pointing to that service's `Dockerfile`.
@@ -315,6 +325,35 @@ this project generates FHIR for, and generates FHIR resources from a canonical p
   Runs in `mvn test`, skipped without Docker. It needs the `testcontainers/ryuk:0.12.0` image (pulled
   with approval).
 
+### fhir-compliance-service — Phase 5b slice 4 (SMART on FHIR / Keycloak)
+
+- **Keycloak 26.8.2** (`quay.io/keycloak/keycloak:26.8.2`, pulled with approval) in compose,
+  `start-dev --import-realm`, host **8180**. Realm from `keycloak/realm-clinicalharmony.json`
+  (re-imported on every fresh container; dev DB inside the container, nothing in Postgres).
+  Client `clinicalharmony-app` (confidential, client_credentials only, DEV secret
+  `clinicalharmony-app-secret`); all client scopes OPTIONAL (`system/<Type>.rs` × 5, `system/*.rs`,
+  `clinicalharmony/pipeline.write`) — clients must request them; mappers add `aud=clinicalharmony-fhir`
+  and `sub`. Realm import with explicit `clientScopes` replaces Keycloak's built-ins (no basic/roles
+  scopes), hence the client-level `sub` mapper. Keycloak only issues scopes it defines, so `.r`/`.s`
+  alone can't be requested live (the server still enforces the split; Java tests cover it).
+- **Issuer vs JWKS**: `KC_HOSTNAME=http://localhost:8180` pins `iss`; the service validates
+  `issuer-uri` = that (`OAUTH_ISSUER_URI`) but fetches keys from `keycloak:8080` (`OAUTH_JWK_SET_URI`).
+  Boot uses jwk-set-uri for keys and still adds the issuer + `audiences` validators.
+- **`security/` package**: `SecurityConfig` (access matrix — see the service README),
+  `SmartScopes` (v2 `cruds` + v1 `.read`/`.*`, `system/` only), `SmartScopeAuthorizationManager`
+  (`/fhir/r4/{type}` = search `.s`, `/{type}/{id}` = read `.r`; unsupported types need only a valid
+  token so the controller 404s), `SecurityErrorResponses` (401/403 as OperationOutcome under
+  `/fhir/**`, `{"error","message"}` elsewhere, RFC 6750 `WWW-Authenticate`),
+  `SmartConfigurationController` (`/.well-known/smart-configuration` + `/fhir/r4/.well-known/...`).
+- User decisions: Gold/config writers need `clinicalharmony/pipeline.write`; C-CDA convert needs any
+  token; stateless validators + rule GETs + discovery + health are public.
+- **Tests**: existing `@WebMvcTest`s `@Import(WebSecurityTestConfig)` (real chain + all-scopes JWT by
+  default); `SecurityWebTest` covers the matrix. Integration tests use self-signed RS256 JWTs
+  (`TestJwts`, same validators as prod) — no Keycloak container. `AbstractIntegrationTest` holds a
+  `@ServiceConnection` Postgres WITHOUT `@Container` so Boot starts it once and both integration
+  classes share one context/DB (with `@Container` JUnit would stop it between classes under a cached context).
+- Smoke test: `fc_curl`/`TOKEN` send a Keycloak token on every fhir-compliance call; section 14 = auth.
+
 ### Bronze schema invariants
 
 `bronze.raw_messages` CHECK constraints that Java code must match:
@@ -363,7 +402,9 @@ left unused; no schema change was needed there either, since its columns and uni
 - **Integration tests** (`*IntegrationTest`, fhir-compliance-service only so far): `@SpringBootTest`
   + Testcontainers Postgres initialized from `docs/db-init`, real HTTP via `TestRestTemplate`.
   `@Testcontainers(disabledWithoutDocker = true)`, so `mvn test` still passes without Docker.
-- **Black-box smoke test** (`scripts/smoke-test.sh`): once the stack is up (`docker-compose up -d`), this hits all four implemented services' REST endpoints over HTTP and asserts on real responses — accept/quarantine outcomes, ontology validation results, all 7 rule-engine evaluations and live rule-toggle behavior, US Core structural validation (including a `requiredAnyOf` choice-type check), and FHIR generation round-tripped back through validation to cross-check the generator against the validator. Fixture payloads live in `scripts/fixtures/`. This replaces the earlier "verified manually" note — it's now a repeatable, scriptable check (106 assertions as of Phase 5b slice 3). Gold-layer checks with no HTTP surface yet (lineage, masters) use `check_sql` via `docker exec` into `clinicalharmony-postgres`.
+  Extend `integration/AbstractIntegrationTest` (shared context + DB) and use its `withScopes(...)` /
+  `anonymous()` clients — endpoints are Bearer-protected since Phase 5b slice 4.
+- **Black-box smoke test** (`scripts/smoke-test.sh`): once the stack is up (`docker-compose up -d`), this hits all four implemented services' REST endpoints over HTTP and asserts on real responses — accept/quarantine outcomes, ontology validation results, all 7 rule-engine evaluations and live rule-toggle behavior, US Core structural validation (including a `requiredAnyOf` choice-type check), and FHIR generation round-tripped back through validation to cross-check the generator against the validator. Fixture payloads live in `scripts/fixtures/`. This replaces the earlier "verified manually" note — it's now a repeatable, scriptable check (135 assertions as of Phase 5b slice 4; it fetches a Bearer token from the compose Keycloak for fhir-compliance-service calls). Gold-layer checks with no HTTP surface yet (lineage, masters) use `check_sql` via `docker exec` into `clinicalharmony-postgres`.
 
 ## Local Docker environment
 
@@ -375,7 +416,7 @@ left unused; no schema change was needed there either, since its columns and uni
 
 ## Build order / phase plan
 
-Phases are meant to be fully complete before the next starts. Current state as of 2026-11-11:
+Phases are meant to be fully complete before the next starts. Current state as of 2026-11-12:
 
 - **Phase 1** (done): Foundation — docker-compose.yml, all 7 `docs/db-init/` SQL scripts, seed data.
 - **Phase 2 / 2b** (done): ingestion-service — all three intake paths (HL7 v2, FHIR JSON, Claims CSV) landing to Bronze.
@@ -392,8 +433,9 @@ Phases are meant to be fully complete before the next starts. Current state as o
 - **Phase 5b** (in progress): the rest of the original Phase 5 plan, in four branches/PRs —
   (1) `phase-5b-fhir-validator`: HL7 validator vs US Core 6.1.0 + Silver builders (done, merged as
   PR #8); (2) `phase-5b-ccda-transformer`: C-CDA → FHIR (done, merged as PR #9);
-  (3) `phase-5b-gold-writer-cms0057`: GoldWriter + data_lineage + CMS-0057 read endpoints (built
-  2026-11-11, awaiting the user's Postman check + PR); (4) SMART on FHIR / Keycloak.
+  (3) `phase-5b-gold-writer-cms0057`: GoldWriter + data_lineage + CMS-0057 read endpoints (done,
+  merged as PR #10); (4) `phase-5b-smart-oauth`: SMART on FHIR backend services / Keycloak 26.8
+  (built 2026-11-12, awaiting the user's Postman check + PR).
 - **Phase 6** (after 5b): patient-index-service (PMI + deduplication)
 - **Phase 7**: api-gateway
 - **Phase 8**: dashboard-ui (React, 5 views)

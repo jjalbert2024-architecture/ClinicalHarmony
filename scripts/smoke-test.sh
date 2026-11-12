@@ -9,6 +9,10 @@ INGESTION_URL="${INGESTION_URL:-http://localhost:8081}"
 ONTOLOGY_URL="${ONTOLOGY_URL:-http://localhost:8082}"
 RULES_URL="${RULES_URL:-http://localhost:8083}"
 FHIR_COMPLIANCE_URL="${FHIR_COMPLIANCE_URL:-http://localhost:8084}"
+KEYCLOAK_URL="${KEYCLOAK_URL:-http://localhost:8180}"
+TOKEN_URL="$KEYCLOAK_URL/realms/clinicalharmony/protocol/openid-connect/token"
+CLIENT_ID="${CLIENT_ID:-clinicalharmony-app}"
+CLIENT_SECRET="${CLIENT_SECRET:-clinicalharmony-app-secret}"  # dev-only secret from keycloak/realm-clinicalharmony.json
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 FIXTURES="$SCRIPT_DIR/fixtures"
@@ -17,6 +21,23 @@ trap 'rm -rf "$TMP"' EXIT
 
 PASS=0
 FAIL=0
+
+# Bearer token sent on every fhir-compliance-service call (check_http/check_header/fc_curl). Most
+# of fhir-compliance-service needs one since Phase 5b slice 4; public endpoints just ignore it.
+# Section 14 swaps it out to test the 401/403 paths.
+TOKEN=""
+fc_curl() {
+  if [[ -n "$TOKEN" ]]; then curl -H "Authorization: Bearer $TOKEN" "$@"; else curl "$@"; fi
+}
+
+# get_token "SPACE SEPARATED SCOPES" — SMART backend-services client_credentials grant against
+# Keycloak; prints the access token (empty on failure). Omit the scope arg to request none.
+get_token() {
+  local scope_args=()
+  [[ $# -gt 0 ]] && scope_args=(--data-urlencode "scope=$1")
+  curl -s -u "$CLIENT_ID:$CLIENT_SECRET" -d grant_type=client_credentials "${scope_args[@]+"${scope_args[@]}"}" "$TOKEN_URL" \
+    | python3 -c "import json,sys; print(json.load(sys.stdin).get('access_token',''))" 2>/dev/null
+}
 
 # check_http NAME METHOD URL EXPECTED_CODE [CONTENT_TYPE] [BODY_FILE_OR_STRING]
 check_http() {
@@ -29,7 +50,7 @@ check_http() {
     args+=(-d "$body")
   fi
   local actual
-  actual="$(curl "${args[@]}")"
+  actual="$(fc_curl "${args[@]}")"
   if [[ "$actual" == "$expected" ]]; then
     echo "  PASS  $name (HTTP $actual)"
     PASS=$((PASS + 1))
@@ -76,7 +97,7 @@ check_sql() {
 check_header() {
   local name="$1" url="$2" header="$3" expected="$4"
   local actual
-  actual="$(curl -s -o /dev/null -D - "$url" | tr -d '\r' | awk -F': ' -v h="$(echo "$header" | tr '[:upper:]' '[:lower:]')" 'tolower($1)==h{print $2}')"
+  actual="$(fc_curl -s -o /dev/null -D - "$url" | tr -d '\r' | awk -F': ' -v h="$(echo "$header" | tr '[:upper:]' '[:lower:]')" 'tolower($1)==h{print $2}')"
   if [[ "$actual" == "$expected" ]]; then
     echo "  PASS  $name ($actual)"
     PASS=$((PASS + 1))
@@ -91,6 +112,16 @@ for pair in "ingestion:$INGESTION_URL" "ontology:$ONTOLOGY_URL" "rules-engine:$R
   name="${pair%%:*}"; url="${pair#*:}"
   check_http "$name-service is up" GET "$url/actuator/health" 200
 done
+
+check_http "keycloak realm clinicalharmony is up" GET "$KEYCLOAK_URL/realms/clinicalharmony/.well-known/openid-configuration" 200
+
+# Full-access token for sections 7–13: every SMART read scope + the pipeline.write operational scope.
+TOKEN="$(get_token "system/*.rs clinicalharmony/pipeline.write")"
+if [[ -n "$TOKEN" ]]; then
+  echo "  PASS  client_credentials token issued for $CLIENT_ID"; PASS=$((PASS + 1))
+else
+  echo "  FAIL  could not get a token from $TOKEN_URL (is the keycloak container healthy?)"; FAIL=$((FAIL + 1))
+fi
 
 section "1. ingestion-service — HL7 v2 (REST)"
 check_http "valid ADT^A01 accepted" POST "$INGESTION_URL/api/ingestion/hl7" 201 "text/plain" "$FIXTURES/hl7_valid.txt"
@@ -149,7 +180,7 @@ curl -s -X PUT "$RULES_URL/api/rules/PATIENT_AGE_CONSISTENCY/toggle" > "$TMP/res
 check_json "rule restored to active" "$TMP/restored.json" "d['active']" "True"
 
 section "7. fhir-compliance-service — US Core structural validation"
-curl -s -X POST "$FHIR_COMPLIANCE_URL/api/fhir-compliance/validate" -H "Content-Type: application/json" \
+fc_curl -s -X POST "$FHIR_COMPLIANCE_URL/api/fhir-compliance/validate" -H "Content-Type: application/json" \
   --data-binary "@$FIXTURES/fhir_compliance_validate_request.json" > "$TMP/fhir_validate.json"
 check_json "complete Patient (p1) is valid" "$TMP/fhir_validate.json" \
   "[r for r in d['resourceResults'] if r['resourceId']=='p1'][0]['valid']" "True"
@@ -161,7 +192,7 @@ check_json "MedicationRequest missing medication[x] is invalid (m2)" "$TMP/fhir_
   "[r for r in d['resourceResults'] if r['resourceId']=='m2'][0]['valid']" "False"
 
 section "8. fhir-compliance-service — FHIR generation + Gold persistence + rule catalog"
-curl -s -X POST "$FHIR_COMPLIANCE_URL/api/fhir-compliance/generate" -H "Content-Type: application/json" \
+fc_curl -s -X POST "$FHIR_COMPLIANCE_URL/api/fhir-compliance/generate" -H "Content-Type: application/json" \
   --data-binary "@$FIXTURES/fhir_compliance_generate_request.json" > "$TMP/fhir_generate.json"
 check_json "generated Bundle has all 7 resource types" "$TMP/fhir_generate.json" \
   "len(set(e['resource']['resourceType'] for e in d['entry']))" "7"
@@ -174,7 +205,7 @@ d = json.load(open('$TMP/fhir_generate.json'))
 resources = [e['resource'] for e in d['entry']]
 json.dump({'patientId': 901, 'fhirResources': resources}, open('$TMP/fhir_roundtrip_request.json', 'w'))
 "
-curl -s -X POST "$FHIR_COMPLIANCE_URL/api/fhir-compliance/validate" -H "Content-Type: application/json" \
+fc_curl -s -X POST "$FHIR_COMPLIANCE_URL/api/fhir-compliance/validate" -H "Content-Type: application/json" \
   --data-binary "@$TMP/fhir_roundtrip_request.json" > "$TMP/fhir_roundtrip.json"
 check_json "every generated resource round-trips as US Core valid" "$TMP/fhir_roundtrip.json" \
   "d['allValid']" "True"
@@ -183,23 +214,23 @@ check_json "exactly 7 active USCORE rules" "$TMP/last_response.json" "len(d)" "7
 check_http "GET unknown rule returns 404" GET "$FHIR_COMPLIANCE_URL/api/fhir-compliance/rules/NOT_A_REAL_RULE" 404
 
 # Toggle off, confirm it's skipped (not failed) from validation, then always restore it.
-curl -s -X PUT "$FHIR_COMPLIANCE_URL/api/fhir-compliance/rules/USCORE_PATIENT_COMPLETENESS/toggle" > /dev/null
-curl -s -X POST "$FHIR_COMPLIANCE_URL/api/fhir-compliance/validate" -H "Content-Type: application/json" \
+fc_curl -s -X PUT "$FHIR_COMPLIANCE_URL/api/fhir-compliance/rules/USCORE_PATIENT_COMPLETENESS/toggle" > /dev/null
+fc_curl -s -X POST "$FHIR_COMPLIANCE_URL/api/fhir-compliance/validate" -H "Content-Type: application/json" \
   -d '{"patientId": 903, "fhirResources": [{"resourceType": "Patient", "id": "p-incomplete"}]}' > "$TMP/fhir_toggled_off.json"
 check_json "toggled-off Patient rule is skipped, not failed" "$TMP/fhir_toggled_off.json" \
   "d['allValid']" "True"
-curl -s -X PUT "$FHIR_COMPLIANCE_URL/api/fhir-compliance/rules/USCORE_PATIENT_COMPLETENESS/toggle" > "$TMP/fhir_restored.json"
+fc_curl -s -X PUT "$FHIR_COMPLIANCE_URL/api/fhir-compliance/rules/USCORE_PATIENT_COMPLETENESS/toggle" > "$TMP/fhir_restored.json"
 check_json "USCORE_PATIENT_COMPLETENESS restored to active" "$TMP/fhir_restored.json" "d['active']" "True"
 
 section "9. fhir-compliance-service — HL7 validator vs US Core 6.1.0 (Phase 5b)"
-curl -s -X POST "$FHIR_COMPLIANCE_URL/api/fhir/validate" -H "Content-Type: application/json" \
+fc_curl -s -X POST "$FHIR_COMPLIANCE_URL/api/fhir/validate" -H "Content-Type: application/json" \
   -d '{"resourceType":"Patient","name":[{"family":""}]}' > "$TMP/hl7_validate_bad.json"
 check_json "bare Patient is checked against US Core and fails" "$TMP/hl7_validate_bad.json" "d['compliant']" "False"
 check_json "missing gender reported at its FHIRPath with a suggested fix" "$TMP/hl7_validate_bad.json" \
   "[v['suggestedFix'] is not None for v in d['violations'] if v['location']=='Patient.gender']" "[True]"
 check_json "empty string reported at Patient.name[0].family" "$TMP/hl7_validate_bad.json" \
   "any(v['location']=='Patient.name[0].family' and v['severity']=='ERROR' for v in d['violations'])" "True"
-curl -s -X POST "$FHIR_COMPLIANCE_URL/api/fhir/validate" -H "Content-Type: application/fhir+json" \
+fc_curl -s -X POST "$FHIR_COMPLIANCE_URL/api/fhir/validate" -H "Content-Type: application/fhir+json" \
   -d '{"resourceType":"Patient","identifier":[{"system":"urn:x","value":"1"}],"name":[{"family":"Doe"}],"gender":"female"}' \
   > "$TMP/hl7_validate_good.json"
 check_json "complete Patient is US Core compliant" "$TMP/hl7_validate_good.json" "d['compliant']" "True"
@@ -207,7 +238,7 @@ check_http "non-FHIR payload rejected (400)" POST "$FHIR_COMPLIANCE_URL/api/fhir
 
 section "10. fhir-compliance-service — Silver → US Core FHIR → Gold (Phase 5b)"
 # Needs docs/db-init/16 + 17 applied (compliance_notes column + seed Silver patients).
-curl -s -X POST "$FHIR_COMPLIANCE_URL/api/fhir/build" > "$TMP/silver_build.json"
+fc_curl -s -X POST "$FHIR_COMPLIANCE_URL/api/fhir/build" > "$TMP/silver_build.json"
 check_json "seed patients SEED-0001/0002 build fully compliant" "$TMP/silver_build.json" \
   "all(r['compliantCount']==r['resourceCount'] for r in d if r['resources'][0]['fhirId'] in ('silver-patient-1','silver-patient-2'))" "True"
 check_json "deliberately bad seed patient is flagged (blank name + blank code)" "$TMP/silver_build.json" \
@@ -226,7 +257,7 @@ check_json "Patient + 3 Conditions + 2 MedicationRequests + 3 Observations" "$TM
 check_json "Bundle is a collection and every subject resolves to the Patient entry" "$TMP/ccda_good.json" \
   "(d['bundle']['type'], {e['resource']['subject']['reference'] for e in d['bundle']['entry'][1:]} == {d['bundle']['entry'][0]['fullUrl']})" \
   "('collection', True)"
-curl -s -X POST "$CCDA_URL" -H "Content-Type: application/xml" --data-binary "@$FIXTURES/ccda_compliant.xml" > "$TMP/ccda_good_again.json"
+fc_curl -s -X POST "$CCDA_URL" -H "Content-Type: application/xml" --data-binary "@$FIXTURES/ccda_compliant.xml" > "$TMP/ccda_good_again.json"
 python3 -c "import json; print(json.dumps([r['resourceId'] for r in json.load(open('$TMP/ccda_good.json'))['resources']]))" > "$TMP/ccda_ids_first.json"
 check_json "re-converting the same document yields the same resource ids" "$TMP/ccda_good_again.json" \
   "[r['resourceId'] for r in d['resources']] == json.load(open('$TMP/ccda_ids_first.json'))" "True"
@@ -245,7 +276,7 @@ check_http "DOCTYPE / XXE payload rejected (400)" POST "$CCDA_URL" 400 "applicat
   '<?xml version="1.0"?><!DOCTYPE x [<!ENTITY e SYSTEM "file:///etc/passwd">]><ClinicalDocument xmlns="urn:hl7-org:v3">&e;</ClinicalDocument>'
 check_http "XML that isn't a ClinicalDocument rejected (400)" POST "$CCDA_URL" 400 "application/xml" '<Patient xmlns="http://hl7.org/fhir"/>'
 check_http "JSON content type rejected (415)" POST "$CCDA_URL" 415 "application/json" '{"resourceType":"Patient"}'
-echoed="$(curl -s -o /dev/null -D - -X POST "$CCDA_URL" -H "Content-Type: application/xml" -H "X-Correlation-Id: smoke-ccda-1" \
+echoed="$(fc_curl -s -o /dev/null -D - -X POST "$CCDA_URL" -H "Content-Type: application/xml" -H "X-Correlation-Id: smoke-ccda-1" \
   --data-binary "@$FIXTURES/ccda_compliant.xml" | tr -d '\r' | awk -F': ' 'tolower($1)=="x-correlation-id"{print $2}')"
 if [[ "$echoed" == "smoke-ccda-1" ]]; then
   echo "  PASS  caller's X-Correlation-Id echoed back ($echoed)"; PASS=$((PASS + 1))
@@ -257,7 +288,7 @@ section "12. fhir-compliance-service — GoldWriter: provisional masters + linea
 # Needs docs/db-init/18 (match_status, nullable lineage source_id, unique lineage/xref indexes).
 check_json "every built Silver patient is linked to its own master" "$TMP/silver_build.json" \
   "all(r['masterPatientId'] for r in d) and len({r['masterPatientId'] for r in d}) == len(d)" "True"
-curl -s -X POST "$FHIR_COMPLIANCE_URL/api/fhir/build" > "$TMP/silver_rebuild.json"
+fc_curl -s -X POST "$FHIR_COMPLIANCE_URL/api/fhir/build" > "$TMP/silver_rebuild.json"
 python3 -c "import json; print(json.dumps({str(r['silverPatientId']): r['masterPatientId'] for r in json.load(open('$TMP/silver_build.json'))}))" > "$TMP/masters_first.json"
 check_json "rebuilding reuses the same masters (no duplicates)" "$TMP/silver_rebuild.json" \
   "{str(r['silverPatientId']): r['masterPatientId'] for r in d} == json.load(open('$TMP/masters_first.json'))" "True"
@@ -327,12 +358,75 @@ check_json "  → OperationOutcome invalid, names the parameter" "$TMP/last_resp
 check_http "search modifier → 400" GET "$R4/Coverage?status:not=active" 400
 check_http "_count over the cap → 400" GET "$R4/Device?_count=1000" 400
 check_http "wrongly typed reference → 400" GET "$R4/Coverage?patient=Practitioner/cms-practitioner-1" 400
-echoed="$(curl -s -o /dev/null -D - -H "X-Correlation-Id: smoke-cms-1" "$R4/Device/cms-device-seed-0002" | tr -d '\r' | awk -F': ' 'tolower($1)=="x-correlation-id"{print $2}')"
+echoed="$(fc_curl -s -o /dev/null -D - -H "X-Correlation-Id: smoke-cms-1" "$R4/Device/cms-device-seed-0002" | tr -d '\r' | awk -F': ' 'tolower($1)=="x-correlation-id"{print $2}')"
 if [[ "$echoed" == "smoke-cms-1" ]]; then
   echo "  PASS  caller's X-Correlation-Id echoed on /fhir/r4 ($echoed)"; PASS=$((PASS + 1))
 else
   echo "  FAIL  caller's X-Correlation-Id echoed on /fhir/r4 (got '$echoed')"; FAIL=$((FAIL + 1))
 fi
+
+section "14. fhir-compliance-service — SMART on FHIR backend services auth (Phase 5b slice 4)"
+FULL_TOKEN="$TOKEN"
+check_http "SMART discovery is public (/.well-known)" GET "$FHIR_COMPLIANCE_URL/.well-known/smart-configuration" 200
+check_json "  → token_endpoint is the Keycloak realm's" "$TMP/last_response.json" \
+  "d['token_endpoint']" "$TOKEN_URL"
+check_json "  → client_credentials grant, SMART v2 permissions, Coverage scope advertised" "$TMP/last_response.json" \
+  "(d['grant_types_supported'], 'permission-v2' in d['capabilities'], 'system/Coverage.rs' in d['scopes_supported'])" \
+  "(['client_credentials'], True, True)"
+check_http "SMART discovery also at the FHIR base (spec location)" GET "$R4/.well-known/smart-configuration" 200
+
+TOKEN=""
+check_http "no token on /fhir/r4 → 401" GET "$R4/Coverage/cms-coverage-seed-0001" 401
+check_json "  → OperationOutcome, issue code login" "$TMP/last_response.json" \
+  "(d['resourceType'], d['issue'][0]['code'])" "('OperationOutcome', 'login')"
+check_header "  → WWW-Authenticate Bearer challenge" "$R4/Coverage/cms-coverage-seed-0001" "WWW-Authenticate" 'Bearer realm="clinicalharmony"'
+echoed="$(curl -s -o /dev/null -D - -H "X-Correlation-Id: smoke-auth-1" "$R4/Coverage/cms-coverage-seed-0001" | tr -d '\r' | awk -F': ' 'tolower($1)=="x-correlation-id"{print $2}')"
+if [[ "$echoed" == "smoke-auth-1" ]]; then
+  echo "  PASS  X-Correlation-Id echoed on a 401 ($echoed)"; PASS=$((PASS + 1))
+else
+  echo "  FAIL  X-Correlation-Id echoed on a 401 (got '$echoed')"; FAIL=$((FAIL + 1))
+fi
+check_http "no token on POST /api/fhir/build → 401" POST "$FHIR_COMPLIANCE_URL/api/fhir/build" 401
+check_json "  → plain JSON error (not an OperationOutcome) off /fhir" "$TMP/last_response.json" "d['error']" "Unauthorized"
+check_http "no token on C-CDA convert → 401" POST "$CCDA_URL" 401 "application/xml" "$FIXTURES/ccda_compliant.xml"
+check_http "no token on POST /api/fhir/validate → still public (200)" POST "$FHIR_COMPLIANCE_URL/api/fhir/validate" 200 \
+  "application/fhir+json" "$FIXTURES/fhir_valid_patient.json"
+check_http "no token on GET /api/fhir-compliance/rules → still public (200)" GET "$FHIR_COMPLIANCE_URL/api/fhir-compliance/rules" 200
+
+# Flip one character in the middle of the signature (the last base64url char is partly padding bits,
+# so changing it may not change the decoded signature at all).
+TOKEN="$(python3 -c "import sys; h,p,s=sys.argv[1].split('.'); i=len(s)//2; s=s[:i]+('A' if s[i]!='A' else 'B')+s[i+1:]; print('.'.join([h,p,s]))" "$FULL_TOKEN")"
+check_http "tampered token signature → 401" GET "$R4/Coverage/cms-coverage-seed-0001" 401
+challenge="$(fc_curl -s -o /dev/null -D - "$R4/Coverage/cms-coverage-seed-0001" | tr -d '\r' | awk -F': ' 'tolower($1)=="www-authenticate"{print $2}')"
+if [[ "$challenge" == *'error="invalid_token"'* ]]; then
+  echo "  PASS    → WWW-Authenticate says invalid_token"; PASS=$((PASS + 1))
+else
+  echo "  FAIL    → WWW-Authenticate says invalid_token (got '$challenge')"; FAIL=$((FAIL + 1))
+fi
+
+TOKEN="$(get_token)"
+check_http "token with no scopes requested → 403 (SMART clients must ask for scopes)" GET "$R4/Coverage/cms-coverage-seed-0001" 403
+
+# The realm offers per-type .rs scopes (read + search); the finer .r-vs-.s split is enforced
+# server-side too but only covered by the Java tests, since Keycloak won't issue scopes it doesn't define.
+TOKEN="$(get_token "system/Coverage.rs")"
+check_http "system/Coverage.rs token reads Coverage by id → 200" GET "$R4/Coverage/cms-coverage-seed-0001" 200
+check_http "system/Coverage.rs token searches Coverage → 200" GET "$R4/Coverage?status=active" 200
+check_http "system/Coverage.rs token searching MeasureReport → 403" GET "$R4/MeasureReport?status=complete" 403
+check_json "  → OperationOutcome forbidden, names system/MeasureReport.s" "$TMP/last_response.json" \
+  "(d['issue'][0]['code'], 'system/MeasureReport.s' in d['issue'][0]['diagnostics'])" "('forbidden', True)"
+check_header "  → WWW-Authenticate insufficient_scope" "$R4/MeasureReport?status=complete" "WWW-Authenticate" \
+  'Bearer realm="clinicalharmony", error="insufficient_scope", scope="system/MeasureReport.s"'
+check_http "system/Coverage.rs token reading Device by id → 403" GET "$R4/Device/cms-device-seed-0002" 403
+
+TOKEN="$(get_token "system/Device.rs")"
+check_http "system/Device.rs token searches Device → 200" GET "$R4/Device?patient=$SEED2" 200
+check_http "read-only token on POST /api/fhir/gold/revalidate → 403 (needs pipeline.write)" POST "$FHIR_COMPLIANCE_URL/api/fhir/gold/revalidate" 403
+check_json "  → names clinicalharmony/pipeline.write" "$TMP/last_response.json" \
+  "'clinicalharmony/pipeline.write' in d['message']" "True"
+check_http "read-only token on PUT rule toggle → 403" PUT "$FHIR_COMPLIANCE_URL/api/fhir-compliance/rules/USCORE_PATIENT_COMPLETENESS/toggle" 403
+check_http "unsupported type with a valid token still 404s (not 403)" GET "$R4/Claim/123" 404
+TOKEN="$FULL_TOKEN"
 
 echo
 echo "=== Summary: $PASS passed, $FAIL failed ==="

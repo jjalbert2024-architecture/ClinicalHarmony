@@ -1,5 +1,6 @@
 package com.clinicalharmony.fhircompliance.web;
 
+import com.clinicalharmony.fhircompliance.security.WebSecurityTestConfig;
 import com.clinicalharmony.fhircompliance.service.ClinicalRule;
 import com.clinicalharmony.fhircompliance.service.FhirGenerationService;
 import com.clinicalharmony.fhircompliance.service.FhirValidationReport;
@@ -9,6 +10,7 @@ import com.fasterxml.jackson.databind.node.NullNode;
 import org.junit.jupiter.api.Test;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.boot.test.autoconfigure.web.servlet.WebMvcTest;
+import org.springframework.context.annotation.Import;
 import org.springframework.boot.test.mock.mockito.MockBean;
 import org.springframework.http.MediaType;
 import org.springframework.test.web.servlet.MockMvc;
@@ -27,6 +29,7 @@ import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.
 import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.status;
 
 @WebMvcTest(FhirComplianceController.class)
+@Import(WebSecurityTestConfig.class)
 class FhirComplianceControllerTest {
 
     @Autowired

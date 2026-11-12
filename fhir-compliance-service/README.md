@@ -247,6 +247,131 @@ findings and a `SEED_LOAD` lineage row. The same JSON is in `src/test/resources/
   skipped, not failed, when Docker isn't running. Images: `postgres:16-alpine` (same as compose)
   and `testcontainers/ryuk:0.12.0`.
 
+## Phase 5b — SMART on FHIR backend services (slice 4)
+
+Keycloak is the authorization server; this service is an OAuth2 **resource server** (Spring
+Security 6.5, `spring-boot-starter-oauth2-resource-server`) that accepts Bearer JWTs from the
+`clinicalharmony` realm.
+
+### Keycloak (docker-compose)
+
+- `quay.io/keycloak/keycloak:26.8.2`, `start-dev --import-realm`, host port **8180** (8080 is the
+  api-gateway placeholder, 8083 is rules-engine). The realm is imported from
+  [`../keycloak/realm-clinicalharmony.json`](../keycloak/realm-clinicalharmony.json) on every fresh
+  start, so `docker-compose up` needs no manual setup. Its dev database lives inside the container.
+- Client **`clinicalharmony-app`**: confidential, client-credentials grant only (service account;
+  no browser/password flows), secret `clinicalharmony-app-secret` (**dev only**), 5-minute tokens.
+- Client scopes are all **optional**, so a token carries only what the client asks for
+  (SMART clients must request scopes): `system/{Coverage,PractitionerRole,MedicationKnowledge,
+  MeasureReport,Device}.rs`, `system/*.rs`, `clinicalharmony/pipeline.write`.
+- Protocol mappers add `aud: clinicalharmony-fhir` and `sub`.
+- `KC_HOSTNAME=http://localhost:8180` keeps the token `iss` the same whether a token was fetched
+  from the host or from inside the compose network. The service checks `iss` against that URL
+  but fetches signing keys from `http://keycloak:8080/.../certs` (`OAUTH_ISSUER_URI` /
+  `OAUTH_JWK_SET_URI`).
+
+Get a token:
+
+```bash
+curl -s -u clinicalharmony-app:clinicalharmony-app-secret -d grant_type=client_credentials \
+  --data-urlencode "scope=system/*.rs clinicalharmony/pipeline.write" \
+  http://localhost:8180/realms/clinicalharmony/protocol/openid-connect/token
+```
+
+### Access rules (`security/SecurityConfig`)
+
+| Access | Endpoints |
+|---|---|
+| Public | `GET /.well-known/smart-configuration`, `GET /fhir/r4/.well-known/smart-configuration`, `/actuator/health`, `POST /api/fhir/validate`, `POST /api/fhir-compliance/validate`, `GET /api/fhir-compliance/rules[/{code}]` |
+| SMART scope | `GET /fhir/r4/{type}/{id}` needs `system/{type}.r`; `GET /fhir/r4/{type}?…` needs `system/{type}.s` |
+| `clinicalharmony/pipeline.write` | `POST /api/fhir/build[/patients/{id}]`, `POST /api/fhir/gold/revalidate`, `POST /api/fhir-compliance/generate`, `PUT /api/fhir-compliance/rules/{code}/toggle` |
+| Any valid token | `POST /api/fhir/convert/ccda` (whole patient documents, even though nothing is persisted), plus anything not listed |
+
+Every token is checked for signature (realm JWKS), `exp`/`nbf`, `iss`, and `aud` containing
+`clinicalharmony-fhir`.
+
+**Scope rules** (`security/SmartScopes`):
+- **SMART v2:** `system/<Type|*>.<cruds>`, where the letters must be a non-empty in-order subset of
+  `cruds`, so `.rs` grants read and search and `.r` grants read only.
+- **SMART v1 compatibility:** `.read` and `.*` grant both; `.write` grants neither.
+- **Context:** only the `system/` context counts, because `patient/` and `user/` scopes need a launch
+  context this server doesn't have.
+- **Unsupported types:** for a type outside the five CMS-0057 types, a valid token is enough, so
+  the controller still returns its 404 instead of a 403 that would hide whether the type exists.
+
+**Errors:**
+- **Under `/fhir/**`:** 401 and 403 are FHIR OperationOutcomes (issue code `login` /
+  `forbidden`), consistent with slice 3.
+- **Elsewhere:** the service's usual `{"error","message"}` shape.
+- **Headers:** both carry an RFC 6750 `WWW-Authenticate` header. On a 401 it adds
+  `error="invalid_token"` when a token was sent and rejected. On a 403 it is
+  `error="insufficient_scope", scope="system/MeasureReport.s"`, naming the narrowest missing scope.
+- **Correlation ids:** `MdcLoggingFilter` runs before the security filter chain, so 401/403
+  responses still echo `X-Correlation-Id`, and the rejection is logged under that id.
+
+### SMART discovery
+
+`GET /.well-known/smart-configuration` is also served at the spec location,
+`[FHIR base]/.well-known/smart-configuration`. It returns `issuer`, `jwks_uri`, `token_endpoint`,
+`introspection_endpoint` and `revocation_endpoint` (all on the Keycloak realm), plus:
+- `grant_types_supported: ["client_credentials"]`
+- `token_endpoint_auth_methods_supported: [client_secret_basic, client_secret_post]`
+- `scopes_supported`
+- `capabilities: [client-confidential-symmetric, permission-v1, permission-v2]`
+
+It deliberately has no `authorization_endpoint`, because there is no browser launch.
+
+**Deviation from SMART Backend Services:** the spec recommends `private_key_jwt`
+(`client-confidential-asymmetric`) client authentication. This dev realm uses a shared client
+secret for simplicity, and the discovery document says so.
+
+### Tests
+
+- **Unit:**
+  - `SmartScopesTest`: v1/v2/wildcard/context/ordering rules.
+  - `SmartScopeAuthorizationManagerTest`: path → (type, interaction) parsing, grant/deny, anonymous.
+  - `SecurityWebTest`: the whole access matrix and both 401/403 shapes, over every controller with
+    services mocked.
+  - The four existing controller slice tests now run behind the real filter chain, with an
+    all-scopes JWT added by `WebSecurityTestConfig`.
+- **Integration:** `integration/SecurityIntegrationTest`, with real RS256 JWTs from `TestJwts`.
+  - **Token checks:** an in-memory key signs realm-shaped tokens, and the test decoder applies the
+    same issuer and audience validators as production. It covers untrusted key, expired, wrong
+    audience, wrong issuer, read vs search scope, cross-type denial, v1 `.read`, the
+    pipeline.write endpoints, the public endpoints, and discovery.
+  - **Why no Keycloak container:** no Keycloak container is involved, so `mvn test` pulls nothing
+    new. The realm JSON itself is exercised by the smoke test against the compose Keycloak.
+  - **Shared setup:** `AbstractIntegrationTest` now holds the Postgres container (started by
+    Spring Boot via `@ServiceConnection`, no `@Container`), so `GoldWriterIntegrationTest` and
+    `SecurityIntegrationTest` share one context and one database.
+- **Smoke:**
+  - **Tokens for sections 7–13:** `scripts/smoke-test.sh` gets a full-scope token from Keycloak
+    and sends it on every fhir-compliance call.
+  - **Section 14:** adds 27 auth assertions, including a Keycloak-issued no-scope token (403) and a
+    tampered signature (401).
+- **Postman:** `postman/phase5b-slice4-smart-oauth.postman_collection.json`
+  - **Token setup:** request `0b` does the client-credentials grant and stores
+    `{{access_token}}`, which the collection-level Bearer auth sends.
+  - **Requests 36–44:** discovery and the 401/403 cases, using a narrow `{{narrow_token}}`.
+
+## Postman collections
+
+One collection per phase/slice in [`postman/`](postman), so you can import only the one you're
+testing. Request numbers are the same across files (they continue 0–44 across the slices) so the
+references in this README still match.
+
+| File | Requests |
+|---|---|
+| `phase5-structural-validation.postman_collection.json` | 1–9: structural validation, generation, rule toggle |
+| `phase5b-slice1-hl7-validator.postman_collection.json` | 10–15: HL7 validator, Silver → Gold builds |
+| `phase5b-slice2-ccda-to-fhir.postman_collection.json` | 16–21: C-CDA → FHIR |
+| `phase5b-slice3-goldwriter-cms0057.postman_collection.json` | 22–35: GoldWriter, CMS-0057-F read API |
+| `phase5b-slice4-smart-oauth.postman_collection.json` | 36–44: SMART discovery, tokens, 401/403 |
+
+Each file also has `0. Health check` and `0b. Auth`. Run `0b` first: it stores a Keycloak token
+in that collection's `{{access_token}}`, which every request in it sends. The token lives
+5 minutes.
+
 ## Endpoints — Phase 5 structural check (port 8084)
 
 | Method | Path | Purpose |

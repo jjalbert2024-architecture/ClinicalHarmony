@@ -1,0 +1,209 @@
+{
+  "info": {
+    "name": "ClinicalHarmony · Phase 5b slice 1 — HL7 validator vs US Core 6.1.0 + Silver builds",
+    "description": "The official HL7 FHIR validator against US Core 6.1.0 (POST /api/fhir/validate, public) and Silver → US Core FHIR → Gold builds (POST /api/fhir/build[/patients/{id}], needs clinicalharmony/pipeline.write). Needs docs/db-init/16 and 17 applied. Make sure `docker-compose up -d` is running. Run '0b. Auth' first: it does a client_credentials grant against Keycloak (realm clinicalharmony, {{keycloak_url}}) and stores the token in the collection variable access_token, which every request inherits via the collection's Bearer auth (public endpoints ignore it). Tokens live 5 minutes — re-run 0b when you get 401s.",
+    "schema": "https://schema.getpostman.com/json/collection/v2.1.0/collection.json"
+  },
+  "auth": {
+    "type": "bearer",
+    "bearer": [
+      {
+        "key": "token",
+        "value": "{{access_token}}",
+        "type": "string"
+      }
+    ]
+  },
+  "item": [
+    {
+      "name": "0. Health check",
+      "request": {
+        "method": "GET",
+        "url": "{{base_url}}/actuator/health",
+        "description": "Expect: 200 OK, body `{\"status\":\"UP\"}`. If this fails, the container isn't running — check `docker ps` for clinicalharmony-fhir-compliance-service."
+      }
+    },
+    {
+      "name": "0b. Auth — get access token (Keycloak client_credentials)",
+      "event": [
+        {
+          "listen": "test",
+          "script": {
+            "type": "text/javascript",
+            "exec": [
+              "pm.test('token issued', () => pm.response.to.have.status(200));",
+              "const body = pm.response.json();",
+              "pm.collectionVariables.set('access_token', body.access_token);",
+              "console.log('scope granted:', body.scope, '| expires_in:', body.expires_in);"
+            ]
+          }
+        }
+      ],
+      "request": {
+        "method": "POST",
+        "auth": {
+          "type": "basic",
+          "basic": [
+            {
+              "key": "username",
+              "value": "{{client_id}}",
+              "type": "string"
+            },
+            {
+              "key": "password",
+              "value": "{{client_secret}}",
+              "type": "string"
+            }
+          ]
+        },
+        "header": [],
+        "body": {
+          "mode": "urlencoded",
+          "urlencoded": [
+            {
+              "key": "grant_type",
+              "value": "client_credentials"
+            },
+            {
+              "key": "scope",
+              "value": "system/*.rs clinicalharmony/pipeline.write"
+            }
+          ]
+        },
+        "url": "{{keycloak_url}}/realms/clinicalharmony/protocol/openid-connect/token",
+        "description": "SMART Backend Services-style client_credentials grant (client secret via HTTP Basic). Requests every SMART read scope plus the clinicalharmony/pipeline.write operational scope; the test script stores the token in {{access_token}}, which the collection's Bearer auth sends on every request. Expect: 200 with access_token, token_type Bearer, expires_in 300, and scope echoing what was granted."
+      }
+    },
+    {
+      "name": "10. HL7 validate — broken Patient (debugger)",
+      "request": {
+        "method": "POST",
+        "url": "{{base_url}}/api/fhir/validate",
+        "description": "Expect: 200 with compliant=false. No meta.profile, so it's checked against us-core-patient automatically. Violations (errors first) include Patient.gender and Patient.identifier (missing — each with a suggestedFix), and Patient.name[0].family (empty string). Send an X-Correlation-Id header to see it echoed back and stamped on the service's log lines.",
+        "header": [
+          {
+            "key": "Content-Type",
+            "value": "application/json"
+          }
+        ],
+        "body": {
+          "mode": "raw",
+          "raw": "{\n  \"resourceType\": \"Patient\",\n  \"name\": [\n    {\n      \"family\": \"\"\n    }\n  ]\n}",
+          "options": {
+            "raw": {
+              "language": "json"
+            }
+          }
+        }
+      }
+    },
+    {
+      "name": "11. HL7 validate — compliant Patient",
+      "request": {
+        "method": "POST",
+        "url": "{{base_url}}/api/fhir/validate",
+        "description": "Expect: 200, compliant=true, errorCount=0. One WARNING (dom-6: no narrative) is a best-practice note, not a failure.",
+        "header": [
+          {
+            "key": "Content-Type",
+            "value": "application/json"
+          }
+        ],
+        "body": {
+          "mode": "raw",
+          "raw": "{\n  \"resourceType\": \"Patient\",\n  \"id\": \"demo\",\n  \"identifier\": [\n    {\n      \"system\": \"urn:example:mrn\",\n      \"value\": \"12345\"\n    }\n  ],\n  \"name\": [\n    {\n      \"family\": \"Doe\",\n      \"given\": [\n        \"Jane\"\n      ]\n    }\n  ],\n  \"gender\": \"female\",\n  \"birthDate\": \"1980-01-01\"\n}",
+          "options": {
+            "raw": {
+              "language": "json"
+            }
+          }
+        }
+      }
+    },
+    {
+      "name": "12. HL7 validate — lab Observation (terminology warnings)",
+      "request": {
+        "method": "POST",
+        "url": "{{base_url}}/api/fhir/validate",
+        "description": "Expect: 200, compliant=true, profile=us-core-observation-lab (picked because category=laboratory). LOINC code existence is a WARNING (no terminology server here — ontology-service owns that check). Change the UCUM code to 'percent' to see a real ERROR.",
+        "header": [
+          {
+            "key": "Content-Type",
+            "value": "application/json"
+          }
+        ],
+        "body": {
+          "mode": "raw",
+          "raw": "{\n  \"resourceType\": \"Observation\",\n  \"status\": \"final\",\n  \"category\": [\n    {\n      \"coding\": [\n        {\n          \"system\": \"http://terminology.hl7.org/CodeSystem/observation-category\",\n          \"code\": \"laboratory\"\n        }\n      ]\n    }\n  ],\n  \"code\": {\n    \"coding\": [\n      {\n        \"system\": \"http://loinc.org\",\n        \"code\": \"4548-4\"\n      }\n    ]\n  },\n  \"subject\": {\n    \"reference\": \"Patient/demo\"\n  },\n  \"effectiveDateTime\": \"2024-03-10\",\n  \"valueQuantity\": {\n    \"value\": 7.2,\n    \"unit\": \"%\",\n    \"system\": \"http://unitsofmeasure.org\",\n    \"code\": \"%\"\n  }\n}",
+          "options": {
+            "raw": {
+              "language": "json"
+            }
+          }
+        }
+      }
+    },
+    {
+      "name": "13. HL7 validate — not a FHIR resource",
+      "request": {
+        "method": "POST",
+        "url": "{{base_url}}/api/fhir/validate",
+        "description": "Expect: 400 {\"error\":\"Invalid FHIR resource\", ...}. Only unparseable / non-FHIR payloads get 400; a non-compliant resource is still a 200.",
+        "header": [
+          {
+            "key": "Content-Type",
+            "value": "application/json"
+          }
+        ],
+        "body": {
+          "mode": "raw",
+          "raw": "{\n  \"foo\": 1\n}",
+          "options": {
+            "raw": {
+              "language": "json"
+            }
+          }
+        }
+      }
+    },
+    {
+      "name": "14. Build all Silver patients → Gold",
+      "request": {
+        "method": "POST",
+        "url": "{{base_url}}/api/fhir/build",
+        "description": "Expect: 200, one result per silver.patients row. Seed patients SEED-0001 and SEED-0002 are fully compliant; SEED-0003 (deliberately bad) has a non-compliant Patient (Patient.name) and Condition (Condition.code). Then in DBeaver: SELECT resource_type, fhir_id, is_us_core_compliant, compliance_notes FROM gold.fhir_resources WHERE fhir_id LIKE 'silver-%'. Re-running is idempotent (upserts, same 18 rows)."
+      }
+    },
+    {
+      "name": "15. Build one Silver patient",
+      "request": {
+        "method": "POST",
+        "url": "{{base_url}}/api/fhir/build/patients/3",
+        "description": "Expect: 200 for an existing silver.patients id (3 = the deliberately bad seed patient); 404 for an id that doesn't exist."
+      }
+    }
+  ],
+  "variable": [
+    {
+      "key": "base_url",
+      "value": "http://localhost:8084"
+    },
+    {
+      "key": "keycloak_url",
+      "value": "http://localhost:8180"
+    },
+    {
+      "key": "client_id",
+      "value": "clinicalharmony-app"
+    },
+    {
+      "key": "client_secret",
+      "value": "clinicalharmony-app-secret",
+      "description": "DEV-ONLY secret from keycloak/realm-clinicalharmony.json"
+    },
+    {
+      "key": "access_token",
+      "value": ""
+    }
+  ]
+}

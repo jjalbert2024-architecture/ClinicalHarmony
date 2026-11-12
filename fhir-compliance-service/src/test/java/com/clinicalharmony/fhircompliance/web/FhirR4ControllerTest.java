@@ -1,5 +1,6 @@
 package com.clinicalharmony.fhircompliance.web;
 
+import com.clinicalharmony.fhircompliance.security.WebSecurityTestConfig;
 import com.clinicalharmony.fhircompliance.cms0057.Cms0057SearchParameters;
 import com.clinicalharmony.fhircompliance.cms0057.GoldFhirReadService;
 import com.clinicalharmony.fhircompliance.repository.GoldFhirResourceRepository;
@@ -29,7 +30,7 @@ import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.
 
 /** HTTP slice with the real read service and search parser; only the Gold repository is mocked. */
 @WebMvcTest(FhirR4Controller.class)
-@Import({GoldFhirReadService.class, Cms0057SearchParameters.class})
+@Import({GoldFhirReadService.class, Cms0057SearchParameters.class, WebSecurityTestConfig.class})
 class FhirR4ControllerTest {
 
     private static final OffsetDateTime UPDATED = OffsetDateTime.parse("2026-11-11T12:00:00Z");

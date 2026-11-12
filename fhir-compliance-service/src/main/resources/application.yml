@@ -14,6 +14,21 @@ spring:
     name: fhir-compliance-service
   profiles:
     active: ${SPRING_PROFILES_ACTIVE:local}
+  security:
+    oauth2:
+      resourceserver:
+        jwt:
+          # Tokens must carry this exact `iss` (Keycloak's KC_HOSTNAME) ...
+          issuer-uri: ${smart.issuer}
+          # ... but signing keys are fetched from wherever Keycloak is reachable from this process
+          # (keycloak:8080 inside compose). Fetched lazily on the first token, cached by Nimbus.
+          jwk-set-uri: ${OAUTH_JWK_SET_URI:http://localhost:8180/realms/clinicalharmony/protocol/openid-connect/certs}
+          audiences: clinicalharmony-fhir
+
+# SMART App Launch discovery (/.well-known/smart-configuration) points clients at this
+# authorization server; also the issuer every Bearer token is checked against.
+smart:
+  issuer: ${OAUTH_ISSUER_URI:http://localhost:8180/realms/clinicalharmony}
 
 management:
   endpoints:

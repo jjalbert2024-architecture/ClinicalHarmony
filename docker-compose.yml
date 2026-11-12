@@ -69,6 +69,41 @@ services:
       - clinicalharmony-net
 
   # ---------------------------------------------------------------------
+  # Identity: Keycloak (SMART on FHIR backend-services auth for fhir-compliance-service)
+  #
+  # Dev mode with its built-in dev database: the realm (client, SMART scopes, audience mapper)
+  # is re-imported from ./keycloak on every fresh start, so `docker-compose up` is fully configured
+  # with nothing to click through. Host port 8180 (8080 = api-gateway, 8083 = rules-engine).
+  # KC_HOSTNAME pins the token issuer to http://localhost:8180/realms/clinicalharmony whether a
+  # token is requested from the host or from inside the compose network.
+  # ---------------------------------------------------------------------
+
+  keycloak:
+    image: quay.io/keycloak/keycloak:26.8.2
+    container_name: clinicalharmony-keycloak
+    command: ["start-dev", "--import-realm"]
+    environment:
+      KC_BOOTSTRAP_ADMIN_USERNAME: admin
+      KC_BOOTSTRAP_ADMIN_PASSWORD: admin
+      KC_HOSTNAME: http://localhost:8180
+      KC_HOSTNAME_BACKCHANNEL_DYNAMIC: "true"
+      KC_HTTP_ENABLED: "true"
+      KC_HEALTH_ENABLED: "true"
+    ports:
+      - "8180:8080"
+    volumes:
+      - ./keycloak:/opt/keycloak/data/import:ro
+    healthcheck:
+      # The image ships no curl/wget; use bash's /dev/tcp against the management port (9000).
+      test: ["CMD-SHELL", "exec 3<>/dev/tcp/127.0.0.1/9000 && printf 'GET /health/ready HTTP/1.1\\r\\nHost: localhost\\r\\nConnection: close\\r\\n\\r\\n' >&3 && grep -q UP <&3"]
+      interval: 10s
+      timeout: 5s
+      retries: 12
+      start_period: 30s
+    networks:
+      - clinicalharmony-net
+
+  # ---------------------------------------------------------------------
   # Application services (placeholders — implemented in later phases)
   #
   # Each entry currently boots a bare runtime and idles so that
@@ -133,8 +168,14 @@ services:
       DB_NAME: clinicalharmony
       DB_USER: clinicalharmony
       DB_PASSWORD: clinicalharmony
+      # Tokens carry the external issuer (KC_HOSTNAME); signing keys are fetched over the
+      # compose network.
+      OAUTH_ISSUER_URI: http://localhost:8180/realms/clinicalharmony
+      OAUTH_JWK_SET_URI: http://keycloak:8080/realms/clinicalharmony/protocol/openid-connect/certs
     depends_on:
       postgres:
+        condition: service_healthy
+      keycloak:
         condition: service_healthy
     ports:
       - "8084:8084"

@@ -21,7 +21,7 @@ problems, it never hides them** — malformed input is quarantined rather than d
 never papered over with invented values, so a non-compliant resource is flagged with the exact
 reason instead of quietly "fixed".
 
-> **Status (2026-11-11):** Phases 1–5 and Phase 5b slices 1–2 are built and tested. Four services
+> **Status (2026-11-11):** Phases 1–5 and Phase 5b slices 1–3 are built and tested. Four services
 > are live: ingestion, ontology, rules engine, and FHIR compliance. See the [Roadmap](#roadmap).
 
 ## Architecture
@@ -53,6 +53,7 @@ stage, orchestrated by Docker Compose.
   CONFORM           ┌─────────────────────┴──────────────────────────────────────────┐
                     │ fhir-compliance-service   HL7 validator vs US Core 6.1.0   ✅ 5 / 5b │
                     │   Silver → FHIR builders · C-CDA → FHIR Bundle · debugger API    │
+                    │   GoldWriter: provisional masters + lineage (every Gold write)   │
                     └─────────────────────┬──────────────────────────────────────────┘
                                           ▼
   RESOLVE           patient-index-service  (cross-source deduplication)       ⏳ Phase 6
@@ -60,7 +61,7 @@ stage, orchestrated by Docker Compose.
                                           ▼
   GOLD              gold.master_patients · gold.fhir_resources · gold.data_lineage
                                           │
-  SERVE             api-gateway ⏳ 7  ·  CMS-0057 FHIR read APIs + SMART on FHIR ⏳ 5b
+  SERVE             CMS-0057 FHIR read APIs ✅ 5b  ·  SMART on FHIR ⏳ 5b  ·  api-gateway ⏳ 7
                                           │
                                           ▼
   VIEW              dashboard-ui ⏳ 8   Patient Timeline · Ontology Coverage ·
@@ -74,7 +75,7 @@ stage, orchestrated by Docker Compose.
 | [`ingestion-service`](ingestion-service) | 8081 (+ MLLP 8887) | 2 / 2b | Apache Camel MLLP listener + REST intake for HL7 v2, FHIR JSON and claims CSV; checksums, quarantine, real HL7 ACK/NAK | ✅ Implemented |
 | [`ontology-service`](ontology-service) | 8082 | 3 | Code validation (ICD-10, SNOMED CT, LOINC, RxNorm) and SNOMED ↔ ICD-10 concept mapping | ✅ Implemented |
 | [`rules-engine-service`](rules-engine-service) | 8083 | 4 | 7 clinical plausibility rules, tunable as data (JSONB), orchestrated with ontology validation | ✅ Implemented |
-| [`fhir-compliance-service`](fhir-compliance-service) | 8084 | 5 / 5b | Official HL7 FHIR validator vs US Core 6.1.0, Silver → FHIR builders, C-CDA → FHIR conversion, Gold writes | 🟡 Partial (Phase 5b slices 3–4 to go) |
+| [`fhir-compliance-service`](fhir-compliance-service) | 8084 | 5 / 5b | Official HL7 FHIR validator vs US Core 6.1.0 + Da Vinci Formulary/DEQM, Silver → FHIR builders, C-CDA → FHIR conversion, GoldWriter (master patients, FHIR resources, lineage), CMS-0057-F read API | 🟡 Partial (Phase 5b slice 4 to go) |
 | [`patient-index-service`](patient-index-service) | 8085 | 6 | Master patient index: cross-source matching and deduplication | ⏳ Planned |
 | [`api-gateway`](api-gateway) | 8080 | 7 | Single REST surface for the dashboard | ⏳ Planned |
 | [`dashboard-ui`](dashboard-ui) | 3000 | 8 | React dashboard, 5 views | ⏳ Planned |
@@ -97,9 +98,9 @@ hand-verified in Postman — before the next one starts.
 | — | Smoke test | Black-box HTTP test of every live endpoint (`scripts/smoke-test.sh`) | ✅ Done (PR #6) |
 | **5** | `fhir-compliance-service`: structural | US Core required-element checks for 7 resource types; FHIR generation; first Gold-layer writes | ✅ Done (PR #7) |
 | **5b.1** | HL7 FHIR validator | Official validator (HAPI FHIR 8.2) against the bundled US Core 6.1.0 package: severity, FHIRPath location, rule and suggested fix per violation. Silver → US Core builders write to Gold with compliance notes | ✅ Done (PR #8) |
-| **5b.2** | C-CDA → FHIR | `POST /api/fhir/convert/ccda`: C-CDA R2.1 Problems / Medications / Results → FHIR R4 Bundle, every resource validated against US Core | 🔄 Built, in review |
-| **5b.3** | GoldWriter + CMS-0057 | `gold.master_patients` / `fhir_resources` / `data_lineage` writer; FHIR read APIs for Coverage, PractitionerRole, MedicationKnowledge, MeasureReport, Device | ⏳ Next |
-| **5b.4** | SMART on FHIR | Keycloak OAuth2 (client credentials), Bearer-protected `/fhir/**`, `/.well-known/smart-configuration` | ⏳ Planned |
+| **5b.2** | C-CDA → FHIR | `POST /api/fhir/convert/ccda`: C-CDA R2.1 Problems / Medications / Results → FHIR R4 Bundle, every resource validated against US Core | ✅ Done (PR #9) |
+| **5b.3** | GoldWriter + CMS-0057 | One writer for `gold.master_patients` (provisional 1:1 masters until Phase 6) / `fhir_resources` / `data_lineage` (BRONZE → SILVER → GOLD chains with hashes); `GET /fhir/r4/{Coverage,PractitionerRole,MedicationKnowledge,MeasureReport,Device}` read + search from Gold, validated against US Core / Da Vinci; first `@SpringBootTest` + Testcontainers integration test | 🔄 Built, in review |
+| **5b.4** | SMART on FHIR | Keycloak OAuth2 (client credentials), Bearer-protected `/fhir/**`, `/.well-known/smart-configuration` | ⏳ Next |
 | **6** | `patient-index-service` | Master patient index: probabilistic matching and cross-source deduplication into `gold.master_patients` | ⏳ Planned |
 | **7** | `api-gateway` | One REST API for the dashboard | ⏳ Planned |
 | **8** | `dashboard-ui` | React: Patient Timeline, Ontology Coverage, Validation Report, FHIR Viewer, Data Lineage | ⏳ Planned |
@@ -110,6 +111,12 @@ hand-verified in Postman — before the next one starts.
 
 - **Bronze → Silver parsing.** No service turns raw messages into `silver.*` rows yet. Silver is
   seeded by `docs/db-init/17`, and the ontology/rules APIs take a canonical patient record directly.
+  So Gold lineage for the seed patients starts at Silver; the BRONZE step appears once a Silver row
+  carries a `raw_message_id` (the integration test exercises exactly that).
+- **Master patients are provisional.** Until patient-index-service (Phase 6) exists, every Silver
+  patient gets its own `PROVISIONAL` 1:1 master; no cross-source matching happens yet.
+- **CMS-0057 payer data is a synthetic seed** (`docs/db-init/19`). Nothing upstream produces
+  Coverage, PractitionerRole, MedicationKnowledge, MeasureReport or Device yet.
 - **Kafka** (and Zookeeper) is provisioned in Docker Compose, but no service publishes to or consumes from it yet.
 - **Terminology** runs offline: code *existence* is checked by ontology-service against seeded subsets,
   not full licensed code systems, so the FHIR validator reports LOINC/SNOMED/RxNorm codes as warnings.
@@ -120,7 +127,7 @@ hand-verified in Postman — before the next one starts.
 | Area | Standards |
 |---|---|
 | Messaging & documents | HL7 v2.5 (ADT, ORU) over MLLP · HL7 C-CDA R2.1 · claims CSV |
-| FHIR | FHIR R4 · US Core 6.1.0 · *planned:* CMS-0057-F interoperability APIs, SMART App Launch (backend services) |
+| FHIR | FHIR R4 · US Core 6.1.0 · CMS-0057-F payer read APIs (Coverage, PractitionerRole, MedicationKnowledge, MeasureReport, Device) · Da Vinci US Drug Formulary 2.1.0 · Da Vinci DEQM 5.0.0 · *planned:* SMART App Launch (backend services) |
 | Terminology | ICD-10-CM · SNOMED CT · LOINC · RxNorm · UCUM · CDC Race & Ethnicity (OMB) |
 
 ## Data platform
@@ -132,14 +139,14 @@ PostgreSQL 16 with a medallion layout plus a reference schema. Full DDL and seed
 |---|---|---|
 | `bronze` | Raw, immutable intake payloads, valid or quarantined | `raw_messages` |
 | `silver` | Parsed, typed clinical entities (before deduplication) and every validation finding | `patients`, `conditions`, `observations`, `medications`, `validation_reports` |
-| `gold` | Conformed, deduplicated, US Core FHIR resources with lineage | `master_patients`, `fhir_resources` (+ `compliance_notes`), `data_lineage` |
+| `gold` | Conformed, deduplicated, US Core FHIR resources with lineage — all written by one component, GoldWriter | `master_patients` (+ `match_status`), `patient_source_xref`, `fhir_resources` (+ `compliance_notes`), `data_lineage` (JSONB step chains) |
 | `ontology` | Reference terminology and clinical rules (rule parameters stored as JSONB) | `icd10_codes`, `snomed_codes`, `loinc_codes`, `rxnorm_codes`, `concept_mappings`, `clinical_rules` |
 
 ## Tech stack
 
 Java 17 · Spring Boot 3.5 · Apache Camel 4.4 (MLLP) · HAPI HL7 v2 · HAPI FHIR 8.2 (validator) ·
 PostgreSQL 16 (plain `JdbcTemplate`, no ORM) · Docker Compose · JUnit 5 / Mockito / Spring MVC
-test slices · *planned:* Keycloak, React, Python.
+test slices · Testcontainers (`@SpringBootTest` integration) · *planned:* Keycloak, React, Python.
 
 ## Getting started
 
@@ -172,9 +179,9 @@ docker-compose down -v
 ./scripts/smoke-test.sh
 ```
 
-This runs 59 black-box assertions against the live services: intake accept and quarantine, code
+This runs 106 black-box assertions against the live services: intake accept and quarantine, code
 validation, every clinical rule and live rule toggling, US Core validation, Silver → FHIR builds,
-and C-CDA conversion. Each implemented service also has a Postman collection or curl examples in
+C-CDA conversion, GoldWriter master patients and lineage, and the CMS-0057 read/search API. Each implemented service also has a Postman collection or curl examples in
 its own README, and unit tests via `mvn test` from the service directory.
 
 ## Try it
@@ -233,11 +240,21 @@ curl -s -X POST http://localhost:8084/api/fhir/convert/ccda -H "Content-Type: ap
 curl -s -X POST http://localhost:8084/api/fhir/build
 ```
 
-Then look at what landed:
+Then look at what landed, and how each Gold resource traces back through Silver:
 
 ```bash
 docker compose exec postgres psql -U clinicalharmony -d clinicalharmony -c \
-  "SELECT resource_type, fhir_id, is_us_core_compliant FROM gold.fhir_resources ORDER BY id DESC LIMIT 10;"
+  "SELECT resource_type, fhir_id, is_us_core_compliant, master_patient_id FROM gold.fhir_resources ORDER BY id DESC LIMIT 10;"
+docker compose exec postgres psql -U clinicalharmony -d clinicalharmony -c \
+  "SELECT source_table, source_id, transformation_step, jsonb_pretty(transformation_details) FROM gold.data_lineage ORDER BY id DESC LIMIT 1;"
+```
+
+**Query the CMS-0057-F payer API** (served from Gold; errors are FHIR OperationOutcomes):
+
+```bash
+curl -s "http://localhost:8084/fhir/r4/Coverage?patient=silver-patient-1"
+curl -s "http://localhost:8084/fhir/r4/MedicationKnowledge?code=http://www.nlm.nih.gov/research/umls/rxnorm|861007"
+curl -si http://localhost:8084/fhir/r4/PractitionerRole/cms-practitionerrole-2 | grep -i x-profile
 ```
 
 ## Project structure
@@ -245,14 +262,14 @@ docker compose exec postgres psql -U clinicalharmony -d clinicalharmony -c \
 ```
 ClinicalHarmony/
 ├── docker-compose.yml
-├── docs/db-init/               # Ordered SQL: schemas, tables, terminology subsets, rules, Silver seed
+├── docs/db-init/               # Ordered SQL: schemas, tables, terminology subsets, rules, Silver + CMS-0057 seeds
 ├── scripts/
 │   ├── smoke-test.sh           # Black-box test of every live endpoint
 │   └── fixtures/               # HL7 / FHIR / CSV / C-CDA test payloads
 ├── ingestion-service/          # ✅ Spring Boot + Apache Camel (MLLP) + HAPI HL7 v2
 ├── ontology-service/           # ✅ Terminology validators + concept mapping
 ├── rules-engine-service/       # ✅ Clinical rules engine
-├── fhir-compliance-service/    # 🟡 HAPI FHIR validator, US Core builders, C-CDA → FHIR
+├── fhir-compliance-service/    # 🟡 HAPI FHIR validator, US Core builders, C-CDA → FHIR, GoldWriter, CMS-0057 API
 ├── patient-index-service/      # ⏳ Master patient index + deduplication
 ├── api-gateway/                # ⏳ REST API for the dashboard
 ├── dashboard-ui/               # ⏳ React dashboard

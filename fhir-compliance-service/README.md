@@ -97,7 +97,8 @@ Response shape (summary first, then detail, then the Bundle): `documentId`, `doc
 - **XXE-safe parsing**: any DOCTYPE is refused outright (C-CDA never needs one); external
   entities/DTDs off; secure processing on. The body is read as bytes so the XML prolog's
   encoding is honored.
-- **Not persisted**: Gold writes and lineage are slice 3 (GoldWriter). The Result Organizer
+- **Not persisted**: conversion output isn't written to Gold (GoldWriter, slice 3, covers the
+  Silver, seed and Phase 5 paths). The Result Organizer
   would become a `DiagnosticReport`; out of scope here, so only its effectiveTime is used.
 
 Test documents (synthetic, fictional patients, hand-written — no external samples):
@@ -105,12 +106,153 @@ Test documents (synthetic, fictional patients, hand-written — no external samp
 `ccd_noncompliant.xml` (7 resources, 4 deliberate gaps); copies in `scripts/fixtures/` for the
 smoke test and inline in Postman items 16–21.
 
+## Phase 5b — GoldWriter + CMS-0057-F payer read API (slice 3)
+
+### GoldWriter — the one writer of the Gold layer
+
+`gold/GoldWriter` owns every write to `gold.master_patients` (+ `patient_source_xref`),
+`gold.fhir_resources` and `gold.data_lineage`. All three Gold write paths go through it: Silver →
+FHIR builds (slice 1), Phase 5's caller-supplied `/api/fhir-compliance/generate`, and validation of
+rows seeded straight into Gold (migration 19). There's no second write path.
+
+- **Provisional master patients (pre-Phase 6).** patient-index-service doesn't exist yet, so each
+  `silver.patients` row gets its own master: `match_status = 'PROVISIONAL'` (migration 18),
+  `match_confidence_score` NULL ("single-source, unmatched"), `source_patient_count` 1, one
+  `patient_source_xref` row (now unique per Silver patient). Rebuilds reuse it, and while it's
+  still provisional its demographics follow the Silver row. Phase 6 picks up `WHERE match_status =
+  'PROVISIONAL'` and marks survivors `MATCHED`, absorbed masters `MERGED`. Every Gold resource for
+  that patient gets `master_patient_id`. That includes resources written *before* the master
+  existed, such as the seeded Coverage: building a patient back-links anything referencing
+  `Patient/<id>` as subject/patient/beneficiary. Concurrent builds of one patient serialize on a
+  `SELECT … FOR UPDATE` of its Silver row.
+- **Lineage.** One `gold.data_lineage` row per (Gold row, step), upserted on migration 18's unique
+  index, so a rebuild refreshes the row instead of duplicating it. `transformation_details` holds
+  the chain:
+
+  ```json
+  {"target": "Patient/silver-patient-4",
+   "steps": [
+     {"stage": "BRONZE", "timestamp": "…", "transformer": "ingestion-service (HL7V2)",
+      "input_hash": "<bronze.raw_messages.payload_checksum>", "ref": "bronze.raw_messages/77"},
+     {"stage": "SILVER", "timestamp": "…", "transformer": "Bronze → Silver parse (source_system=…)",
+      "input_hash": "<same checksum>", "ref": "silver.patients/4"},
+     {"stage": "GOLD", "timestamp": "…", "transformer": "fhir-compliance-service PatientResourceBuilder + HL7 validator (<profile>)",
+      "input_hash": "<sha256 of the Silver row>", "output_hash": "<sha256 of the resource JSON>",
+      "ref": "gold.fhir_resources/912"}]}
+  ```
+
+  | `transformation_step` | Source | Chain |
+  |---|---|---|
+  | `FHIR_MAP` | `silver.<table>/<id>` | BRONZE → SILVER → GOLD, or SILVER → GOLD when the Silver row has no `raw_message_id` |
+  | `PMI_PROVISIONAL` | `silver.patients/<id>` → `gold.master_patients` | same, ending in the master |
+  | `SEED_LOAD` | `seed/19_seed_cms0057_gold.sql`, no id | SEED → GOLD |
+  | `API_GENERATE` | `api/POST /api/fhir-compliance/generate`, no id | API → GOLD |
+
+  **Bronze link "where it exists"**: no Bronze → Silver parser exists yet, so migration 17's seed
+  patients have no `raw_message_id` and their chains start at SILVER with a null `input_hash`.
+  We don't guess which Bronze message they came from. The integration test inserts a Bronze HL7
+  message plus a Silver patient linked to it and asserts the full three-stage chain.
+- **Transactions**: GoldWriter's methods join the caller's transaction. A patient's master,
+  resources and lineage commit together; a `/generate` Bundle is now one transaction (it used to
+  be one per resource).
+
+### CMS-0057-F read endpoints (served from Gold)
+
+| Method | Path | Purpose |
+|---|---|---|
+| `GET` | `/fhir/r4/{type}/{id}` | Read. 200 `application/fhir+json` with the stored resource. Headers: `X-Profile-Compliant` (`true`/`false`/`pending`), `X-Validated-Profile`, `ETag`, `Last-Modified`. 404 OperationOutcome (`not-found`) for an unknown id |
+| `GET` | `/fhir/r4/{type}?…` | Basic search → `searchset` Bundle with `total`, `self` link, `fullUrl`s. 400 OperationOutcome (`invalid`) for unknown parameters, modifiers/chaining, malformed values, `_count` > 100 |
+| `POST` | `/api/fhir/gold/revalidate` | Validate every Gold row still marked `PENDING_VALIDATION` (also runs on startup) |
+
+`{type}` is one of the five below; any other type → 404 OperationOutcome (`not-supported`).
+
+| Type | Validated against | Search parameters (plus `_id`, `_count`, `_format`) |
+|---|---|---|
+| `Coverage` | US Core 6.1.0 `us-core-coverage` | `patient`, `beneficiary`, `payor`, `status`, `type` |
+| `PractitionerRole` | US Core 6.1.0 `us-core-practitionerrole` | `practitioner`, `organization`, `active`, `role`, `specialty` |
+| `MedicationKnowledge` | Da Vinci US Drug Formulary 2.1.0 `usdf-FormularyDrug` | `code`, `doseform`, `status` |
+| `MeasureReport` | Da Vinci DEQM 5.0.0 `indv-measurereport-deqm` | `patient`, `subject`, `reporter`, `measure`, `status` |
+| `Device` | US Core 6.1.0 `us-core-implantable-device` | `patient`, `type`, `status` |
+
+- **Search semantics** follow FHIR. A repeated parameter means AND and a comma means OR. Tokens
+  can be `system|code`, `code` or `system|`. A reference can be `Type/id`, or a bare id where the
+  target type is implied (`patient=…`). An unversioned `measure` canonical matches any version.
+  Handling is **strict**: an unknown parameter is a 400, not silently ignored, because for a
+  payer API an ignored filter means returning more member data than was asked for. Parameters
+  compile to JSONB containment (`resource_json @> ?::jsonb`, served by the existing GIN index).
+  Names and JSON paths come only from a whitelist (`cms0057/Cms0057SearchParameters`); request
+  values are only ever bind parameters.
+- **Tomcat** is configured with `relaxed-query-chars: "|"`. Without it, a token search with an
+  unencoded `|` gets Tomcat's bare HTML 400 before it ever reaches the controller.
+- **Errors are OperationOutcomes** on `/fhir/r4/**` only (`FhirR4ExceptionHandler`, scoped to
+  that controller). Elsewhere the service keeps its `{"error","message"}` shape. Unexpected
+  failures are a 500 OperationOutcome that says "Internal error" without leaking internals.
+- **What's served is exactly what Gold holds**: validation happened at write time, and the stored
+  verdict is reported in the headers. A non-compliant resource is served, but flagged.
+
+### The data: synthetic seed (migration 19)
+
+No feed produces these types (no eligibility, provider-directory, formulary or quality-measure
+source), so `docs/db-init/19_seed_cms0057_gold.sql` seeds them straight into Gold. The data is
+synthetic but the codes are real. It holds 2 Organizations, 2 Practitioners, 2 PractitionerRoles,
+2 Coverages (SEED-0001 commercial, SEED-0002 Medicare; SOPT codes), 3 formulary drugs for the seed
+patients' meds (RxNorm SCD + SCDG, looked up on NLM RxNav; also added to `ontology.rxnorm_codes`),
+1 DEQM individual report (SEED-0001's HbA1c-poor-control eCQM: 7.2% → not in the numerator) and
+1 implantable pacemaker (UDI from the FHIR spec's own example).
+`cms-practitionerrole-2` is **deliberately non-compliant**: it has no telecom and no endpoint,
+which violates US Core `pd-1`.
+Rows land as `compliance_notes = {"status":"PENDING_VALIDATION"}`, not with a verdict, because SQL
+can't run the validator. `GoldRevalidationService` validates them on startup and writes the real
+findings and a `SEED_LOAD` lineage row. The same JSON is in `src/test/resources/cms0057/`, where
+`Cms0057ProfileValidationTest` checks it, along with a targeted non-compliant variant per type.
+
+### Validator changes this needed
+
+- **Two more IG packages**, bundled next to US Core: `hl7.fhir.us.davinci-drug-formulary-2.1.0.tgz`
+  (972,555 B) and `hl7.fhir.us.davinci-deqm-5.0.0.tgz` (601,471 B). Their dependency trees
+  (QI-Core, CRMI, US Core 3.1.1/7.0.0, …) are *not* bundled. Both profiles used here derive
+  directly from base R4 and ship snapshots, so they validate without them.
+- **HAPI 8.2.0 gap: version-pinned canonicals.** The core MeasureValidator resolves a pinned
+  `MeasureReport.measure` (`url|version`) through `fetchResourcesByUrl`, which HAPI's worker context
+  doesn't implement. It throws `HAPI-2509`, and DEQM's `deqm-0` *requires* the pin, so no
+  conformant DEQM report could be validated, and `/api/fhir/validate` returned a 500 on one.
+  `config/VersionedCanonicalFhirInstanceValidator` implements the lookup instead.
+- **Formulary RxNorm value sets offline.** `usdf-FormularyDrug` slices `code.coding` by value sets
+  defined as RxNorm `TTY` filters (SCD/SBD vs SCDG/SBDG). Without a terminology server every
+  coding matches both slices (`Validation_VAL_Profile_MatchMultiple`), so every formulary drug
+  failed. `config/RxNormFormularyValueSets` supplies those three value sets under their real
+  URLs, evaluated against the RxNorm concepts whose TTY is known locally
+  (`terminology/rxnorm-formulary-tty.csv`). This is the same approach slice 2 used for the OMB race
+  sets. **Limitation**: an RxNorm code not in that file fails the binding offline.
+- **DEQM extension slices.** DEQM's `deqm-3` requires a measure-scoring extension, and once any
+  extension is present the validator must resolve every extension slice DEQM declares. Five of
+  those live in packages we don't bundle (HL7 Extensions 5.2.0, CRMI, R5 cross-version), which
+  raised `SLICING_CANNOT_BE_EVALUATED` ERRORs. Those specific "profile could not be resolved"
+  messages are now reported as **WARNING**s, consistent with `setErrorForUnknownProfiles(false)`.
+  Any other slicing error stays an error.
+
+### Tests
+
+- Unit: `GoldWriterTest`, `SilverLineageTest`, `GoldRevalidationServiceTest` (real validator),
+  `Cms0057SearchParametersTest`, `FhirR4ControllerTest` (MockMvc with the real read service and
+  parser), `Cms0057ProfileValidationTest` (all 13 seed resources plus non-compliant variants vs the
+  real validator).
+- **Integration (first in the project)**: `integration/GoldWriterIntegrationTest`, a
+  `@SpringBootTest` over real HTTP against a throwaway `postgres:16-alpine` (Testcontainers
+  1.21.4) initialized from the real `docs/db-init` scripts. It covers Bronze HL7 + Silver patient
+  → compliant US Core Patient in Gold, plus the provisional master, xref and BRONZE → SILVER →
+  GOLD lineage with the Bronze checksum, and checks that rebuilds are idempotent. It also checks
+  the seed is validated on startup and served by all five `/fhir/r4` types, and that building
+  SEED-0001 back-links its Coverage/MeasureReport. It runs in `mvn test` (about 10 s) and is
+  skipped, not failed, when Docker isn't running. Images: `postgres:16-alpine` (same as compose)
+  and `testcontainers/ryuk:0.12.0`.
+
 ## Endpoints — Phase 5 structural check (port 8084)
 
 | Method | Path | Purpose |
 |---|---|---|
 | `POST` | `/api/fhir-compliance/validate` | Checks each resource in `fhirResources` against the active `USCORE_*_COMPLETENESS` rule for its `resourceType`; persists a `silver.validation_reports` row per failure |
-| `POST` | `/api/fhir-compliance/generate` | Builds FHIR resources from a canonical patient record, persists each to `gold.fhir_resources`, and returns them as a `Bundle` |
+| `POST` | `/api/fhir-compliance/generate` | Builds FHIR resources from a canonical patient record, persists each to `gold.fhir_resources` through GoldWriter (API → GOLD lineage, one transaction per Bundle), and returns them as a `Bundle` |
 | `GET` | `/api/fhir-compliance/rules` | List active `USCORE_*` rules |
 | `GET` | `/api/fhir-compliance/rules/{code}` | Single rule details (404 if unknown) |
 | `PUT` | `/api/fhir-compliance/rules/{code}/toggle` | Flips `is_active` for a rule |
@@ -145,12 +287,12 @@ encounters, diagnosticReports).
   choice-type elements (e.g. MedicationRequest's `medication[x]`).
 - **`FhirBundleGenerator`** builds resources as plain ordered maps using real canonical
   terminology system URIs (`http://snomed.info/sct`, `http://loinc.org`, etc.).
-- **`FhirGenerationService`** persists each generated resource to `gold.fhir_resources` —
-  a table Phase 1 already created for this purpose but that no service had written to until now
-  — after cross-checking it against `UsCoreValidationService.checkResource()` rather than
-  assuming the generator is correct by construction, so `is_us_core_compliant` reflects an
-  actual check. `master_patient_id` is left null until patient-index-service (Phase 6) exists to
-  populate `gold.master_patients`; the column is nullable for exactly this reason.
+- **`FhirGenerationService`** persists each generated resource to `gold.fhir_resources`
+  (through GoldWriter since slice 3) after cross-checking it against
+  `UsCoreValidationService.checkResource()` rather than assuming the generator is correct by
+  construction, so `is_us_core_compliant` reflects an actual check. `master_patient_id` stays
+  null on this path. The input is a caller-supplied record, not a Silver patient, so there's
+  nothing to anchor a master to.
 - FHIR resource ids are strings, not the `BIGINT` `silver.validation_reports.entity_id` expects,
   so validation findings are recorded against the caller-supplied `patientId`, with the
   resource's own id captured in the failure message (same convention as rules-engine-service's
@@ -162,3 +304,11 @@ encounters, diagnosticReports).
 existing `ontology.clinical_rules` table (no new columns — `rule_expression` already exists from
 Phase 4). No schema changes were needed for `gold.fhir_resources` — it and its unique constraint
 on `(resource_type, fhir_id)` already existed from Phase 1.
+
+Phase 5b: `16` adds `gold.fhir_resources.compliance_notes`; `17` seeds Silver; `18` adds
+`gold.master_patients.match_status` (`PROVISIONAL`/`MATCHED`/`MERGED`), makes
+`gold.data_lineage.source_id` nullable, and adds unique indexes on
+`data_lineage (target_schema, target_table, target_id, transformation_step)` and
+`patient_source_xref (silver_patient_id)`; `19` seeds the CMS-0057 resources into Gold (+ 6 RxNorm
+SCD/SCDG rows into `ontology.rxnorm_codes`). All are idempotent and were applied to the running
+container without `down -v`.

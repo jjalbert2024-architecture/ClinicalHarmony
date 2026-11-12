@@ -1,0 +1,32 @@
+{
+  "resourceType": "Device",
+  "id": "cms-device-seed-0002",
+  "meta": {
+    "profile": [
+      "http://hl7.org/fhir/us/core/StructureDefinition/us-core-implantable-device"
+    ]
+  },
+  "udiCarrier": [
+    {
+      "deviceIdentifier": "09504000059118",
+      "carrierHRF": "(01)09504000059118(17)141120(10)7654321D(21)10987654d321"
+    }
+  ],
+  "status": "active",
+  "manufactureDate": "2013-02-01",
+  "expirationDate": "2014-11-20",
+  "lotNumber": "7654321D",
+  "serialNumber": "10987654d321",
+  "type": {
+    "coding": [
+      {
+        "system": "http://snomed.info/sct",
+        "code": "14106009",
+        "display": "Cardiac pacemaker, device (physical object)"
+      }
+    ]
+  },
+  "patient": {
+    "reference": "Patient/silver-patient-2"
+  }
+}

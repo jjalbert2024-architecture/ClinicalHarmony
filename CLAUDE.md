@@ -41,6 +41,7 @@ The Postgres container auto-runs `docs/db-init/` scripts in lexical order on fir
 | HAPI HL7 v2 | 2.3 (`hapi-structures-v25`) |
 | Apache Commons CSV | 1.10.0 |
 | Java | 17 |
+| Testcontainers (test scope, Boot-managed) | 1.21.4 |
 
 New services should use the same Spring Boot parent version and align Camel via its BOM (`camel-spring-boot-bom`) to avoid dependency conflicts.
 
@@ -278,6 +279,42 @@ this project generates FHIR for, and generates FHIR resources from a canonical p
   race/ethnicity (~900 codes) still errors offline (noted in the conversion response).
 - Test C-CDAs are synthetic and hand-written (`src/test/resources/ccda/`, copied to `scripts/fixtures/`).
 
+### fhir-compliance-service — Phase 5b slice 3 (GoldWriter + CMS-0057)
+
+- **`gold/GoldWriter` is the ONLY writer of `gold.*`** (master_patients + patient_source_xref,
+  fhir_resources, data_lineage). Every path goes through it: Silver builds, Phase 5
+  `/api/fhir-compliance/generate`, and `GoldRevalidationService` (seed rows). Don't add a second
+  path. Its methods join the caller's transaction.
+- **Provisional masters**: one `PROVISIONAL` master per `silver.patients` row (migration 18's
+  `match_status`; xref now unique per Silver patient). Phase 6 should pick up `WHERE match_status =
+  'PROVISIONAL'` and set `MATCHED`/`MERGED`. Building a patient back-links any Gold resource
+  referencing `Patient/<id>` (subject/patient/beneficiary) to its master.
+- **Lineage**: one `data_lineage` row per (target, step), upserted (unique index, migration 18).
+  `transformation_details = {"target", "steps": [{stage, timestamp, transformer, input_hash,
+  output_hash?, ref}]}`, with steps BRONZE→SILVER→GOLD (BRONZE only when `raw_message_id` is set,
+  using `payload_checksum`), SEED→GOLD, or API→GOLD. Steps: `FHIR_MAP`, `PMI_PROVISIONAL`,
+  `SEED_LOAD`, `API_GENERATE`. `source_id` is nullable now (seed/API rows).
+- **CMS-0057-F read API** (`FhirR4Controller`, `cms0057/`): `GET /fhir/r4/{Coverage,
+  PractitionerRole,MedicationKnowledge,MeasureReport,Device}[/{id}]`. Strict whitelisted search →
+  JSONB containment; errors are OperationOutcomes (`FhirR4ExceptionHandler`, scoped to that
+  controller only). `server.tomcat.relaxed-query-chars: "|"` is needed for token search.
+- **Seed** `docs/db-init/19`: synthetic CMS-0057 resources inserted into Gold as
+  `compliance_notes.status = PENDING_VALIDATION`; validated on startup (`GoldRevalidationRunner`)
+  or via `POST /api/fhir/gold/revalidate`. `cms-practitionerrole-2` is deliberately non-compliant
+  (pd-1). The source JSON is `src/test/resources/cms0057/`; regenerate 19 from it if it changes.
+- **IG packages**: US Core 6.1.0 + `hl7.fhir.us.davinci-drug-formulary-2.1.0` +
+  `hl7.fhir.us.davinci-deqm-5.0.0` (downloaded with the user's approval; their dependency packages
+  are intentionally NOT bundled). Three validator workarounds, each documented in its class:
+  `VersionedCanonicalFhirInstanceValidator` (HAPI 8.2.0 throws HAPI-2509 on version-pinned
+  `MeasureReport.measure`), `RxNormFormularyValueSets` (offline RxNorm TTY value sets from
+  `terminology/rxnorm-formulary-tty.csv`; must sit BEFORE npm in the chain), and
+  `UsCoreFhirValidator.isUnresolvableSliceProfile` (a slice profile from an unbundled package →
+  WARNING, not ERROR; the user chose this over downloading ~15 MB of dependency packages).
+- **First integration test**: `integration/GoldWriterIntegrationTest` (`@SpringBootTest` +
+  Testcontainers 1.21.4 `postgres:16-alpine` initialized from `../docs/db-init`, `@ServiceConnection`).
+  Runs in `mvn test`, skipped without Docker. It needs the `testcontainers/ryuk:0.12.0` image (pulled
+  with approval).
+
 ### Bronze schema invariants
 
 `bronze.raw_messages` CHECK constraints that Java code must match:
@@ -305,6 +342,12 @@ container, not via `docker-compose down -v`):
   section above) — a distinct set from `CODE-*`/`QUAL-001`/`LOGIC-001`/`IDENT-001`, all within the
   existing `rule_category` CHECK constraint (no enum values needed adding).
 
+Phase 5b slice 3 (`docs/db-init/18`, `19`, same non-destructive pattern, applied to the running
+container): `gold.master_patients.match_status` (CHECK `PROVISIONAL`/`MATCHED`/`MERGED`), nullable
+`gold.data_lineage.source_id`, unique indexes `uq_data_lineage_target_step` and
+`uq_patient_source_xref_silver_patient`; 19 seeds 13 CMS-0057 Gold resources + 6 RxNorm SCD/SCDG
+rows in `ontology.rxnorm_codes`.
+
 Phase 5 (`docs/db-init/14`) added 7 more `clinical_rules` rows (`USCORE_*_COMPLETENESS`, see
 fhir-compliance-service's section above) — no new columns needed, reusing `rule_expression` from
 Phase 4. It also made the first-ever write to `gold.fhir_resources`, a table Phase 1 created but
@@ -317,7 +360,10 @@ left unused; no schema change was needed there either, since its columns and uni
 
 - **Service-layer tests** (`*ProcessorTest` / `*ValidatorTest` / `*ServiceTest` / `*RuleTest`): plain JUnit 5, `mock(...)` the JdbcTemplate/repository, no Spring context — fast.
 - **Web-layer tests** (`*ControllerTest`): `@WebMvcTest` + `@MockBean` on the service layer — Spring MVC slice only, no DB.
-- **Black-box smoke test** (`scripts/smoke-test.sh`): once the stack is up (`docker-compose up -d`), this hits all four implemented services' REST endpoints over HTTP and asserts on real responses — accept/quarantine outcomes, ontology validation results, all 7 rule-engine evaluations and live rule-toggle behavior, US Core structural validation (including a `requiredAnyOf` choice-type check), and FHIR generation round-tripped back through validation to cross-check the generator against the validator. Fixture payloads live in `scripts/fixtures/`. This replaces the earlier "verified manually" note — it's now a repeatable, scriptable check (59 assertions as of Phase 5b slice 2), though it's still HTTP-level (no JUnit `@SpringBootTest`/Testcontainers integration tests exist).
+- **Integration tests** (`*IntegrationTest`, fhir-compliance-service only so far): `@SpringBootTest`
+  + Testcontainers Postgres initialized from `docs/db-init`, real HTTP via `TestRestTemplate`.
+  `@Testcontainers(disabledWithoutDocker = true)`, so `mvn test` still passes without Docker.
+- **Black-box smoke test** (`scripts/smoke-test.sh`): once the stack is up (`docker-compose up -d`), this hits all four implemented services' REST endpoints over HTTP and asserts on real responses — accept/quarantine outcomes, ontology validation results, all 7 rule-engine evaluations and live rule-toggle behavior, US Core structural validation (including a `requiredAnyOf` choice-type check), and FHIR generation round-tripped back through validation to cross-check the generator against the validator. Fixture payloads live in `scripts/fixtures/`. This replaces the earlier "verified manually" note — it's now a repeatable, scriptable check (106 assertions as of Phase 5b slice 3). Gold-layer checks with no HTTP surface yet (lineage, masters) use `check_sql` via `docker exec` into `clinicalharmony-postgres`.
 
 ## Local Docker environment
 
@@ -345,9 +391,9 @@ Phases are meant to be fully complete before the next starts. Current state as o
   the user's choice during Phase 5 scoping, prioritizing breadth (all 7 resource types) over depth.
 - **Phase 5b** (in progress): the rest of the original Phase 5 plan, in four branches/PRs —
   (1) `phase-5b-fhir-validator`: HL7 validator vs US Core 6.1.0 + Silver builders (done, merged as
-  PR #8); (2) `phase-5b-ccda-transformer`: C-CDA → FHIR (built 2026-11-11, awaiting the user's
-  Postman check + PR); (3) GoldWriter + data_lineage +
-  CMS-0057 read endpoints; (4) SMART on FHIR / Keycloak.
+  PR #8); (2) `phase-5b-ccda-transformer`: C-CDA → FHIR (done, merged as PR #9);
+  (3) `phase-5b-gold-writer-cms0057`: GoldWriter + data_lineage + CMS-0057 read endpoints (built
+  2026-11-11, awaiting the user's Postman check + PR); (4) SMART on FHIR / Keycloak.
 - **Phase 6** (after 5b): patient-index-service (PMI + deduplication)
 - **Phase 7**: api-gateway
 - **Phase 8**: dashboard-ui (React, 5 views)

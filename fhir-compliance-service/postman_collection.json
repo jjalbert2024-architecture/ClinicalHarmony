@@ -1,13 +1,21 @@
-{
+  {
   "info": {
     "name": "fhir-compliance-service (Phase 5 + 5b)",
-    "description": "US Core structural validation + FHIR generation for ClinicalHarmony. Import this into Postman, make sure `docker-compose up -d` is running, and run requests top to bottom. Requests 10+ are Phase 5b: the official HL7 FHIR validator against US Core 6.1.0, and Silver → FHIR → Gold builds (needs docs/db-init/16 and 17 applied). Requests 16-21 are Phase 5b slice 2: C-CDA → FHIR R4 Bundle conversion (POST /api/fhir/convert/ccda), each resource validated against US Core 6.1.0.",
+    "description": "US Core structural validation + FHIR generation for ClinicalHarmony. Import this into Postman, make sure `docker-compose up -d` is running, and run requests top to bottom. Requests 10+ are Phase 5b: the official HL7 FHIR validator against US Core 6.1.0, and Silver → FHIR → Gold builds (needs docs/db-init/16 and 17 applied). Requests 16-21 are Phase 5b slice 2: C-CDA → FHIR R4 Bundle conversion (POST /api/fhir/convert/ccda), each resource validated against US Core 6.1.0. Requests 22-35 are Phase 5b slice 3: GoldWriter (provisional master patients + data lineage — needs docs/db-init/18 and 19 applied) and the CMS-0057-F payer read API served from Gold (GET /fhir/r4/{Coverage,PractitionerRole,MedicationKnowledge,MeasureReport,Device}). Errors on /fhir/r4 are FHIR OperationOutcomes. seed1_patient / seed2_patient are the FHIR ids of Silver seed patients SEED-0001 / SEED-0002 (silver-patient-<silver.patients.id>).",
     "schema": "https://schema.getpostman.com/json/collection/v2.1.0/collection.json"
   },
   "variable": [
     {
       "key": "base_url",
       "value": "http://localhost:8084"
+    },
+    {
+      "key": "seed1_patient",
+      "value": "silver-patient-1"
+    },
+    {
+      "key": "seed2_patient",
+      "value": "silver-patient-2"
     }
   ],
   "item": [
@@ -389,6 +397,137 @@
           }
         },
         "description": "Expect: 415 Unsupported Media Type. The endpoint accepts application/xml or text/xml only."
+      }
+    },
+    {
+      "name": "22. Build one Silver patient → Gold (GoldWriter: master + lineage)",
+      "request": {
+        "method": "POST",
+        "header": [],
+        "url": "{{base_url}}/api/fhir/build/patients/1",
+        "description": "Expect: 200. Response now includes masterPatientId — the PROVISIONAL 1:1 gold.master_patients row GoldWriter created (first build) or reused (rebuilds) for this Silver patient. In DBeaver: gold.master_patients (match_status = PROVISIONAL), gold.patient_source_xref, and gold.data_lineage (one FHIR_MAP row per resource; transformation_details.steps = SILVER → GOLD with input_hash/output_hash; one PMI_PROVISIONAL row for the master). Run it twice: same masterPatientId, same goldIds, no new lineage rows."
+      }
+    },
+    {
+      "name": "23. Validate Gold rows pending validation",
+      "request": {
+        "method": "POST",
+        "header": [],
+        "url": "{{base_url}}/api/fhir/gold/revalidate",
+        "description": "Expect: 200 []. Migration 19 seeds CMS-0057 resources straight into Gold as PENDING_VALIDATION; GoldWriter validates them on startup, so by now nothing is pending. To see it work: UPDATE gold.fhir_resources SET compliance_notes = '{\"status\":\"PENDING_VALIDATION\",\"seed\":\"19_seed_cms0057_gold.sql\"}' WHERE fhir_id = 'cms-practitionerrole-2'; then re-send — one summary back, usCoreCompliant false, rule pd-1."
+      }
+    },
+    {
+      "name": "24. CMS-0057 — Coverage search by patient",
+      "request": {
+        "method": "GET",
+        "header": [],
+        "url": "{{base_url}}/fhir/r4/Coverage?patient={{seed1_patient}}",
+        "description": "Expect: 200 searchset Bundle, total 1 (SEED-0001's commercial PPO Coverage). Validated against us-core-coverage."
+      }
+    },
+    {
+      "name": "25. CMS-0057 — Coverage read by id",
+      "request": {
+        "method": "GET",
+        "header": [],
+        "url": "{{base_url}}/fhir/r4/Coverage/cms-coverage-seed-0001",
+        "description": "Expect: 200 application/fhir+json. Response headers: X-Profile-Compliant: true, X-Validated-Profile: us-core-coverage, ETag, Last-Modified."
+      }
+    },
+    {
+      "name": "26. CMS-0057 — PractitionerRole search by organization",
+      "request": {
+        "method": "GET",
+        "header": [],
+        "url": "{{base_url}}/fhir/r4/PractitionerRole?organization=cms-org-provider",
+        "description": "Expect: 200, total 2. Try also ?active=true&specialty=207Q00000X (AND) → 1, or ?role=207Q00000X,207RC0000X (comma = OR) → 2."
+      }
+    },
+    {
+      "name": "27. CMS-0057 — non-compliant PractitionerRole (served, but flagged)",
+      "request": {
+        "method": "GET",
+        "header": [],
+        "url": "{{base_url}}/fhir/r4/PractitionerRole/cms-practitionerrole-2",
+        "description": "Expect: 200 with X-Profile-Compliant: false. Deliberately seeded with no telecom and no endpoint → US Core pd-1. The reasons are in gold.fhir_resources.compliance_notes."
+      }
+    },
+    {
+      "name": "28. CMS-0057 — MedicationKnowledge (formulary) by RxNorm code",
+      "request": {
+        "method": "GET",
+        "header": [],
+        "url": "{{base_url}}/fhir/r4/MedicationKnowledge?code=http://www.nlm.nih.gov/research/umls/rxnorm|861007",
+        "description": "Expect: 200, total 1 (metformin 500 MG Oral Tablet, SCD + its SCDG). Validated against Da Vinci US Drug Formulary 2.1.0 usdf-FormularyDrug. Try ?status=active&_count=2 → total 3, 2 entries."
+      }
+    },
+    {
+      "name": "29. CMS-0057 — MeasureReport by unversioned measure",
+      "request": {
+        "method": "GET",
+        "header": [],
+        "url": "{{base_url}}/fhir/r4/MeasureReport?measure=http://ecqi.healthit.gov/ecqms/Measure/DiabetesHemoglobinA1cHbA1cPoorControl9FHIR",
+        "description": "Expect: 200, total 1. An unversioned canonical matches any version (the stored one is pinned |0.1.000, as DEQM's deqm-0 requires). Validated against Da Vinci DEQM 5.0.0 indv-measurereport-deqm. Also: ?patient={{seed1_patient}}."
+      }
+    },
+    {
+      "name": "30. CMS-0057 — Device by patient and SNOMED type",
+      "request": {
+        "method": "GET",
+        "header": [],
+        "url": "{{base_url}}/fhir/r4/Device?patient={{seed2_patient}}&type=http://snomed.info/sct|14106009",
+        "description": "Expect: 200, total 1 (SEED-0002's pacemaker). Validated against us-core-implantable-device."
+      }
+    },
+    {
+      "name": "31. CMS-0057 — unknown id → 404 OperationOutcome",
+      "request": {
+        "method": "GET",
+        "header": [],
+        "url": "{{base_url}}/fhir/r4/Device/does-not-exist",
+        "description": "Expect: 404, OperationOutcome issue code not-found."
+      }
+    },
+    {
+      "name": "32. CMS-0057 — unsupported type → 404 OperationOutcome",
+      "request": {
+        "method": "GET",
+        "header": [],
+        "url": "{{base_url}}/fhir/r4/Claim/123",
+        "description": "Expect: 404, OperationOutcome issue code not-supported, listing the 5 supported types."
+      }
+    },
+    {
+      "name": "33. CMS-0057 — unknown search parameter → 400 OperationOutcome",
+      "request": {
+        "method": "GET",
+        "header": [],
+        "url": "{{base_url}}/fhir/r4/Coverage?colour=red",
+        "description": "Expect: 400, OperationOutcome issue code invalid, naming the parameter and listing the supported ones. Strict handling: an ignored filter would return more data than asked for."
+      }
+    },
+    {
+      "name": "34. CMS-0057 — modifier / bad value → 400",
+      "request": {
+        "method": "GET",
+        "header": [],
+        "url": "{{base_url}}/fhir/r4/Coverage?status:not=active",
+        "description": "Expect: 400 (modifiers not supported). Also try ?patient=Practitioner/cms-practitioner-1 (wrong reference type), ?_count=1000 (cap 100), PractitionerRole?active=yes."
+      }
+    },
+    {
+      "name": "35. CMS-0057 — correlation id round-trip",
+      "request": {
+        "method": "GET",
+        "header": [
+          {
+            "key": "X-Correlation-Id",
+            "value": "postman-cms-1"
+          }
+        ],
+        "url": "{{base_url}}/fhir/r4/Device/cms-device-seed-0002",
+        "description": "Expect: 200 and the X-Correlation-Id you sent echoed back in the response headers (and stamped on this request's log lines)."
       }
     }
   ]

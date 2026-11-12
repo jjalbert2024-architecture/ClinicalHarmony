@@ -56,6 +56,36 @@ check_json() {
 
 section() { echo; echo "=== $1 ==="; }
 
+# check_sql NAME SQL EXPECTED — runs against the compose Postgres container (Gold-layer checks
+# that no HTTP endpoint exposes yet, e.g. data_lineage, until the Phase 7 api-gateway).
+PG_CONTAINER="${PG_CONTAINER:-clinicalharmony-postgres}"
+check_sql() {
+  local name="$1" sql="$2" expected="$3"
+  local actual
+  actual="$(docker exec "$PG_CONTAINER" psql -U clinicalharmony -d clinicalharmony -Atc "$sql" 2>&1)"
+  if [[ "$actual" == "$expected" ]]; then
+    echo "  PASS  $name ($actual)"
+    PASS=$((PASS + 1))
+  else
+    echo "  FAIL  $name (expected $expected, got $actual)"
+    FAIL=$((FAIL + 1))
+  fi
+}
+
+# check_header NAME URL HEADER EXPECTED — GET, compare one response header (case-insensitive name).
+check_header() {
+  local name="$1" url="$2" header="$3" expected="$4"
+  local actual
+  actual="$(curl -s -o /dev/null -D - "$url" | tr -d '\r' | awk -F': ' -v h="$(echo "$header" | tr '[:upper:]' '[:lower:]')" 'tolower($1)==h{print $2}')"
+  if [[ "$actual" == "$expected" ]]; then
+    echo "  PASS  $name ($actual)"
+    PASS=$((PASS + 1))
+  else
+    echo "  FAIL  $name (expected '$expected', got '$actual')"
+    FAIL=$((FAIL + 1))
+  fi
+}
+
 section "0. Health checks"
 for pair in "ingestion:$INGESTION_URL" "ontology:$ONTOLOGY_URL" "rules-engine:$RULES_URL" "fhir-compliance:$FHIR_COMPLIANCE_URL"; do
   name="${pair%%:*}"; url="${pair#*:}"
@@ -221,6 +251,87 @@ if [[ "$echoed" == "smoke-ccda-1" ]]; then
   echo "  PASS  caller's X-Correlation-Id echoed back ($echoed)"; PASS=$((PASS + 1))
 else
   echo "  FAIL  caller's X-Correlation-Id echoed back (got '$echoed')"; FAIL=$((FAIL + 1))
+fi
+
+section "12. fhir-compliance-service — GoldWriter: provisional masters + lineage (Phase 5b slice 3)"
+# Needs docs/db-init/18 (match_status, nullable lineage source_id, unique lineage/xref indexes).
+check_json "every built Silver patient is linked to its own master" "$TMP/silver_build.json" \
+  "all(r['masterPatientId'] for r in d) and len({r['masterPatientId'] for r in d}) == len(d)" "True"
+curl -s -X POST "$FHIR_COMPLIANCE_URL/api/fhir/build" > "$TMP/silver_rebuild.json"
+python3 -c "import json; print(json.dumps({str(r['silverPatientId']): r['masterPatientId'] for r in json.load(open('$TMP/silver_build.json'))}))" > "$TMP/masters_first.json"
+check_json "rebuilding reuses the same masters (no duplicates)" "$TMP/silver_rebuild.json" \
+  "{str(r['silverPatientId']): r['masterPatientId'] for r in d} == json.load(open('$TMP/masters_first.json'))" "True"
+check_sql "Silver patients have exactly one PROVISIONAL 1:1 master each" \
+  "SELECT count(DISTINCT x.silver_patient_id) = (SELECT count(*) FROM silver.patients) AND bool_and(m.match_status = 'PROVISIONAL' AND m.source_patient_count = 1 AND m.match_confidence_score IS NULL) FROM gold.patient_source_xref x JOIN gold.master_patients m ON m.id = x.master_patient_id" "t"
+check_sql "every Silver-built Gold resource has exactly one FHIR_MAP lineage row" \
+  "SELECT (SELECT count(*) FROM gold.fhir_resources WHERE fhir_id LIKE 'silver-%') = (SELECT count(*) FROM gold.data_lineage WHERE transformation_step = 'FHIR_MAP' AND target_table = 'fhir_resources')" "t"
+check_sql "Silver-built lineage chains run SILVER → GOLD (seed rows have no Bronze link)" \
+  "SELECT DISTINCT (SELECT string_agg(s->>'stage', '>' ORDER BY o) FROM jsonb_array_elements(transformation_details->'steps') WITH ORDINALITY AS t(s, o)) FROM gold.data_lineage WHERE transformation_step = 'FHIR_MAP'" "SILVER>GOLD"
+check_sql "GOLD steps carry 64-hex input and output hashes" \
+  "SELECT bool_and(transformation_details->'steps'->-1->>'input_hash' ~ '^[0-9a-f]{64}$' AND transformation_details->'steps'->-1->>'output_hash' ~ '^[0-9a-f]{64}$') FROM gold.data_lineage WHERE transformation_step = 'FHIR_MAP'" "t"
+check_sql "Phase 5 /generate resources (section 8) also go through GoldWriter: API → GOLD lineage" \
+  "SELECT DISTINCT source_schema || ':' || (SELECT string_agg(s->>'stage', '>' ORDER BY o) FROM jsonb_array_elements(transformation_details->'steps') WITH ORDINALITY AS t(s, o)) FROM gold.data_lineage WHERE transformation_step = 'API_GENERATE'" "api:API>GOLD"
+check_sql "Silver-built Gold resources are linked to their patient's master" \
+  "SELECT count(*) FROM gold.fhir_resources WHERE fhir_id LIKE 'silver-%' AND master_patient_id IS NULL" "0"
+check_sql "seeded CMS-0057 Coverage back-linked to SEED-0001's master" \
+  "SELECT f.master_patient_id = x.master_patient_id FROM gold.fhir_resources f, silver.patients p JOIN gold.patient_source_xref x ON x.silver_patient_id = p.id WHERE f.fhir_id = 'cms-coverage-seed-0001' AND p.source_patient_id = 'SEED-0001'" "t"
+
+section "13. fhir-compliance-service — CMS-0057-F payer read API from Gold (Phase 5b slice 3)"
+# Needs docs/db-init/19 (synthetic CMS-0057 seed). GoldWriter validates it on startup.
+R4="$FHIR_COMPLIANCE_URL/fhir/r4"
+SEED1="silver-patient-$(docker exec "$PG_CONTAINER" psql -U clinicalharmony -d clinicalharmony -Atc "SELECT id FROM silver.patients WHERE source_patient_id = 'SEED-0001'")"
+SEED2="silver-patient-$(docker exec "$PG_CONTAINER" psql -U clinicalharmony -d clinicalharmony -Atc "SELECT id FROM silver.patients WHERE source_patient_id = 'SEED-0002'")"
+check_http "revalidate pending Gold rows (200)" POST "$FHIR_COMPLIANCE_URL/api/fhir/gold/revalidate" 200
+check_json "nothing left pending after startup validation" "$TMP/last_response.json" "len(d)" "0"
+check_sql "12 of 13 seeded resources compliant; the deliberately bad PractitionerRole is not" \
+  "SELECT string_agg(fhir_id, ',') FILTER (WHERE NOT is_us_core_compliant) || ' / ' || count(*) FILTER (WHERE is_us_core_compliant) FROM gold.fhir_resources WHERE fhir_id LIKE 'cms-%'" "cms-practitionerrole-2 / 12"
+check_sql "every seeded resource has a SEED_LOAD lineage row with no source id" \
+  "SELECT count(*) FROM gold.data_lineage WHERE transformation_step = 'SEED_LOAD' AND source_schema = 'seed' AND source_id IS NULL" "13"
+
+check_http "Coverage search by patient" GET "$R4/Coverage?patient=$SEED1" 200
+check_json "  → searchset with SEED-0001's Coverage" "$TMP/last_response.json" \
+  "(d['resourceType'], d['type'], d['total'], d['entry'][0]['resource']['id'])" "('Bundle', 'searchset', 1, 'cms-coverage-seed-0001')"
+check_http "Coverage search by payor (array reference)" GET "$R4/Coverage?payor=Organization/cms-org-payer" 200
+check_json "  → both seed Coverages" "$TMP/last_response.json" "d['total']" "2"
+check_http "PractitionerRole search by organization" GET "$R4/PractitionerRole?organization=cms-org-provider" 200
+check_json "  → 2 roles" "$TMP/last_response.json" "d['total']" "2"
+check_http "PractitionerRole search active AND specialty" GET "$R4/PractitionerRole?active=true&specialty=207Q00000X" 200
+check_json "  → only the family-medicine role" "$TMP/last_response.json" "[e['resource']['id'] for e in d['entry']]" "['cms-practitionerrole-1']"
+check_http "MedicationKnowledge search by RxNorm system|code" GET "$R4/MedicationKnowledge?code=http://www.nlm.nih.gov/research/umls/rxnorm|861007" 200
+check_json "  → metformin 500 mg tablet" "$TMP/last_response.json" "d['entry'][0]['resource']['code']['coding'][0]['display']" "metformin hydrochloride 500 MG Oral Tablet"
+check_http "MedicationKnowledge search status=active with _count=2" GET "$R4/MedicationKnowledge?status=active&_count=2" 200
+check_json "  → total 3, page of 2" "$TMP/last_response.json" "(d['total'], len(d['entry']))" "(3, 2)"
+check_http "MeasureReport search by unversioned measure canonical" GET "$R4/MeasureReport?measure=http://ecqi.healthit.gov/ecqms/Measure/DiabetesHemoglobinA1cHbA1cPoorControl9FHIR" 200
+check_json "  → matches the version-pinned report" "$TMP/last_response.json" "(d['total'], d['entry'][0]['resource']['subject']['reference'])" "(1, 'Patient/$SEED1')"
+check_http "Device search by patient + SNOMED type" GET "$R4/Device?patient=$SEED2&type=http://snomed.info/sct|14106009" 200
+check_json "  → SEED-0002's pacemaker" "$TMP/last_response.json" "d['entry'][0]['resource']['id']" "cms-device-seed-0002"
+
+check_http "read Coverage by id" GET "$R4/Coverage/cms-coverage-seed-0001" 200
+check_json "  → the stored resource" "$TMP/last_response.json" "(d['resourceType'], d['id'])" "('Coverage', 'cms-coverage-seed-0001')"
+check_header "  → served as application/fhir+json" "$R4/Coverage/cms-coverage-seed-0001" "Content-Type" "application/fhir+json;charset=UTF-8"
+check_header "  → X-Profile-Compliant true" "$R4/Coverage/cms-coverage-seed-0001" "X-Profile-Compliant" "true"
+check_header "MedicationKnowledge validated against Da Vinci Formulary" "$R4/MedicationKnowledge/cms-formulary-617310" \
+  "X-Validated-Profile" "http://hl7.org/fhir/us/davinci-drug-formulary/StructureDefinition/usdf-FormularyDrug"
+check_header "MeasureReport validated against DEQM and compliant" "$R4/MeasureReport/cms-measurereport-seed-0001" "X-Profile-Compliant" "true"
+check_header "Device validated against US Core implantable device" "$R4/Device/cms-device-seed-0002" \
+  "X-Validated-Profile" "http://hl7.org/fhir/us/core/StructureDefinition/us-core-implantable-device"
+check_header "non-compliant PractitionerRole is served but flagged" "$R4/PractitionerRole/cms-practitionerrole-2" "X-Profile-Compliant" "false"
+
+check_http "unknown id → 404" GET "$R4/Device/does-not-exist" 404
+check_json "  → OperationOutcome not-found" "$TMP/last_response.json" "(d['resourceType'], d['issue'][0]['code'])" "('OperationOutcome', 'not-found')"
+check_http "unsupported resource type → 404" GET "$R4/Claim/123" 404
+check_json "  → OperationOutcome not-supported" "$TMP/last_response.json" "d['issue'][0]['code']" "not-supported"
+check_http "unknown search parameter → 400" GET "$R4/Coverage?colour=red" 400
+check_json "  → OperationOutcome invalid, names the parameter" "$TMP/last_response.json" \
+  "(d['issue'][0]['code'], \"'colour'\" in d['issue'][0]['diagnostics'])" "('invalid', True)"
+check_http "search modifier → 400" GET "$R4/Coverage?status:not=active" 400
+check_http "_count over the cap → 400" GET "$R4/Device?_count=1000" 400
+check_http "wrongly typed reference → 400" GET "$R4/Coverage?patient=Practitioner/cms-practitioner-1" 400
+echoed="$(curl -s -o /dev/null -D - -H "X-Correlation-Id: smoke-cms-1" "$R4/Device/cms-device-seed-0002" | tr -d '\r' | awk -F': ' 'tolower($1)=="x-correlation-id"{print $2}')"
+if [[ "$echoed" == "smoke-cms-1" ]]; then
+  echo "  PASS  caller's X-Correlation-Id echoed on /fhir/r4 ($echoed)"; PASS=$((PASS + 1))
+else
+  echo "  FAIL  caller's X-Correlation-Id echoed on /fhir/r4 (got '$echoed')"; FAIL=$((FAIL + 1))
 fi
 
 echo

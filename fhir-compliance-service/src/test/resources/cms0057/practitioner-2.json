@@ -1,0 +1,27 @@
+{
+  "resourceType": "Practitioner",
+  "id": "cms-practitioner-2",
+  "meta": {
+    "profile": [
+      "http://hl7.org/fhir/us/core/StructureDefinition/us-core-practitioner"
+    ]
+  },
+  "identifier": [
+    {
+      "system": "http://clinicalharmony.example.org/fhir/sid/provider-id",
+      "value": "CHP-PRAC-002"
+    }
+  ],
+  "active": true,
+  "name": [
+    {
+      "family": "Lindqvist",
+      "given": [
+        "Erik"
+      ],
+      "prefix": [
+        "Dr."
+      ]
+    }
+  ]
+}

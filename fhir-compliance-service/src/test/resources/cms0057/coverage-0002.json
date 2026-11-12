@@ -1,0 +1,81 @@
+{
+  "resourceType": "Coverage",
+  "id": "cms-coverage-seed-0002",
+  "meta": {
+    "profile": [
+      "http://hl7.org/fhir/us/core/StructureDefinition/us-core-coverage"
+    ]
+  },
+  "identifier": [
+    {
+      "type": {
+        "coding": [
+          {
+            "system": "http://terminology.hl7.org/CodeSystem/v2-0203",
+            "code": "MB",
+            "display": "Member Number"
+          }
+        ]
+      },
+      "system": "http://clinicalharmony.example.org/fhir/sid/member-id",
+      "value": "CHP-200002-01"
+    }
+  ],
+  "status": "active",
+  "type": {
+    "coding": [
+      {
+        "system": "https://nahdo.org/sopt",
+        "code": "1",
+        "display": "MEDICARE"
+      }
+    ]
+  },
+  "subscriberId": "CHP-200002",
+  "beneficiary": {
+    "reference": "Patient/silver-patient-2"
+  },
+  "relationship": {
+    "coding": [
+      {
+        "system": "http://terminology.hl7.org/CodeSystem/subscriber-relationship",
+        "code": "self",
+        "display": "Self"
+      }
+    ]
+  },
+  "period": {
+    "start": "2020-10-01"
+  },
+  "payor": [
+    {
+      "reference": "Organization/cms-org-payer",
+      "display": "ClinicalHarmony Health Plan (synthetic)"
+    }
+  ],
+  "class": [
+    {
+      "type": {
+        "coding": [
+          {
+            "system": "http://terminology.hl7.org/CodeSystem/coverage-class",
+            "code": "group"
+          }
+        ]
+      },
+      "value": "GRP-7001"
+    },
+    {
+      "type": {
+        "coding": [
+          {
+            "system": "http://terminology.hl7.org/CodeSystem/coverage-class",
+            "code": "plan"
+          }
+        ]
+      },
+      "value": "PLN-MA-SILVER",
+      "name": "Medicare Advantage Silver"
+    }
+  ]
+}

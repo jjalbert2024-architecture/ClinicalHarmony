@@ -115,7 +115,7 @@ smoke test and inline in Postman items 16–21.
 FHIR builds (slice 1), Phase 5's caller-supplied `/api/fhir-compliance/generate`, and validation of
 rows seeded straight into Gold (migration 19). There's no second write path.
 
-- **Provisional master patients (pre-Phase 6).** patient-index-service doesn't exist yet, so each
+- **Provisional master patients.** Before the PMI (Phase 6) has looked at it, each
   `silver.patients` row gets its own master: `match_status = 'PROVISIONAL'` (migration 18),
   `match_confidence_score` NULL ("single-source, unmatched"), `source_patient_count` 1, one
   `patient_source_xref` row (now unique per Silver patient). Rebuilds reuse it, and while it's
@@ -284,7 +284,7 @@ curl -s -u clinicalharmony-app:clinicalharmony-app-secret -d grant_type=client_c
 |---|---|
 | Public | `GET /.well-known/smart-configuration`, `GET /fhir/r4/.well-known/smart-configuration`, `/actuator/health`, `POST /api/fhir/validate`, `POST /api/fhir-compliance/validate`, `GET /api/fhir-compliance/rules[/{code}]` |
 | SMART scope | `GET /fhir/r4/{type}/{id}` needs `system/{type}.r`; `GET /fhir/r4/{type}?…` needs `system/{type}.s` |
-| `clinicalharmony/pipeline.write` | `POST /api/fhir/build[/patients/{id}]`, `POST /api/fhir/gold/revalidate`, `POST /api/fhir-compliance/generate`, `PUT /api/fhir-compliance/rules/{code}/toggle` |
+| `clinicalharmony/pipeline.write` | `POST /api/fhir/build[/patients/{id}]`, `POST /api/fhir/gold/revalidate`, `POST /api/fhir/gold/masters/**` (Phase 6), `POST /api/fhir-compliance/generate`, `PUT /api/fhir-compliance/rules/{code}/toggle` |
 | Any valid token | `POST /api/fhir/convert/ccda` (whole patient documents, even though nothing is persisted), plus anything not listed |
 
 Every token is checked for signature (realm JWKS), `exp`/`nbf`, `iss`, and `aud` containing
@@ -354,11 +354,37 @@ secret for simplicity, and the discovery document says so.
     `{{access_token}}`, which the collection-level Bearer auth sends.
   - **Requests 36–44:** discovery and the 401/403 cases, using a narrow `{{narrow_token}}`.
 
+## Phase 6 — GoldWriter applies patient-index-service's decisions
+
+patient-index-service (port 8085) decides which masters are the same person, but GoldWriter stays
+the only writer of `gold.*`: the PMI calls these endpoints with its **own** Keycloak client
+(`patient-index-service`, scope `clinicalharmony/pipeline.write`), never the caller's token. Each
+call is one transaction; 404 for an unknown master/merge, 409 (nothing written) when Gold's state
+doesn't allow it.
+
+| Method | Path | What GoldWriter does |
+|---|---|---|
+| `POST` | `/api/fhir/gold/masters/merge` | `{survivorMasterId, absorbedMasterId, matchConfidenceScore?, matchMethod: DETERMINISTIC\|PROBABILISTIC\|MANUAL, decidedBy, evidence?}` → moves the absorbed master's `patient_source_xref` rows and every `gold.fhir_resources` row linked to it onto the survivor; absorbed → `MERGED`, inactive; survivor → `MATCHED`, confidence = its weakest live merge; records a `gold.master_patient_merges` row (which xref/FHIR rows moved, the evidence JSON) and a `PMI_MERGE` lineage row. 201. Locks both masters in id order. |
+| `POST` | `/api/fhir/gold/masters/{id}/confirm` | `PROVISIONAL` → `MATCHED` (a person with no duplicate), `PMI_MATCH` lineage row. Idempotent on `MATCHED`; 409 on `MERGED`. |
+| `POST` | `/api/fhir/gold/masters/merges/{mergeId}/unmerge` | Moves exactly the recorded rows back (plus any FHIR resources built for those Silver patients since, via their `Patient/silver-patient-N` references), reactivates the absorbed master as `MATCHED`, marks the merge row `unmerged_at/by/reason`, `PMI_UNMERGE` lineage row. 409 if already undone, or if the survivor has since been merged into a third master (undo that one first). |
+
+`decided_by` stores the caller's `decidedBy` plus the token's client, e.g.
+`reviewer:dana via patient-index-service`. Rebuilding a merged Silver patient (`POST /api/fhir/build`)
+keeps it on its survivor — `ensureProvisionalMaster` finds the master through the xref and only
+refreshes demographics while a master is still `PROVISIONAL`.
+
+Tests: `GoldWriterMasterOperationsTest` (decision logic, mocked SQL), `GoldMasterControllerTest`
+(validation, 404/409 mapping, 403 without pipeline.write, audit name), and
+`integration/GoldMasterIntegrationTest` (real schema: build two Silver patients, merge, conflicts,
+unmerge back to exactly where they were, lineage rows).
+
 ## Postman collections
 
 One collection per phase/slice in [`postman/`](postman), so you can import only the one you're
 testing. Request numbers are the same across files (they continue 0–44 across the slices) so the
-references in this README still match.
+references in this README still match. Phase 6's collection (8 requests numbered 1–8, which also exercise
+the GoldWriter master endpoints above) lives in
+[`../patient-index-service/postman/`](../patient-index-service/postman).
 
 | File | Requests |
 |---|---|
@@ -437,3 +463,7 @@ Phase 5b: `16` adds `gold.fhir_resources.compliance_notes`; `17` seeds Silver; `
 `patient_source_xref (silver_patient_id)`; `19` seeds the CMS-0057 resources into Gold (+ 6 RxNorm
 SCD/SCDG rows into `ontology.rxnorm_codes`). All are idempotent and were applied to the running
 container without `down -v`.
+
+Phase 6: `20` adds `gold.master_patient_merges` (written here, by GoldWriter), the `pmi` schema
+(patient-index-service's own state) and the `PMI_MATCH` rule; `21` seeds cross-source duplicate
+Silver patients. Both applied to the running container without `down -v`.

@@ -21,9 +21,10 @@ problems, it never hides them** — malformed input is quarantined rather than d
 never papered over with invented values, so a non-compliant resource is flagged with the exact
 reason instead of quietly "fixed".
 
-> **Status (2026-11-12):** Phases 1–5 and all four Phase 5b slices are built and tested (5b.4,
-> SMART on FHIR, in review). Four services are live — ingestion, ontology, rules engine, and FHIR
-> compliance — plus Keycloak as the authorization server. See the [Roadmap](#roadmap).
+> **Status (2026-11-12):** Phases 1–5 and all four Phase 5b slices are done (5b.4, SMART on FHIR,
+> merged as PR #11). Phase 6, the patient master index, is built and in review. Five services are
+> live — ingestion, ontology, rules engine, FHIR compliance and patient index — plus Keycloak as the
+> authorization server. See the [Roadmap](#roadmap).
 
 ## Architecture
 
@@ -57,7 +58,7 @@ stage, orchestrated by Docker Compose.
                     │   GoldWriter: provisional masters + lineage (every Gold write)   │
                     └─────────────────────┬──────────────────────────────────────────┘
                                           ▼
-  RESOLVE           patient-index-service  (cross-source deduplication)       ⏳ Phase 6
+  RESOLVE           patient-index-service  (match · review · merge, via GoldWriter)  🔄 6
                                           │
                                           ▼
   GOLD              gold.master_patients · gold.fhir_resources · gold.data_lineage
@@ -76,8 +77,8 @@ stage, orchestrated by Docker Compose.
 | [`ingestion-service`](ingestion-service) | 8081 (+ MLLP 8887) | 2 / 2b | Apache Camel MLLP listener + REST intake for HL7 v2, FHIR JSON and claims CSV; checksums, quarantine, real HL7 ACK/NAK | ✅ Implemented |
 | [`ontology-service`](ontology-service) | 8082 | 3 | Code validation (ICD-10, SNOMED CT, LOINC, RxNorm) and SNOMED ↔ ICD-10 concept mapping | ✅ Implemented |
 | [`rules-engine-service`](rules-engine-service) | 8083 | 4 | 7 clinical plausibility rules, tunable as data (JSONB), orchestrated with ontology validation | ✅ Implemented |
-| [`fhir-compliance-service`](fhir-compliance-service) | 8084 | 5 / 5b | Official HL7 FHIR validator vs US Core 6.1.0 + Da Vinci Formulary/DEQM, Silver → FHIR builders, C-CDA → FHIR conversion, GoldWriter (master patients, FHIR resources, lineage), CMS-0057-F read API, SMART on FHIR backend-services auth (Keycloak) | 🔄 Built — slice 5b.4 in review |
-| [`patient-index-service`](patient-index-service) | 8085 | 6 | Master patient index: cross-source matching and deduplication | ⏳ Planned |
+| [`fhir-compliance-service`](fhir-compliance-service) | 8084 | 5 / 5b | Official HL7 FHIR validator vs US Core 6.1.0 + Da Vinci Formulary/DEQM, Silver → FHIR builders, C-CDA → FHIR conversion, GoldWriter (master patients, FHIR resources, lineage), CMS-0057-F read API, SMART on FHIR backend-services auth (Keycloak) | ✅ Done (PR #7–#11) |
+| [`patient-index-service`](patient-index-service) | 8085 | 6 | Master patient index: blocking + deterministic rules + Fellegi-Sunter-style weighted matching across sources, auto-merge / review queue / unmerge, applied to Gold through GoldWriter | 🔄 Built, in review |
 | [`api-gateway`](api-gateway) | 8080 | 7 | Single REST surface for the dashboard | ⏳ Planned |
 | [`dashboard-ui`](dashboard-ui) | 3000 | 8 | React dashboard, 5 views | ⏳ Planned |
 | [`data-generator`](data-generator) | — | 9 | Python synthetic data in all source formats | ⏳ Planned |
@@ -101,8 +102,8 @@ hand-verified in Postman — before the next one starts.
 | **5b.1** | HL7 FHIR validator | Official validator (HAPI FHIR 8.2) against the bundled US Core 6.1.0 package: severity, FHIRPath location, rule and suggested fix per violation. Silver → US Core builders write to Gold with compliance notes | ✅ Done (PR #8) |
 | **5b.2** | C-CDA → FHIR | `POST /api/fhir/convert/ccda`: C-CDA R2.1 Problems / Medications / Results → FHIR R4 Bundle, every resource validated against US Core | ✅ Done (PR #9) |
 | **5b.3** | GoldWriter + CMS-0057 | One writer for `gold.master_patients` (provisional 1:1 masters until Phase 6) / `fhir_resources` / `data_lineage` (BRONZE → SILVER → GOLD chains with hashes); `GET /fhir/r4/{Coverage,PractitionerRole,MedicationKnowledge,MeasureReport,Device}` read + search from Gold, validated against US Core / Da Vinci; first `@SpringBootTest` + Testcontainers integration test | ✅ Done (PR #10) |
-| **5b.4** | SMART on FHIR | Keycloak 26.8 realm imported from JSON (confidential client, client credentials); Spring Security resource server: Bearer JWT on `/fhir/**` with SMART v2 scopes (`system/<Type>.rs`, read vs search), `clinicalharmony/pipeline.write` for Gold writers, 401/403 as OperationOutcomes; `/.well-known/smart-configuration` | 🔄 Built, in review |
-| **6** | `patient-index-service` | Master patient index: probabilistic matching and cross-source deduplication into `gold.master_patients` | ⏳ Planned |
+| **5b.4** | SMART on FHIR | Keycloak 26.8 realm imported from JSON (confidential client, client credentials); Spring Security resource server: Bearer JWT on `/fhir/**` with SMART v2 scopes (`system/<Type>.rs`, read vs search), `clinicalharmony/pipeline.write` for Gold writers, 401/403 as OperationOutcomes; `/.well-known/smart-configuration` | ✅ Done (PR #11) |
+| **6** | `patient-index-service` | Master patient index: blocking (DOB · Double Metaphone surname + birth year · phone), deterministic rules, weighted field agreement (Jaro-Winkler, nicknames, DOB day/month swaps); ≥ 0.85 auto-merges, 0.60–0.85 goes to a review queue; accept / reject / manual merge / unmerge, with human "not the same person" decisions remembered. GoldWriter stays the only Gold writer (PMI calls it with its own Keycloak client) | 🔄 Built, in review |
 | **7** | `api-gateway` | One REST API for the dashboard | ⏳ Planned |
 | **8** | `dashboard-ui` | React: Patient Timeline, Ontology Coverage, Validation Report, FHIR Viewer, Data Lineage | ⏳ Planned |
 | **9** | `data-generator` | Python synthetic patients in HL7 v2, FHIR, claims CSV (and C-CDA) | ⏳ Planned |
@@ -114,8 +115,10 @@ hand-verified in Postman — before the next one starts.
   seeded by `docs/db-init/17`, and the ontology/rules APIs take a canonical patient record directly.
   So Gold lineage for the seed patients starts at Silver; the BRONZE step appears once a Silver row
   carries a `raw_message_id` (the integration test exercises exactly that).
-- **Master patients are provisional.** Until patient-index-service (Phase 6) exists, every Silver
-  patient gets its own `PROVISIONAL` 1:1 master; no cross-source matching happens yet.
+- **Matching runs on demand.** patient-index-service matches when `POST /api/pmi/match/run` is
+  called (nothing schedules it yet), and only sees Silver patients fhir-compliance-service has built
+  into Gold (`POST /api/fhir/build` creates their `PROVISIONAL` masters). Blocking is in memory per
+  run — fine at demo scale, not at millions of records.
 - **CMS-0057 payer data is a synthetic seed** (`docs/db-init/19`). Nothing upstream produces
   Coverage, PractitionerRole, MedicationKnowledge, MeasureReport or Device yet.
 - **Kafka** (and Zookeeper) is provisioned in Docker Compose, but no service publishes to or consumes from it yet.
@@ -144,7 +147,8 @@ PostgreSQL 16 with a medallion layout plus a reference schema. Full DDL and seed
 |---|---|---|
 | `bronze` | Raw, immutable intake payloads, valid or quarantined | `raw_messages` |
 | `silver` | Parsed, typed clinical entities (before deduplication) and every validation finding | `patients`, `conditions`, `observations`, `medications`, `validation_reports` |
-| `gold` | Conformed, deduplicated, US Core FHIR resources with lineage — all written by one component, GoldWriter | `master_patients` (+ `match_status`), `patient_source_xref`, `fhir_resources` (+ `compliance_notes`), `data_lineage` (JSONB step chains) |
+| `gold` | Conformed, deduplicated, US Core FHIR resources with lineage — all written by one component, GoldWriter | `master_patients` (+ `match_status`), `patient_source_xref`, `master_patient_merges`, `fhir_resources` (+ `compliance_notes`), `data_lineage` (JSONB step chains) |
+| `pmi` | patient-index-service's working state | `match_runs`, `match_candidates` (review queue), `match_exclusions` |
 | `ontology` | Reference terminology and clinical rules (rule parameters stored as JSONB) | `icd10_codes`, `snomed_codes`, `loinc_codes`, `rxnorm_codes`, `concept_mappings`, `clinical_rules` |
 
 ## Tech stack
@@ -176,6 +180,7 @@ docker-compose down -v
 | ontology-service | `localhost:8082` |
 | rules-engine-service | `localhost:8083` |
 | fhir-compliance-service | `localhost:8084` |
+| patient-index-service | `localhost:8085` |
 | Keycloak (realm `clinicalharmony`) | `localhost:8180` (admin console: `admin` / `admin`, dev only) |
 | api-gateway / dashboard-ui | `localhost:8080` / `localhost:3000` (placeholders) |
 
@@ -185,11 +190,14 @@ docker-compose down -v
 ./scripts/smoke-test.sh
 ```
 
-This runs 135 black-box assertions against the live services: intake accept and quarantine, code
+This runs 168 black-box assertions against the live services: intake accept and quarantine, code
 validation, every clinical rule and live rule toggling, US Core validation, Silver → FHIR builds,
-C-CDA conversion, GoldWriter master patients and lineage, the CMS-0057 read/search API, and SMART
-auth (it gets real tokens from Keycloak, then checks discovery, 401/403 and scope enforcement). Each implemented service also has Postman collections (one per phase/slice, in `fhir-compliance-service/postman/`) or curl examples in
-its own README, and unit tests via `mvn test` from the service directory.
+C-CDA conversion, GoldWriter master patients and lineage, the CMS-0057 read/search API, SMART
+auth (it gets real tokens from Keycloak, then checks discovery, 401/403 and scope enforcement), and
+patient matching end to end (fresh synthetic duplicates each run: auto-merge, review, reject,
+accept, unmerge, re-run). Each implemented service also has Postman collections (one per
+phase/slice, in `fhir-compliance-service/postman/` and `patient-index-service/postman/`) or curl
+examples in its own README, and unit tests via `mvn test` from the service directory.
 
 ## Try it
 
@@ -274,21 +282,35 @@ curl -s -H "Authorization: Bearer $TOKEN" "http://localhost:8084/fhir/r4/Medicat
 curl -si -H "Authorization: Bearer $TOKEN" http://localhost:8084/fhir/r4/PractitionerRole/cms-practitionerrole-2 | grep -i x-profile
 ```
 
+**Match patients across sources** (patient-index-service; `docs/db-init/21` seeds the same people
+arriving from different feeds). Build first so every Silver patient has a master, then run:
+
+```bash
+curl -s -X POST -H "Authorization: Bearer $TOKEN" http://localhost:8084/api/fhir/build > /dev/null
+curl -s -X POST -H "Authorization: Bearer $TOKEN" http://localhost:8085/api/pmi/match/run
+curl -s -H "Authorization: Bearer $TOKEN" http://localhost:8085/api/pmi/candidates   # the review queue
+```
+
+The run auto-merges the claims-feed copy of Maria Garcia (deterministic) and "Jim" Wilson (0.91), and
+queues two for a human: a day/month-swapped birth date (0.65) and Maria's opposite-sex twin (0.71 —
+the gender conflict keeps him out of auto-merge). Accept, reject or undo with
+`POST /api/pmi/candidates/{id}/accept|reject` and `POST /api/pmi/merges/{id}/unmerge`.
+
 ## Project structure
 
 ```
 ClinicalHarmony/
 ├── docker-compose.yml
-├── docs/db-init/               # Ordered SQL: schemas, tables, terminology subsets, rules, Silver + CMS-0057 seeds
+├── docs/db-init/               # Ordered SQL: schemas, tables, terminology subsets, rules, Silver + CMS-0057 + PMI seeds
 ├── scripts/
 │   ├── smoke-test.sh           # Black-box test of every live endpoint
 │   └── fixtures/               # HL7 / FHIR / CSV / C-CDA test payloads
 ├── ingestion-service/          # ✅ Spring Boot + Apache Camel (MLLP) + HAPI HL7 v2
 ├── ontology-service/           # ✅ Terminology validators + concept mapping
 ├── rules-engine-service/       # ✅ Clinical rules engine
-├── fhir-compliance-service/    # 🔄 HAPI FHIR validator, US Core builders, C-CDA → FHIR, GoldWriter, CMS-0057 API, SMART auth
-├── keycloak/                   # Realm import: client, SMART scopes, audience mapper
-├── patient-index-service/      # ⏳ Master patient index + deduplication
+├── fhir-compliance-service/    # ✅ HAPI FHIR validator, US Core builders, C-CDA → FHIR, GoldWriter, CMS-0057 API, SMART auth
+├── keycloak/                   # Realm import: clients, SMART scopes, audience mapper
+├── patient-index-service/      # 🔄 Master patient index: matching, review queue, merge/unmerge via GoldWriter
 ├── api-gateway/                # ⏳ REST API for the dashboard
 ├── dashboard-ui/               # ⏳ React dashboard
 └── data-generator/             # ⏳ Python synthetic data generator

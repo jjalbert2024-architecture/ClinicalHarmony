@@ -17,6 +17,12 @@ public record LineageSource(String schema, String table, Long id, String transfo
     public static final String SEED_LOAD = "SEED_LOAD";
     /** Caller-supplied record via Phase 5's POST /api/fhir-compliance/generate. */
     public static final String API_GENERATE = "API_GENERATE";
+    /** Phase 6 PMI: a master confirmed as its own person (PROVISIONAL → MATCHED). */
+    public static final String PMI_MATCH = "PMI_MATCH";
+    /** Phase 6 PMI: one master absorbed into another (target = the gold.master_patient_merges row). */
+    public static final String PMI_MERGE = "PMI_MERGE";
+    /** Phase 6 PMI: a merge undone (same target as its PMI_MERGE row). */
+    public static final String PMI_UNMERGE = "PMI_UNMERGE";
 
     public static LineageSource silver(String table, long id, String step) {
         return new LineageSource("silver", table, id, step);

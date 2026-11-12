@@ -1,5 +1,7 @@
 package com.clinicalharmony.fhircompliance.web;
 
+import com.clinicalharmony.fhircompliance.gold.GoldMasterConflictException;
+import com.clinicalharmony.fhircompliance.gold.GoldMasterNotFoundException;
 import com.clinicalharmony.fhircompliance.service.ccda.CcdaDocumentTooLargeException;
 import com.clinicalharmony.fhircompliance.service.ccda.InvalidCcdaDocumentException;
 import com.clinicalharmony.fhircompliance.service.silver.SilverPatientNotFoundException;
@@ -59,6 +61,19 @@ public class GlobalExceptionHandler {
     public ResponseEntity<Map<String, Object>> handleSilverPatientNotFound(SilverPatientNotFoundException ex) {
         return ResponseEntity.status(HttpStatus.NOT_FOUND)
                 .body(Map.of("error", "Not found", "message", ex.getMessage()));
+    }
+
+    @ExceptionHandler(GoldMasterNotFoundException.class)
+    public ResponseEntity<Map<String, Object>> handleMasterNotFound(GoldMasterNotFoundException ex) {
+        return ResponseEntity.status(HttpStatus.NOT_FOUND)
+                .body(Map.of("error", "Not found", "message", ex.getMessage()));
+    }
+
+    @ExceptionHandler(GoldMasterConflictException.class)
+    public ResponseEntity<Map<String, Object>> handleMasterConflict(GoldMasterConflictException ex) {
+        log.info("Refused master-patient operation: {}", ex.getMessage());
+        return ResponseEntity.status(HttpStatus.CONFLICT)
+                .body(Map.of("error", "Conflict", "message", ex.getMessage()));
     }
 
     @ExceptionHandler(HttpMessageNotReadableException.class)

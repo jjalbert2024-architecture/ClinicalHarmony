@@ -4,9 +4,13 @@ import com.clinicalharmony.fhircompliance.repository.DataLineageRecord;
 import com.clinicalharmony.fhircompliance.repository.DataLineageRepository;
 import com.clinicalharmony.fhircompliance.repository.GoldFhirResourceRecord;
 import com.clinicalharmony.fhircompliance.repository.GoldFhirResourceRepository;
+import com.clinicalharmony.fhircompliance.repository.MasterMergeRepository;
+import com.clinicalharmony.fhircompliance.repository.MasterMergeRow;
 import com.clinicalharmony.fhircompliance.repository.MasterPatientRepository;
+import com.clinicalharmony.fhircompliance.repository.MasterPatientSnapshot;
 import com.clinicalharmony.fhircompliance.repository.silver.SilverPatientRow;
 import com.clinicalharmony.fhircompliance.repository.silver.SilverTable;
+import com.clinicalharmony.fhircompliance.service.silver.FhirIds;
 import com.fasterxml.jackson.core.JsonProcessingException;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import org.slf4j.Logger;
@@ -15,6 +19,7 @@ import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.stereotype.Component;
 import org.springframework.transaction.annotation.Transactional;
 
+import java.math.BigDecimal;
 import java.time.Clock;
 import java.time.Instant;
 import java.util.ArrayList;
@@ -29,11 +34,14 @@ import java.util.Map;
  * straight into Gold (migration 19) — goes through here, so every Gold row gets a lineage row
  * and the same master-patient linking, whichever path produced it.
  *
- * <p><b>Master patients before Phase 6.</b> patient-index-service doesn't exist yet, so each
- * silver.patients row gets its own PROVISIONAL master (1:1, linked via patient_source_xref,
- * {@code match_confidence_score} NULL = "single-source, unmatched"). Phase 6 later matches/merges
- * those; until then the master is a stable Gold-side identity for the patient, and every Gold
- * resource referencing that patient is linked to it.
+ * <p><b>Master patients.</b> Each silver.patients row first gets its own PROVISIONAL master (1:1,
+ * linked via patient_source_xref, {@code match_confidence_score} NULL = "single-source, unmatched"),
+ * and every Gold resource referencing that patient is linked to it. patient-index-service (Phase 6)
+ * decides which masters are the same person but never writes Gold itself: it calls
+ * {@link #confirmMaster}, {@link #mergeMasters} and {@link #unmergeMasters} (over HTTP, via
+ * {@code /api/fhir/gold/masters/**}), each one transaction that moves xref rows and the
+ * {@code gold.fhir_resources.master_patient_id} links together and records the merge in
+ * gold.master_patient_merges so it can be undone.
  *
  * <p><b>Lineage.</b> One gold.data_lineage row per (Gold row, step), upserted. Its
  * {@code transformation_details.steps} is the full chain — BRONZE → SILVER → GOLD where the Silver
@@ -49,25 +57,28 @@ import java.util.Map;
 public class GoldWriter {
 
     private static final Logger log = LoggerFactory.getLogger(GoldWriter.class);
+    static final String PMI_TRANSFORMER = "patient-index-service → fhir-compliance-service GoldWriter: ";
     static final String PROVISIONAL_MASTER_TRANSFORMER =
             "fhir-compliance-service GoldWriter: provisional 1:1 master (pre-PMI; Phase 6 patient-index-service matches/merges)";
 
     private final GoldFhirResourceRepository fhirResources;
     private final MasterPatientRepository masterPatients;
+    private final MasterMergeRepository merges;
     private final DataLineageRepository lineage;
     private final ObjectMapper objectMapper;
     private final Clock clock;
 
     @Autowired
     public GoldWriter(GoldFhirResourceRepository fhirResources, MasterPatientRepository masterPatients,
-                      DataLineageRepository lineage, ObjectMapper objectMapper) {
-        this(fhirResources, masterPatients, lineage, objectMapper, Clock.systemUTC());
+                      MasterMergeRepository merges, DataLineageRepository lineage, ObjectMapper objectMapper) {
+        this(fhirResources, masterPatients, merges, lineage, objectMapper, Clock.systemUTC());
     }
 
     GoldWriter(GoldFhirResourceRepository fhirResources, MasterPatientRepository masterPatients,
-               DataLineageRepository lineage, ObjectMapper objectMapper, Clock clock) {
+               MasterMergeRepository merges, DataLineageRepository lineage, ObjectMapper objectMapper, Clock clock) {
         this.fhirResources = fhirResources;
         this.masterPatients = masterPatients;
+        this.merges = merges;
         this.lineage = lineage;
         this.objectMapper = objectMapper;
         this.clock = clock;
@@ -134,6 +145,139 @@ public class GoldWriter {
             log.info("Linked {} Gold resource(s) referencing Patient/{} to master {}", linked, patientFhirId, masterPatientId);
         }
         return linked;
+    }
+
+    // ---------------------------------------------------------------------------------------------
+    // Phase 6: decisions from patient-index-service
+    // ---------------------------------------------------------------------------------------------
+
+    /**
+     * PROVISIONAL → MATCHED for a master the PMI found no duplicate for. Idempotent on a master
+     * that is already MATCHED; refuses a MERGED one.
+     */
+    @Transactional
+    public MasterPatientSnapshot confirmMaster(long masterPatientId, String decidedBy) {
+        MasterPatientSnapshot master = masterPatients.lock(masterPatientId)
+                .orElseThrow(() -> new GoldMasterNotFoundException("No gold.master_patients row with id " + masterPatientId));
+        if (!master.active()) {
+            throw new GoldMasterConflictException("Master " + masterPatientId + " is " + master.matchStatus()
+                    + mergedIntoSuffix(masterPatientId) + " — confirm the surviving master instead");
+        }
+        if (!MasterPatientSnapshot.PROVISIONAL.equals(master.matchStatus())) {
+            return master;
+        }
+        MasterPatientSnapshot confirmed = masterPatients.markMatched(masterPatientId, merges.minLiveScore(masterPatientId));
+        String targetRef = "gold.master_patients/" + masterPatientId;
+        lineage.upsert(new DataLineageRecord("gold", "master_patients", masterPatientId, "gold", "master_patients",
+                masterPatientId, LineageSource.PMI_MATCH, details(targetRef, List.of(new LineageStep(LineageStep.GOLD,
+                        now(), PMI_TRANSFORMER + "confirm (no duplicate found) — " + decidedBy, null, null, targetRef)))));
+        log.info("Confirmed master {} as MATCHED (decided by {})", masterPatientId, decidedBy);
+        return confirmed;
+    }
+
+    /**
+     * Absorbs one master into another: the absorbed master's xref rows and every Gold resource
+     * linked to it move to the survivor, the absorbed master becomes MERGED / inactive, and the
+     * survivor becomes MATCHED with confidence = its weakest live merge. All or nothing.
+     */
+    @Transactional
+    public MasterMergeResult mergeMasters(MasterMergeCommand command) {
+        long survivorId = command.survivorMasterId();
+        long absorbedId = command.absorbedMasterId();
+        if (survivorId == absorbedId) {
+            throw new GoldMasterConflictException("A master can't be merged into itself (id " + survivorId + ")");
+        }
+        // Lock in id order so two merges touching the same pair can't deadlock.
+        MasterPatientSnapshot first = lockExisting(Math.min(survivorId, absorbedId));
+        MasterPatientSnapshot second = lockExisting(Math.max(survivorId, absorbedId));
+        for (MasterPatientSnapshot m : List.of(first, second)) {
+            if (!m.active()) {
+                throw new GoldMasterConflictException("Master " + m.id() + " is " + m.matchStatus()
+                        + mergedIntoSuffix(m.id()) + "; only active masters can be merged");
+            }
+        }
+
+        List<Long> movedSilver = masterPatients.moveSourceLinks(absorbedId, survivorId);
+        List<Long> movedResources = fhirResources.repointMaster(absorbedId, survivorId);
+        long mergeId = merges.insert(survivorId, absorbedId, movedSilver, movedResources,
+                command.matchConfidenceScore(), command.matchMethod(), command.evidenceJson(), command.decidedBy());
+        MasterPatientSnapshot absorbed = masterPatients.markMerged(absorbedId);
+        MasterPatientSnapshot survivor = masterPatients.markMatched(survivorId, merges.minLiveScore(survivorId));
+
+        String targetRef = "gold.master_patient_merges/" + mergeId;
+        lineage.upsert(new DataLineageRecord("gold", "master_patients", absorbedId, "gold", "master_patient_merges",
+                mergeId, LineageSource.PMI_MERGE, details(targetRef, List.of(new LineageStep(LineageStep.GOLD, now(),
+                        PMI_TRANSFORMER + "merge master " + absorbedId + " into " + survivorId + " ("
+                                + command.matchMethod() + scoreSuffix(command.matchConfidenceScore()) + ") — "
+                                + command.decidedBy(),
+                        command.evidenceJson() == null ? null : Hashes.sha256Hex(command.evidenceJson()),
+                        null, targetRef)))));
+        log.info("Merged master {} into {} (merge {}, {}{}): moved {} Silver link(s), {} Gold resource(s)",
+                absorbedId, survivorId, mergeId, command.matchMethod(), scoreSuffix(command.matchConfidenceScore()),
+                movedSilver.size(), movedResources.size());
+        return new MasterMergeResult(mergeId, survivor, absorbed, movedSilver, movedResources);
+    }
+
+    /**
+     * Undoes one merge: the Silver links and Gold resources it moved go back to the absorbed
+     * master, which becomes active again (MATCHED — a human has now said it's a different person).
+     * Refused if the survivor has since been merged into a third master (undo that merge first).
+     */
+    @Transactional
+    public MasterUnmergeResult unmergeMasters(long mergeId, String decidedBy, String reason) {
+        MasterMergeRow merge = merges.lockById(mergeId)
+                .orElseThrow(() -> new GoldMasterNotFoundException("No gold.master_patient_merges row with id " + mergeId));
+        if (merge.unmergedAt() != null) {
+            throw new GoldMasterConflictException("Merge " + mergeId + " was already undone at " + merge.unmergedAt());
+        }
+        long survivorId = merge.survivorMasterId();
+        long absorbedId = merge.absorbedMasterId();
+        lockExisting(Math.min(survivorId, absorbedId));
+        lockExisting(Math.max(survivorId, absorbedId));
+        merges.findLiveMergeAbsorbing(survivorId).ifPresent(later -> {
+            throw new GoldMasterConflictException("Master " + survivorId + " has since been merged into master "
+                    + later.survivorMasterId() + " (merge " + later.id() + "); undo that merge first");
+        });
+
+        List<Long> silverIds = merge.movedSilverPatientIds();
+        int movedBack = masterPatients.moveSourceLinks(silverIds, survivorId, absorbedId);
+        if (movedBack != silverIds.size()) {
+            throw new GoldMasterConflictException("Only " + movedBack + " of the " + silverIds.size()
+                    + " Silver patient(s) merge " + mergeId + " moved are still on master " + survivorId);
+        }
+        int restoredResources = fhirResources.repointIds(merge.movedFhirResourceIds(), survivorId, absorbedId);
+        // Resources built for these Silver patients after the merge were linked to the survivor; follow them back.
+        for (long silverId : silverIds) {
+            restoredResources += fhirResources.linkPatientReferencesToMaster(FhirIds.patient(silverId), absorbedId);
+        }
+        merges.markUnmerged(mergeId, decidedBy, reason);
+        MasterPatientSnapshot restored = masterPatients.markMatched(absorbedId, merges.minLiveScore(absorbedId));
+        MasterPatientSnapshot survivor = masterPatients.markMatched(survivorId, merges.minLiveScore(survivorId));
+
+        String targetRef = "gold.master_patient_merges/" + mergeId;
+        lineage.upsert(new DataLineageRecord("gold", "master_patients", survivorId, "gold", "master_patient_merges",
+                mergeId, LineageSource.PMI_UNMERGE, details(targetRef, List.of(new LineageStep(LineageStep.GOLD, now(),
+                        PMI_TRANSFORMER + "unmerge master " + absorbedId + " from " + survivorId + " — " + decidedBy
+                                + (reason == null || reason.isBlank() ? "" : ": " + reason),
+                        null, null, targetRef)))));
+        log.info("Unmerged master {} from {} (merge {}): restored {} Silver link(s), {} Gold resource(s)",
+                absorbedId, survivorId, mergeId, silverIds.size(), restoredResources);
+        return new MasterUnmergeResult(mergeId, survivor, restored, silverIds, restoredResources);
+    }
+
+    private MasterPatientSnapshot lockExisting(long masterPatientId) {
+        return masterPatients.lock(masterPatientId)
+                .orElseThrow(() -> new GoldMasterNotFoundException("No gold.master_patients row with id " + masterPatientId));
+    }
+
+    private String mergedIntoSuffix(long masterPatientId) {
+        return merges.findLiveMergeAbsorbing(masterPatientId)
+                .map(m -> " (merged into master " + m.survivorMasterId() + " by merge " + m.id() + ")")
+                .orElse("");
+    }
+
+    private static String scoreSuffix(BigDecimal score) {
+        return score == null ? "" : ", score " + score.toPlainString();
     }
 
     private static List<LineageStep> withGoldStep(List<LineageStep> upstream, LineageStep gold) {

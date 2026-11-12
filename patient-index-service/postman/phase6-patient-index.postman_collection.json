@@ -1,0 +1,255 @@
+{
+  "info": {
+    "name": "ClinicalHarmony · Phase 6 — patient-index-service (PMI)",
+    "description": "Patient Master Index, minimal walkthrough (8 requests): run matching, review the queue, reject the twin, accept the day/month-swapped birth date, view the master, undo the merge, run again. Every Gold change is applied by fhir-compliance-service's GoldWriter, which the PMI calls with its own Keycloak client. Prereqs: `docker-compose up -d`, migrations 20 + 21 applied, and Silver built into Gold (POST http://localhost:8084/api/fhir/build — only needed after a `down -v`). Run 1 → 8 in order: 1 stores {{access_token}}, 3 stores the review-item ids 5–7 use. The review items can only be decided once; auth/error cases are covered by scripts/smoke-test.sh section 15.",
+    "schema": "https://schema.getpostman.com/json/collection/v2.1.0/collection.json"
+  },
+  "auth": {
+    "type": "bearer",
+    "bearer": [
+      {
+        "key": "token",
+        "value": "{{access_token}}",
+        "type": "string"
+      }
+    ]
+  },
+  "variable": [
+    {
+      "key": "pmi_url",
+      "value": "http://localhost:8085"
+    },
+    {
+      "key": "keycloak_url",
+      "value": "http://localhost:8180"
+    },
+    {
+      "key": "client_id",
+      "value": "clinicalharmony-app"
+    },
+    {
+      "key": "client_secret",
+      "value": "clinicalharmony-app-secret",
+      "description": "DEV-ONLY secret from keycloak/realm-clinicalharmony.json"
+    },
+    {
+      "key": "access_token",
+      "value": ""
+    },
+    {
+      "key": "garcia_master_id",
+      "value": ""
+    },
+    {
+      "key": "swap_candidate_id",
+      "value": ""
+    },
+    {
+      "key": "twin_candidate_id",
+      "value": ""
+    },
+    {
+      "key": "merge_id",
+      "value": ""
+    }
+  ],
+  "item": [
+    {
+      "name": "1. Auth — get access token (Keycloak client_credentials)",
+      "event": [
+        {
+          "listen": "test",
+          "script": {
+            "type": "text/javascript",
+            "exec": [
+              "pm.test('token issued', () => pm.response.to.have.status(200));",
+              "const body = pm.response.json();",
+              "pm.collectionVariables.set('access_token', body.access_token);",
+              "console.log('scope granted:', body.scope, '| expires_in:', body.expires_in);"
+            ]
+          }
+        }
+      ],
+      "request": {
+        "method": "POST",
+        "auth": {
+          "type": "basic",
+          "basic": [
+            {
+              "key": "username",
+              "value": "{{client_id}}",
+              "type": "string"
+            },
+            {
+              "key": "password",
+              "value": "{{client_secret}}",
+              "type": "string"
+            }
+          ]
+        },
+        "header": [],
+        "body": {
+          "mode": "urlencoded",
+          "urlencoded": [
+            {
+              "key": "grant_type",
+              "value": "client_credentials"
+            },
+            {
+              "key": "scope",
+              "value": "system/*.rs clinicalharmony/pipeline.write"
+            }
+          ]
+        },
+        "url": "{{keycloak_url}}/realms/clinicalharmony/protocol/openid-connect/token",
+        "description": "Same client as the Phase 5b collections (clinicalharmony-app). Stores {{access_token}}, which every request below inherits. pipeline.write is needed for every POST /api/pmi/** (they change Gold through GoldWriter); any valid token can GET. Tokens live 5 minutes — re-run 1 on a 401."
+      }
+    },
+    {
+      "name": "2. Run matching",
+      "request": {
+        "method": "POST",
+        "header": [],
+        "url": "{{pmi_url}}/api/pmi/match/run",
+        "description": "Picks up every PROVISIONAL master, blocks (DOB · Double-Metaphone surname + birth year · phone), scores pairs, then through GoldWriter: auto-merges ≥ 0.85 (or deterministic) into the oldest master, queues 0.60–0.85 for review, confirms the rest MATCHED. Expect on a fresh seed: run.autoMerges 3 (PMI-0001 → SEED-0001 deterministic; 'Jim' Wilson PMI-0002 0.9118 and same-MRN PMI-0006 → SEED-0002), queuedForReview 2, confirmedSingletons ≥ 2. On a re-run everything is 0 — decisions are durable. Add header X-Correlation-Id to see the same id in both services' logs."
+      },
+      "event": [
+        {
+          "listen": "test",
+          "script": {
+            "type": "text/javascript",
+            "exec": [
+              "pm.test('200', () => pm.response.to.have.status(200));",
+              "pm.test('run completed', () => pm.expect(pm.response.json().run.status).to.eql('COMPLETED'));"
+            ]
+          }
+        }
+      ]
+    },
+    {
+      "name": "3. Review queue (PENDING)",
+      "request": {
+        "method": "GET",
+        "header": [],
+        "url": "{{pmi_url}}/api/pmi/candidates",
+        "description": "Expect: the seed's two review items, both against Maria Garcia's master (masterAId): the day/month-swapped DOB (PMI-0003, score 0.6471) and the opposite-sex twin Mario (PMI-0004, 0.7143 — breakdown shows gender DISAGREE −4, which is what kept him out of auto-merge). The test script stores their ids for the next requests. ?status=ALL shows decided ones too."
+      },
+      "event": [
+        {
+          "listen": "test",
+          "script": {
+            "type": "text/javascript",
+            "exec": [
+              "const c = pm.response.json();",
+              "const swap = c.find(x => x.score === 0.6471);",
+              "const twin = c.find(x => x.score === 0.7143);",
+              "pm.test('both seed review items present', () => { pm.expect(swap).to.be.ok; pm.expect(twin).to.be.ok; });",
+              "pm.collectionVariables.set('swap_candidate_id', swap.id);",
+              "pm.collectionVariables.set('twin_candidate_id', twin.id);",
+              "pm.collectionVariables.set('garcia_master_id', swap.masterAId);"
+            ]
+          }
+        }
+      ]
+    },
+    {
+      "name": "4. Master view — Maria Garcia",
+      "request": {
+        "method": "GET",
+        "header": [],
+        "url": "{{pmi_url}}/api/pmi/masters/{{garcia_master_id}}",
+        "description": "Expect: master MATCHED, matchConfidenceScore 1.0000, sources SEED-0001 + PMI-0001 (two feeds, one person), fhirResources linked to it (her FHIR Patients, Conditions, …, and the CMS-0057 Coverage), merges [PMI-0001's master absorbed, DETERMINISTIC], pendingCandidates = the two review items."
+      }
+    },
+    {
+      "name": "5. Reject the twin (not the same person)",
+      "request": {
+        "method": "POST",
+        "header": [
+          {
+            "key": "Content-Type",
+            "value": "application/json"
+          }
+        ],
+        "url": "{{pmi_url}}/api/pmi/candidates/{{twin_candidate_id}}/reject",
+        "description": "Expect: 200, candidate REJECTED; the pair goes into pmi.match_exclusions (no run proposes it again), and Mario's master — PROVISIONAL with nothing else pending — is confirmed MATCHED via GoldWriter (confirmedMasterIds). Re-sending → 409.",
+        "body": {
+          "mode": "raw",
+          "raw": "{\n  \"reviewer\": \"dana\",\n  \"note\": \"Twin brother: same household, different sex\"\n}",
+          "options": {
+            "raw": {
+              "language": "json"
+            }
+          }
+        }
+      }
+    },
+    {
+      "name": "6. Accept the DOB swap (same person)",
+      "request": {
+        "method": "POST",
+        "header": [
+          {
+            "key": "Content-Type",
+            "value": "application/json"
+          }
+        ],
+        "url": "{{pmi_url}}/api/pmi/candidates/{{swap_candidate_id}}/accept",
+        "description": "Expect: 200, candidate ACCEPTED with mergeId; GoldWriter merged PMI-0003's master into Maria's (MANUAL, score 0.6471, decided_by 'reviewer:dana via patient-index-service'). Her FHIR Patient follows her to the surviving master. The test stores merge_id.",
+        "body": {
+          "mode": "raw",
+          "raw": "{\n  \"reviewer\": \"dana\",\n  \"note\": \"DOB keyed day-first at registration\"\n}",
+          "options": {
+            "raw": {
+              "language": "json"
+            }
+          }
+        }
+      },
+      "event": [
+        {
+          "listen": "test",
+          "script": {
+            "type": "text/javascript",
+            "exec": [
+              "pm.test('200', () => pm.response.to.have.status(200));",
+              "pm.collectionVariables.set('merge_id', pm.response.json().merge.mergeId);"
+            ]
+          }
+        }
+      ]
+    },
+    {
+      "name": "7. Unmerge (undo the accepted merge)",
+      "request": {
+        "method": "POST",
+        "header": [
+          {
+            "key": "Content-Type",
+            "value": "application/json"
+          }
+        ],
+        "url": "{{pmi_url}}/api/pmi/merges/{{merge_id}}/unmerge",
+        "description": "Expect: 200, exclusionsAdded 2 (PMI-0003 vs each of Maria's remaining records). GoldWriter moved her xref row and FHIR resources back to her own master, now MATCHED + active; the merge row keeps unmerged_at/by/reason. A reason is required (400 without). Re-sending → 409.",
+        "body": {
+          "mode": "raw",
+          "raw": "{\n  \"reviewer\": \"lee\",\n  \"reason\": \"Different person after chart review\"\n}",
+          "options": {
+            "raw": {
+              "language": "json"
+            }
+          }
+        }
+      }
+    },
+    {
+      "name": "8. Run matching again — human decisions stick",
+      "request": {
+        "method": "POST",
+        "header": [],
+        "url": "{{pmi_url}}/api/pmi/match/run",
+        "description": "Expect: autoMerges 0, queuedForReview 0 — the rejected twin and the unmerged pair are excluded."
+      }
+    }
+  ]
+}

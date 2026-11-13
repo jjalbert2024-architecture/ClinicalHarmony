@@ -537,7 +537,7 @@ schema **`pmi`** (`match_runs`, `match_candidates` with a partial unique index o
 
 ## Build order / phase plan
 
-Phases are meant to be fully complete before the next starts. Current state as of 2026-11-12:
+Phases are meant to be fully complete before the next starts. Current state as of 2026-11-13:
 
 - **Phase 1** (done): Foundation — docker-compose.yml, all 7 `docs/db-init/` SQL scripts, seed data.
 - **Phase 2 / 2b** (done): ingestion-service — all three intake paths (HL7 v2, FHIR JSON, Claims CSV) landing to Bronze.
@@ -559,7 +559,7 @@ Phases are meant to be fully complete before the next starts. Current state as o
   (done, merged as PR #11).
 - **Phase 6** (done, merged as PR #12): patient-index-service (PMI + deduplication) — see its
   section above.
-- **Phase 7** (built, in review on branch `api-gateway`): api-gateway — see its section above.
+- **Phase 7** (done, merged as PR #13): api-gateway — see its section above.
 - **Phase 8**: dashboard-ui (React, 5 views)
 - **Phase 9**: data-generator (Python)
 - **Phase 10**: Polish, final Docker test, demo script

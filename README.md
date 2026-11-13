@@ -21,8 +21,8 @@ problems, it never hides them** — malformed input is quarantined rather than d
 never papered over with invented values, so a non-compliant resource is flagged with the exact
 reason instead of quietly "fixed".
 
-> **Status (2026-11-12):** Phases 1–6 and all four Phase 5b slices are done (Phase 6, the patient
-> master index, merged as PR #12). Phase 7, the API gateway, is built and in review. Six services
+> **Status (2026-11-13):** Phases 1–7 and all four Phase 5b slices are done (Phase 7, the API
+> gateway, merged as PR #13). Six services
 > are live — ingestion, ontology, rules engine, FHIR compliance, patient index and the API gateway
 > in front of them — plus Keycloak as the authorization server. Next up is Phase 8, the React
 > dashboard. See the [Roadmap](#roadmap).
@@ -64,7 +64,7 @@ stage, orchestrated by Docker Compose.
                                           ▼
   GOLD              gold.master_patients · gold.fhir_resources · gold.data_lineage
                                           │
-  SERVE             CMS-0057 FHIR read APIs ✅ 5b  ·  SMART on FHIR ✅ 5b  ·  api-gateway 🔄 7
+  SERVE             CMS-0057 FHIR read APIs ✅ 5b  ·  SMART on FHIR ✅ 5b  ·  api-gateway ✅ 7
                                           │
                                           ▼
   VIEW              dashboard-ui ⏳ 8   Patient Timeline · Ontology Coverage ·
@@ -80,7 +80,7 @@ stage, orchestrated by Docker Compose.
 | [`rules-engine-service`](rules-engine-service) | 8083 | 4 | 7 clinical plausibility rules, tunable as data (JSONB), orchestrated with ontology validation | ✅ Implemented |
 | [`fhir-compliance-service`](fhir-compliance-service) | 8084 | 5 / 5b | Official HL7 FHIR validator vs US Core 6.1.0 + Da Vinci Formulary/DEQM, Silver → FHIR builders, C-CDA → FHIR conversion, GoldWriter (master patients, FHIR resources, lineage), CMS-0057-F read API, SMART on FHIR backend-services auth (Keycloak) | ✅ Done (PR #7–#11) |
 | [`patient-index-service`](patient-index-service) | 8085 | 6 | Master patient index: blocking + deterministic rules + Fellegi-Sunter-style weighted matching across sources, auto-merge / review queue / unmerge, applied to Gold through GoldWriter | ✅ Done (PR #12) |
-| [`api-gateway`](api-gateway) | 8080 | 7 | Backend-for-frontend for the dashboard: `/api/v1` read models for the 5 views over a read-only DB role, actions proxied to the owning service with its own Keycloak client; user login via Keycloak (PKCE), viewer/steward roles, RFC 7807 errors, correlation ids end to end | 🔄 Built, in review |
+| [`api-gateway`](api-gateway) | 8080 | 7 | Backend-for-frontend for the dashboard: `/api/v1` read models for the 5 views over a read-only DB role, actions proxied to the owning service with its own Keycloak client; user login via Keycloak (PKCE), viewer/steward roles, RFC 7807 errors, correlation ids end to end | ✅ Done (PR #13) |
 | [`dashboard-ui`](dashboard-ui) | 3000 | 8 | React dashboard, 5 views | ⏳ Planned |
 | [`data-generator`](data-generator) | — | 9 | Python synthetic data in all source formats | ⏳ Planned |
 
@@ -105,7 +105,7 @@ hand-verified in Postman — before the next one starts.
 | **5b.3** | GoldWriter + CMS-0057 | One writer for `gold.master_patients` (provisional 1:1 masters until Phase 6) / `fhir_resources` / `data_lineage` (BRONZE → SILVER → GOLD chains with hashes); `GET /fhir/r4/{Coverage,PractitionerRole,MedicationKnowledge,MeasureReport,Device}` read + search from Gold, validated against US Core / Da Vinci; first `@SpringBootTest` + Testcontainers integration test | ✅ Done (PR #10) |
 | **5b.4** | SMART on FHIR | Keycloak 26.8 realm imported from JSON (confidential client, client credentials); Spring Security resource server: Bearer JWT on `/fhir/**` with SMART v2 scopes (`system/<Type>.rs`, read vs search), `clinicalharmony/pipeline.write` for Gold writers, 401/403 as OperationOutcomes; `/.well-known/smart-configuration` | ✅ Done (PR #11) |
 | **6** | `patient-index-service` | Master patient index: blocking (DOB · Double Metaphone surname + birth year · phone), deterministic rules, weighted field agreement (Jaro-Winkler, nicknames, DOB day/month swaps); ≥ 0.85 auto-merges, 0.60–0.85 goes to a review queue; accept / reject / manual merge / unmerge, with human "not the same person" decisions remembered. GoldWriter stays the only Gold writer (PMI calls it with its own Keycloak client) | ✅ Done (PR #12) |
-| **7** | `api-gateway` | Backend-for-frontend: one `/api/v1` for the dashboard's 5 views. Reads are SQL projections over a SELECT-only Postgres role (patient timeline across every source, ontology coverage, validation findings, Gold FHIR + validator notes, lineage back to Bronze); actions (PMI review, matching runs, rule toggles, FHIR validation, C-CDA) are proxied to the service that owns them. Keycloak user login (Auth Code + PKCE) with `dashboard-viewer` / `data-steward` roles; RFC 7807 errors; 503/504/502 when a service is down, slow or broken | 🔄 Built, in review |
+| **7** | `api-gateway` | Backend-for-frontend: one `/api/v1` for the dashboard's 5 views. Reads are SQL projections over a SELECT-only Postgres role (patient timeline across every source, ontology coverage, validation findings, Gold FHIR + validator notes, lineage back to Bronze); actions (PMI review, matching runs, rule toggles, FHIR validation, C-CDA) are proxied to the service that owns them. Keycloak user login (Auth Code + PKCE) with `dashboard-viewer` / `data-steward` roles; RFC 7807 errors; 503/504/502 when a service is down, slow or broken | ✅ Done (PR #13) |
 | **8** | `dashboard-ui` | React: Patient Timeline, Ontology Coverage, Validation Report, FHIR Viewer, Data Lineage | ⏳ Planned |
 | **9** | `data-generator` | Python synthetic patients in HL7 v2, FHIR, claims CSV (and C-CDA) | ⏳ Planned |
 | **10** | Polish | Final end-to-end Docker run, demo script, documentation | ⏳ Planned |
@@ -336,7 +336,7 @@ ClinicalHarmony/
 ├── fhir-compliance-service/    # ✅ HAPI FHIR validator, US Core builders, C-CDA → FHIR, GoldWriter, CMS-0057 API, SMART auth
 ├── keycloak/                   # Realm import: clients, SMART scopes, audience mappers, dashboard roles + dev users
 ├── patient-index-service/      # ✅ Master patient index: matching, review queue, merge/unmerge via GoldWriter
-├── api-gateway/                # 🔄 Dashboard BFF: /api/v1 read models + proxied actions
+├── api-gateway/                # ✅ Dashboard BFF: /api/v1 read models + proxied actions
 ├── dashboard-ui/               # ⏳ React dashboard
 └── data-generator/             # ⏳ Python synthetic data generator
 ```

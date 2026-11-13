@@ -22,9 +22,10 @@ never papered over with invented values, so a non-compliant resource is flagged 
 reason instead of quietly "fixed".
 
 > **Status (2026-11-12):** Phases 1–6 and all four Phase 5b slices are done (Phase 6, the patient
-> master index, merged as PR #12). Next up is Phase 7, the API gateway. Five services are
-> live — ingestion, ontology, rules engine, FHIR compliance and patient index — plus Keycloak as the
-> authorization server. See the [Roadmap](#roadmap).
+> master index, merged as PR #12). Phase 7, the API gateway, is built and in review. Six services
+> are live — ingestion, ontology, rules engine, FHIR compliance, patient index and the API gateway
+> in front of them — plus Keycloak as the authorization server. Next up is Phase 8, the React
+> dashboard. See the [Roadmap](#roadmap).
 
 ## Architecture
 
@@ -58,12 +59,12 @@ stage, orchestrated by Docker Compose.
                     │   GoldWriter: provisional masters + lineage (every Gold write)   │
                     └─────────────────────┬──────────────────────────────────────────┘
                                           ▼
-  RESOLVE           patient-index-service  (match · review · merge, via GoldWriter)  🔄 6
+  RESOLVE           patient-index-service  (match · review · merge, via GoldWriter)  ✅ 6
                                           │
                                           ▼
   GOLD              gold.master_patients · gold.fhir_resources · gold.data_lineage
                                           │
-  SERVE             CMS-0057 FHIR read APIs ✅ 5b  ·  SMART on FHIR ✅ 5b  ·  api-gateway ⏳ 7
+  SERVE             CMS-0057 FHIR read APIs ✅ 5b  ·  SMART on FHIR ✅ 5b  ·  api-gateway 🔄 7
                                           │
                                           ▼
   VIEW              dashboard-ui ⏳ 8   Patient Timeline · Ontology Coverage ·
@@ -79,7 +80,7 @@ stage, orchestrated by Docker Compose.
 | [`rules-engine-service`](rules-engine-service) | 8083 | 4 | 7 clinical plausibility rules, tunable as data (JSONB), orchestrated with ontology validation | ✅ Implemented |
 | [`fhir-compliance-service`](fhir-compliance-service) | 8084 | 5 / 5b | Official HL7 FHIR validator vs US Core 6.1.0 + Da Vinci Formulary/DEQM, Silver → FHIR builders, C-CDA → FHIR conversion, GoldWriter (master patients, FHIR resources, lineage), CMS-0057-F read API, SMART on FHIR backend-services auth (Keycloak) | ✅ Done (PR #7–#11) |
 | [`patient-index-service`](patient-index-service) | 8085 | 6 | Master patient index: blocking + deterministic rules + Fellegi-Sunter-style weighted matching across sources, auto-merge / review queue / unmerge, applied to Gold through GoldWriter | ✅ Done (PR #12) |
-| [`api-gateway`](api-gateway) | 8080 | 7 | Single REST surface for the dashboard | ⏳ Planned |
+| [`api-gateway`](api-gateway) | 8080 | 7 | Backend-for-frontend for the dashboard: `/api/v1` read models for the 5 views over a read-only DB role, actions proxied to the owning service with its own Keycloak client; user login via Keycloak (PKCE), viewer/steward roles, RFC 7807 errors, correlation ids end to end | 🔄 Built, in review |
 | [`dashboard-ui`](dashboard-ui) | 3000 | 8 | React dashboard, 5 views | ⏳ Planned |
 | [`data-generator`](data-generator) | — | 9 | Python synthetic data in all source formats | ⏳ Planned |
 
@@ -104,7 +105,7 @@ hand-verified in Postman — before the next one starts.
 | **5b.3** | GoldWriter + CMS-0057 | One writer for `gold.master_patients` (provisional 1:1 masters until Phase 6) / `fhir_resources` / `data_lineage` (BRONZE → SILVER → GOLD chains with hashes); `GET /fhir/r4/{Coverage,PractitionerRole,MedicationKnowledge,MeasureReport,Device}` read + search from Gold, validated against US Core / Da Vinci; first `@SpringBootTest` + Testcontainers integration test | ✅ Done (PR #10) |
 | **5b.4** | SMART on FHIR | Keycloak 26.8 realm imported from JSON (confidential client, client credentials); Spring Security resource server: Bearer JWT on `/fhir/**` with SMART v2 scopes (`system/<Type>.rs`, read vs search), `clinicalharmony/pipeline.write` for Gold writers, 401/403 as OperationOutcomes; `/.well-known/smart-configuration` | ✅ Done (PR #11) |
 | **6** | `patient-index-service` | Master patient index: blocking (DOB · Double Metaphone surname + birth year · phone), deterministic rules, weighted field agreement (Jaro-Winkler, nicknames, DOB day/month swaps); ≥ 0.85 auto-merges, 0.60–0.85 goes to a review queue; accept / reject / manual merge / unmerge, with human "not the same person" decisions remembered. GoldWriter stays the only Gold writer (PMI calls it with its own Keycloak client) | ✅ Done (PR #12) |
-| **7** | `api-gateway` | One REST API for the dashboard | ⏳ Planned |
+| **7** | `api-gateway` | Backend-for-frontend: one `/api/v1` for the dashboard's 5 views. Reads are SQL projections over a SELECT-only Postgres role (patient timeline across every source, ontology coverage, validation findings, Gold FHIR + validator notes, lineage back to Bronze); actions (PMI review, matching runs, rule toggles, FHIR validation, C-CDA) are proxied to the service that owns them. Keycloak user login (Auth Code + PKCE) with `dashboard-viewer` / `data-steward` roles; RFC 7807 errors; 503/504/502 when a service is down, slow or broken | 🔄 Built, in review |
 | **8** | `dashboard-ui` | React: Patient Timeline, Ontology Coverage, Validation Report, FHIR Viewer, Data Lineage | ⏳ Planned |
 | **9** | `data-generator` | Python synthetic patients in HL7 v2, FHIR, claims CSV (and C-CDA) | ⏳ Planned |
 | **10** | Polish | Final end-to-end Docker run, demo script, documentation | ⏳ Planned |
@@ -127,8 +128,11 @@ hand-verified in Postman — before the next one starts.
 - **Dev-grade auth.** Keycloak runs in dev mode with a fixed client secret checked into
   `keycloak/realm-clinicalharmony.json`, and clients authenticate with that shared secret
   (`client-confidential-symmetric`) rather than the `private_key_jwt` SMART Backend Services
-  recommends. Only the backend-services (`system/`) flow exists: no browser app launch, no
-  `patient/` or `user/` scopes. ingestion, ontology and rules-engine are still unauthenticated.
+  recommends. Only the backend-services (`system/`) flow exists for the FHIR API: no SMART app
+  launch, no `patient/` or `user/` scopes. Dashboard users (api-gateway) sign in with Auth Code +
+  PKCE as two dev users with passwords in the realm JSON, and a DEV-ONLY direct-grant client lets
+  Postman and the smoke test log in without a browser. ingestion, ontology and rules-engine are
+  still unauthenticated — reach them through the gateway.
 
 ## Standards covered
 
@@ -182,7 +186,8 @@ docker-compose down -v
 | fhir-compliance-service | `localhost:8084` |
 | patient-index-service | `localhost:8085` |
 | Keycloak (realm `clinicalharmony`) | `localhost:8180` (admin console: `admin` / `admin`, dev only) |
-| api-gateway / dashboard-ui | `localhost:8080` / `localhost:3000` (placeholders) |
+| api-gateway | `localhost:8080` (`/api/v1`, users `dana` / `vic`, dev only) |
+| dashboard-ui | `localhost:3000` (placeholder) |
 
 ### Verify the whole stack
 
@@ -190,13 +195,16 @@ docker-compose down -v
 ./scripts/smoke-test.sh
 ```
 
-This runs 168 black-box assertions against the live services: intake accept and quarantine, code
+This runs 224 black-box assertions against the live services: intake accept and quarantine, code
 validation, every clinical rule and live rule toggling, US Core validation, Silver → FHIR builds,
 C-CDA conversion, GoldWriter master patients and lineage, the CMS-0057 read/search API, SMART
 auth (it gets real tokens from Keycloak, then checks discovery, 401/403 and scope enforcement), and
 patient matching end to end (fresh synthetic duplicates each run: auto-merge, review, reject,
-accept, unmerge, re-run). Each implemented service also has Postman collections (one per
-phase/slice, in `fhir-compliance-service/postman/` and `patient-index-service/postman/`) or curl
+accept, unmerge, re-run), and the API gateway (user logins and roles, every dashboard read model
+cross-checked against SQL, actions relayed with the signed-in user as reviewer, correlation ids,
+CORS, and a database login that can't write). Each implemented service also has Postman collections (one per
+phase/slice, in `fhir-compliance-service/postman/`, `patient-index-service/postman/` and
+`api-gateway/postman/`) or curl
 examples in its own README, and unit tests via `mvn test` from the service directory.
 
 ## Try it
@@ -296,6 +304,23 @@ queues two for a human: a day/month-swapped birth date (0.65) and Maria's opposi
 the gender conflict keeps him out of auto-merge). Accept, reject or undo with
 `POST /api/pmi/candidates/{id}/accept|reject` and `POST /api/pmi/merges/{id}/unmerge`.
 
+**Use the dashboard API** (api-gateway). Sign in as a dashboard user — `dana` is a data steward,
+`vic` a viewer (DEV-ONLY password grant; the real UI uses Auth Code + PKCE) — then everything the
+five dashboard views show comes from `/api/v1`:
+
+```bash
+USER_TOKEN=$(curl -s -d grant_type=password -d client_id=clinicalharmony-dashboard-dev -d username=dana \
+  -d password=dana-dev-password http://localhost:8180/realms/clinicalharmony/protocol/openid-connect/token \
+  | python3 -c "import json,sys; print(json.load(sys.stdin)['access_token'])")
+curl -s -H "Authorization: Bearer $USER_TOKEN" http://localhost:8080/api/v1/summary
+curl -s -H "Authorization: Bearer $USER_TOKEN" "http://localhost:8080/api/v1/patients?q=garcia"
+curl -s -H "Authorization: Bearer $USER_TOKEN" http://localhost:8080/api/v1/patients/1/timeline
+curl -s -H "Authorization: Bearer $USER_TOKEN" http://localhost:8080/api/v1/ontology/coverage
+curl -s -H "Authorization: Bearer $USER_TOKEN" http://localhost:8080/api/v1/services/health
+```
+
+Errors are RFC 7807 problems with a correlation id; a service that's down is a 503 naming it.
+
 ## Project structure
 
 ```
@@ -309,9 +334,9 @@ ClinicalHarmony/
 ├── ontology-service/           # ✅ Terminology validators + concept mapping
 ├── rules-engine-service/       # ✅ Clinical rules engine
 ├── fhir-compliance-service/    # ✅ HAPI FHIR validator, US Core builders, C-CDA → FHIR, GoldWriter, CMS-0057 API, SMART auth
-├── keycloak/                   # Realm import: clients, SMART scopes, audience mapper
-├── patient-index-service/      # 🔄 Master patient index: matching, review queue, merge/unmerge via GoldWriter
-├── api-gateway/                # ⏳ REST API for the dashboard
+├── keycloak/                   # Realm import: clients, SMART scopes, audience mappers, dashboard roles + dev users
+├── patient-index-service/      # ✅ Master patient index: matching, review queue, merge/unmerge via GoldWriter
+├── api-gateway/                # 🔄 Dashboard BFF: /api/v1 read models + proxied actions
 ├── dashboard-ui/               # ⏳ React dashboard
 └── data-generator/             # ⏳ Python synthetic data generator
 ```

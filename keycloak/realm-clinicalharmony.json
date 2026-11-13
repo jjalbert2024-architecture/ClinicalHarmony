@@ -5,6 +5,34 @@
   "sslRequired": "none",
   "accessTokenLifespan": 300,
   "registrationAllowed": false,
+  "roles": {
+    "realm": [
+      { "name": "dashboard-viewer", "description": "Phase 7: read every dashboard view through api-gateway" },
+      { "name": "data-steward", "description": "Phase 7: act through api-gateway (PMI reviews, matching runs, unmerge, rule toggles)" }
+    ]
+  },
+  "users": [
+    {
+      "username": "dana",
+      "enabled": true,
+      "emailVerified": true,
+      "firstName": "Dana",
+      "lastName": "Steward",
+      "email": "dana@clinicalharmony.local",
+      "credentials": [ { "type": "password", "value": "dana-dev-password", "temporary": false } ],
+      "realmRoles": [ "dashboard-viewer", "data-steward" ]
+    },
+    {
+      "username": "vic",
+      "enabled": true,
+      "emailVerified": true,
+      "firstName": "Vic",
+      "lastName": "Viewer",
+      "email": "vic@clinicalharmony.local",
+      "credentials": [ { "type": "password", "value": "vic-dev-password", "temporary": false } ],
+      "realmRoles": [ "dashboard-viewer" ]
+    }
+  ],
   "clientScopes": [
     {
       "name": "system/Coverage.rs",
@@ -149,6 +177,149 @@
       "optionalClientScopes": [
         "clinicalharmony/pipeline.write"
       ]
+    },
+    {
+      "clientId": "clinicalharmony-dashboard",
+      "name": "ClinicalHarmony dashboard (dashboard-ui)",
+      "description": "Phase 7: public SPA client, Authorization Code + PKCE (S256). Its user tokens are audience clinicalharmony-gateway and carry realm roles in 'roles'.",
+      "enabled": true,
+      "protocol": "openid-connect",
+      "publicClient": true,
+      "standardFlowEnabled": true,
+      "implicitFlowEnabled": false,
+      "directAccessGrantsEnabled": false,
+      "serviceAccountsEnabled": false,
+      "fullScopeAllowed": true,
+      "rootUrl": "http://localhost:3000",
+      "redirectUris": [ "http://localhost:3000/*" ],
+      "webOrigins": [ "http://localhost:3000" ],
+      "attributes": { "pkce.code.challenge.method": "S256", "post.logout.redirect.uris": "http://localhost:3000/*" },
+      "protocolMappers": [
+        {
+          "name": "audience: clinicalharmony-gateway",
+          "protocol": "openid-connect",
+          "protocolMapper": "oidc-audience-mapper",
+          "consentRequired": false,
+          "config": { "included.custom.audience": "clinicalharmony-gateway", "access.token.claim": "true", "id.token.claim": "false", "introspection.token.claim": "true" }
+        },
+        {
+          "name": "sub",
+          "protocol": "openid-connect",
+          "protocolMapper": "oidc-sub-mapper",
+          "consentRequired": false,
+          "config": { "access.token.claim": "true", "introspection.token.claim": "true" }
+        },
+        {
+          "name": "realm roles",
+          "protocol": "openid-connect",
+          "protocolMapper": "oidc-usermodel-realm-role-mapper",
+          "consentRequired": false,
+          "config": { "claim.name": "roles", "jsonType.label": "String", "multivalued": "true", "access.token.claim": "true", "id.token.claim": "true", "userinfo.token.claim": "true", "introspection.token.claim": "true" }
+        },
+        {
+          "name": "username",
+          "protocol": "openid-connect",
+          "protocolMapper": "oidc-usermodel-property-mapper",
+          "consentRequired": false,
+          "config": { "user.attribute": "username", "claim.name": "preferred_username", "jsonType.label": "String", "access.token.claim": "true", "id.token.claim": "true", "userinfo.token.claim": "true", "introspection.token.claim": "true" }
+        },
+        {
+          "name": "full name",
+          "protocol": "openid-connect",
+          "protocolMapper": "oidc-full-name-mapper",
+          "consentRequired": false,
+          "config": { "access.token.claim": "true", "id.token.claim": "true", "userinfo.token.claim": "true", "introspection.token.claim": "true" }
+        }
+      ],
+      "defaultClientScopes": [],
+      "optionalClientScopes": []
+    },
+    {
+      "clientId": "clinicalharmony-dashboard-dev",
+      "name": "ClinicalHarmony dashboard — DEV-ONLY password grant",
+      "description": "Phase 7: DEV-ONLY public client with direct access grants so Postman and scripts/smoke-test.sh can get dana/vic user tokens without a browser. Same token shape as clinicalharmony-dashboard. Never enable in a real deployment.",
+      "enabled": true,
+      "protocol": "openid-connect",
+      "publicClient": true,
+      "standardFlowEnabled": false,
+      "implicitFlowEnabled": false,
+      "directAccessGrantsEnabled": true,
+      "serviceAccountsEnabled": false,
+      "fullScopeAllowed": true,
+      "attributes": { "access.token.lifespan": "600" },
+      "protocolMappers": [
+        {
+          "name": "audience: clinicalharmony-gateway",
+          "protocol": "openid-connect",
+          "protocolMapper": "oidc-audience-mapper",
+          "consentRequired": false,
+          "config": { "included.custom.audience": "clinicalharmony-gateway", "access.token.claim": "true", "id.token.claim": "false", "introspection.token.claim": "true" }
+        },
+        {
+          "name": "sub",
+          "protocol": "openid-connect",
+          "protocolMapper": "oidc-sub-mapper",
+          "consentRequired": false,
+          "config": { "access.token.claim": "true", "introspection.token.claim": "true" }
+        },
+        {
+          "name": "realm roles",
+          "protocol": "openid-connect",
+          "protocolMapper": "oidc-usermodel-realm-role-mapper",
+          "consentRequired": false,
+          "config": { "claim.name": "roles", "jsonType.label": "String", "multivalued": "true", "access.token.claim": "true", "id.token.claim": "true", "userinfo.token.claim": "true", "introspection.token.claim": "true" }
+        },
+        {
+          "name": "username",
+          "protocol": "openid-connect",
+          "protocolMapper": "oidc-usermodel-property-mapper",
+          "consentRequired": false,
+          "config": { "user.attribute": "username", "claim.name": "preferred_username", "jsonType.label": "String", "access.token.claim": "true", "id.token.claim": "true", "userinfo.token.claim": "true", "introspection.token.claim": "true" }
+        },
+        {
+          "name": "full name",
+          "protocol": "openid-connect",
+          "protocolMapper": "oidc-full-name-mapper",
+          "consentRequired": false,
+          "config": { "access.token.claim": "true", "id.token.claim": "true", "userinfo.token.claim": "true", "introspection.token.claim": "true" }
+        }
+      ],
+      "defaultClientScopes": [],
+      "optionalClientScopes": []
+    },
+    {
+      "clientId": "api-gateway",
+      "name": "api-gateway \u2192 downstream services",
+      "description": "Phase 7: confidential client api-gateway uses to call fhir-compliance-service and patient-index-service (clinicalharmony/pipeline.write). DEV-ONLY secret.",
+      "enabled": true,
+      "protocol": "openid-connect",
+      "publicClient": false,
+      "clientAuthenticatorType": "client-secret",
+      "secret": "api-gateway-secret",
+      "serviceAccountsEnabled": true,
+      "standardFlowEnabled": false,
+      "implicitFlowEnabled": false,
+      "directAccessGrantsEnabled": false,
+      "fullScopeAllowed": false,
+      "attributes": { "access.token.lifespan": "300" },
+      "protocolMappers": [
+        {
+          "name": "audience: clinicalharmony-fhir",
+          "protocol": "openid-connect",
+          "protocolMapper": "oidc-audience-mapper",
+          "consentRequired": false,
+          "config": { "included.custom.audience": "clinicalharmony-fhir", "access.token.claim": "true", "id.token.claim": "false", "introspection.token.claim": "true" }
+        },
+        {
+          "name": "sub",
+          "protocol": "openid-connect",
+          "protocolMapper": "oidc-sub-mapper",
+          "consentRequired": false,
+          "config": { "access.token.claim": "true", "introspection.token.claim": "true" }
+        }
+      ],
+      "defaultClientScopes": [],
+      "optionalClientScopes": [ "clinicalharmony/pipeline.write" ]
     }
   ]
 }

@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 # End-to-end smoke test for ingestion-service, ontology-service, rules-engine-service,
-# fhir-compliance-service, and patient-index-service.
+# fhir-compliance-service, patient-index-service, and api-gateway.
 # Assumes the stack is already up: `docker-compose up -d` from the repo root.
 # Usage: ./scripts/smoke-test.sh
 set -uo pipefail
@@ -10,6 +10,7 @@ ONTOLOGY_URL="${ONTOLOGY_URL:-http://localhost:8082}"
 RULES_URL="${RULES_URL:-http://localhost:8083}"
 FHIR_COMPLIANCE_URL="${FHIR_COMPLIANCE_URL:-http://localhost:8084}"
 PMI_URL="${PMI_URL:-http://localhost:8085}"
+GATEWAY_URL="${GATEWAY_URL:-http://localhost:8080}"
 KEYCLOAK_URL="${KEYCLOAK_URL:-http://localhost:8180}"
 TOKEN_URL="$KEYCLOAK_URL/realms/clinicalharmony/protocol/openid-connect/token"
 CLIENT_ID="${CLIENT_ID:-clinicalharmony-app}"
@@ -533,6 +534,129 @@ check_http "read-only token can read masters (200)" GET "$PMI/masters?status=MAT
 check_http "read-only token cannot run matching (403)" POST "$PMI/match/run" 403
 check_http "read-only token cannot call GoldWriter's master endpoints directly (403)" POST \
   "$FHIR_COMPLIANCE_URL/api/fhir/gold/masters/$MA/confirm" 403 "application/json" '{"decidedBy": "smoke"}'
+TOKEN="$SAVED_TOKEN"
+
+section "16. api-gateway — dashboard BFF (Phase 7)"
+# Needs docs/db-init/22 (read-only role) and the Phase 7 realm (dashboard clients, roles, users dana/vic).
+GW="$GATEWAY_URL/api/v1"
+# DEV-ONLY password grant (client clinicalharmony-dashboard-dev) — the real UI uses Auth Code + PKCE.
+user_token() {
+  curl -s -d grant_type=password -d client_id=clinicalharmony-dashboard-dev -d "username=$1" -d "password=$1-dev-password" "$TOKEN_URL" \
+    | python3 -c "import json,sys; print(json.load(sys.stdin).get('access_token',''))" 2>/dev/null
+}
+DANA="$(user_token dana)"   # dashboard-viewer + data-steward
+VIC="$(user_token vic)"     # dashboard-viewer only
+SAVED_TOKEN="$TOKEN"
+TOKEN=""
+check_http "gateway health is public" GET "$GATEWAY_URL/actuator/health" 200
+check_http "login config is public" GET "$GW/config" 200
+check_json "  → PKCE client clinicalharmony-dashboard" "$TMP/last_response.json" "(d['auth']['clientId'], d['auth']['pkce'])" "('clinicalharmony-dashboard', 'S256')"
+check_http "no token → 401" GET "$GW/summary" 401
+check_json "  → RFC 7807 problem with a correlation id" "$TMP/last_response.json" \
+  "(d['type'], d['status'], d['instance'], len(d['correlationId']) > 0)" "('urn:clinicalharmony:problem:unauthorized', 401, '/api/v1/summary', True)"
+TOKEN="$FULL_TOKEN"
+check_http "a SERVICE token (aud clinicalharmony-fhir) is not a dashboard user → 401" GET "$GW/summary" 401
+
+TOKEN="$VIC"
+check_http "vic (viewer) GET /me" GET "$GW/me" 200
+check_json "  → viewer, cannot act" "$TMP/last_response.json" "(d['username'], d['roles'], d['canAct'])" "('vic', ['dashboard-viewer'], False)"
+check_http "summary" GET "$GW/summary" 200
+check_json "  → Gold FHIR count matches the database" "$TMP/last_response.json" "d['fhirResources']" \
+  "$(psql_id "SELECT count(*) FROM gold.fhir_resources")"
+check_http "services/health" GET "$GW/services/health" 200
+check_json "  → all 5 services + the gateway's DB UP" "$TMP/last_response.json" "(d['status'], len(d['services']), d['degraded'])" "('UP', 6, [])"
+
+MARIA="$(psql_id "SELECT x.master_patient_id FROM gold.patient_source_xref x JOIN silver.patients p ON p.id = x.silver_patient_id WHERE p.source_patient_id = 'SEED-0001'")"
+check_http "patient search q=garcia" GET "$GW/patients?q=garcia&size=50" 200
+check_json "  → finds SEED-0001's master" "$TMP/last_response.json" "any(m['id'] == $MARIA for m in d['items'])" "True"
+check_http "patient timeline" GET "$GW/patients/$MARIA/timeline" 200
+check_json "  → one event per Silver condition/observation/medication of every linked record" "$TMP/last_response.json" "d['eventCount']" \
+  "$(psql_id "WITH l AS (SELECT silver_patient_id id FROM gold.patient_source_xref WHERE master_patient_id = $MARIA) SELECT (SELECT count(*) FROM silver.conditions WHERE patient_id IN (SELECT id FROM l)) + (SELECT count(*) FROM silver.observations WHERE patient_id IN (SELECT id FROM l)) + (SELECT count(*) FROM silver.medications WHERE patient_id IN (SELECT id FROM l))")"
+check_json "  → E11.9 is a known ICD-10 code, onset 2015-06-01, linked to its Gold Condition" "$TMP/last_response.json" \
+  "next((e['codeKnown'], e['occurredAt'][:10], e['fhirReference'].startswith('Condition/')) for e in d['events'] if e['code'] == 'E11.9')" "(True, '2015-06-01', True)"
+
+check_http "ontology coverage" GET "$GW/ontology/coverage" 200
+check_json "  → 4 terminologies; ICD-10's blank seed code reported unknown" "$TMP/last_response.json" \
+  "([t['terminology'] for t in d['terminologies']], '' in [u['code'] for u in d['terminologies'][0]['topUnknownCodes']])" "(['ICD-10', 'SNOMED-CT', 'LOINC', 'RxNorm'], True)"
+check_http "ICD-10 lookup proxied to ontology-service" GET "$GW/ontology/codes/icd10/E11.9" 200
+check_http "unknown ICD-10 code → 404 problem from ontology-service" GET "$GW/ontology/codes/icd10/ZZZ99" 404
+check_json "  → service + downstream status named" "$TMP/last_response.json" "(d['type'], d['service'], d['downstreamStatus'])" \
+  "('urn:clinicalharmony:problem:downstream-rejected', 'ontology-service', 404)"
+check_http "unsupported lookup system → 400" GET "$GW/ontology/codes/snomed/44054006" 400
+
+check_http "validation summary" GET "$GW/validation/summary" 200
+check_json "  → total matches silver.validation_reports" "$TMP/last_response.json" "d['total']" "$(psql_id "SELECT count(*) FROM silver.validation_reports")"
+check_http "validation findings severity=ERROR" GET "$GW/validation/findings?severity=ERROR&size=10" 200
+check_json "  → only ERRORs" "$TMP/last_response.json" "set(f['severity'] for f in d['items'])" "{'ERROR'}"
+check_http "rule catalog" GET "$GW/validation/rules" 200
+check_json "  → owners + toggleability" "$TMP/last_response.json" \
+  "[next((r['evaluatedBy'], r['toggleable']) for r in d if r['code'] == c) for c in ('CODE-001', 'LAB_REFERENCE_RANGE', 'USCORE_PATIENT_COMPLETENESS')]" \
+  "[('ontology-service', False), ('rules-engine-service', True), ('fhir-compliance-service', True)]"
+check_http "viewer cannot toggle a rule → 403" PUT "$GW/validation/rules/LAB_REFERENCE_RANGE/toggle" 403
+check_json "  → names the role" "$TMP/last_response.json" "d['requiredRole']" "data-steward"
+
+check_http "FHIR resource types" GET "$GW/fhir/resource-types" 200
+check_http "Gold Patient for SEED-0001" GET "$GW/fhir/resources/Patient/silver-patient-$(psql_id "SELECT id FROM silver.patients WHERE source_patient_id = 'SEED-0001'")" 200
+check_json "  → resource + validator notes + FHIR_MAP lineage" "$TMP/last_response.json" \
+  "(d['resource']['resourceType'], d['summary']['usCoreCompliant'], 'FHIR_MAP' in [r['step'] for r in d['lineage']])" "('Patient', True, True)"
+check_http "viewer may use the HL7 validator through the gateway" POST "$GW/fhir/validate" 200 "application/json" '{"resourceType":"Patient","id":"smoke-gw"}'
+check_json "  → non-compliant Patient explained" "$TMP/last_response.json" "(d['compliant'], d['errorCount'] > 0)" "(False, True)"
+check_http "lineage for SEED-0001's master" GET "$GW/lineage?masterPatientId=$MARIA" 200
+check_json "  → PMI and FHIR_MAP steps" "$TMP/last_response.json" "sorted({'PMI_PROVISIONAL', 'FHIR_MAP'} & {r['step'] for r in d['records']})" "['FHIR_MAP', 'PMI_PROVISIONAL']"
+check_http "lineage without a target → 400" GET "$GW/lineage" 400
+check_http "quarantined Bronze messages" GET "$GW/bronze/messages?status=QUARANTINED&size=200" 200
+check_json "  → total matches bronze.raw_messages" "$TMP/last_response.json" "d['total']" \
+  "$(psql_id "SELECT count(*) FROM bronze.raw_messages WHERE processing_status = 'QUARANTINED'")"
+check_http "unknown gateway path → 404 problem" GET "$GW/does-not-exist" 404
+
+# Steward actions: a fresh opposite-sex-twin pair lands in the PMI review queue; dana rejects it via the gateway.
+# Fresh suffix, birth date and phone so blocking can't pair them with section 15's people.
+read -r SFX DOB PHONE4 < <(python3 -c "
+import random, string
+r = random.SystemRandom()
+print(''.join(r.choice(string.ascii_lowercase) for _ in range(8)), f'{r.randint(1930, 1999)}-{r.randint(1, 12):02d}-{r.randint(1, 28):02d}', r.randint(1000, 9999))")
+LAST="Gw$SFX"
+GA="$(ins_patient SMOKE_EPIC GA Maria female "$DOB" '12 Harbor Rd' "'404-555-$PHONE4'")"
+GT="$(ins_patient SMOKE_EPIC GT Mario male "$DOB" '12 Harbor Rd' "'404-555-$PHONE4'")"
+TOKEN="$SAVED_TOKEN"
+for id in "$GA" "$GT"; do fc_curl -s -o /dev/null -X POST "$FHIR_COMPLIANCE_URL/api/fhir/build/patients/$id"; done
+TOKEN="$VIC"
+check_http "viewer cannot start a matching run → 403" POST "$GW/pmi/match/run" 403
+TOKEN="$DANA"
+GCORR="smoke-gw-$SFX"
+gw_run="$(fc_curl -s -o "$TMP/gw_run.json" -D - -X POST "$GW/pmi/match/run" -H "X-Correlation-Id: $GCORR" | tr -d '\r' | awk -F': ' 'tolower($1)=="x-correlation-id"{print $2}')"
+check_json "dana's matching run via the gateway queues the twin for review" "$TMP/gw_run.json" "(d['run']['status'], d['run']['queuedForReview'] >= 1)" "('COMPLETED', True)"
+if [[ "$gw_run" == "$GCORR" ]] && docker logs clinicalharmony-patient-index-service 2>&1 | grep -q "\[$GCORR\].*PMI run"; then
+  echo "  PASS  correlation id [$GCORR] echoed by the gateway and logged by patient-index-service"; PASS=$((PASS + 1))
+else
+  echo "  FAIL  correlation id [$GCORR] not echoed ('$gw_run') or not in patient-index-service's log"; FAIL=$((FAIL + 1))
+fi
+fc_curl -s "$GW/pmi/candidates" > "$TMP/gw_pending.json"
+GC="$(python3 -c "import json; print(next(c['id'] for c in json.load(open('$TMP/gw_pending.json')) if $GT in (c['silverPatientAId'], c['silverPatientBId'])))")"
+check_http "dana rejects the twin via the gateway (body tries to spoof the reviewer)" POST "$GW/pmi/candidates/$GC/reject" 200 "application/json" '{"note": "twin brother", "reviewer": "mallory"}'
+check_sql "  → recorded reviewer is the token's user, not the body's" "SELECT status || ' ' || reviewed_by FROM pmi.match_candidates WHERE id = $GC" "REJECTED dana"
+check_http "rejecting it again → 409 passed through" POST "$GW/pmi/candidates/$GC/reject" 409 "application/json" '{}'
+check_json "  → problem names patient-index-service" "$TMP/last_response.json" "(d['service'], d['downstreamStatus'])" "('patient-index-service', 409)"
+
+check_http "dana toggles LAB_REFERENCE_RANGE off (routed to rules-engine-service)" PUT "$GW/validation/rules/LAB_REFERENCE_RANGE/toggle" 200
+check_json "  → inactive" "$TMP/last_response.json" "(d['active'], d['evaluatedBy'])" "(False, 'rules-engine-service')"
+check_http "  … and back on" PUT "$GW/validation/rules/LAB_REFERENCE_RANGE/toggle" 200
+check_sql "  → rule active again in the catalog" "SELECT is_active FROM ontology.clinical_rules WHERE rule_code = 'LAB_REFERENCE_RANGE'" "t"
+check_http "CODE-001 has no toggle owner → 409" PUT "$GW/validation/rules/CODE-001/toggle" 409
+
+ro_write="$(docker exec -e PGPASSWORD=gateway-ro-dev-password "$PG_CONTAINER" psql -h localhost -U clinicalharmony_gateway_ro -d clinicalharmony -Atc "DELETE FROM silver.validation_reports WHERE id = -1" 2>&1)"
+if [[ "$ro_write" == *"read-only transaction"* ]]; then
+  echo "  PASS  the gateway's DB login cannot write"; PASS=$((PASS + 1))
+else
+  echo "  FAIL  the gateway's DB login cannot write (got: $ro_write)"; FAIL=$((FAIL + 1))
+fi
+cors_ok="$(curl -s -o /dev/null -D - -X OPTIONS "$GW/summary" -H "Origin: http://localhost:3000" -H "Access-Control-Request-Method: GET" -H "Access-Control-Request-Headers: authorization" | tr -d '\r' | awk -F': ' 'tolower($1)=="access-control-allow-origin"{print $2}')"
+cors_bad="$(curl -s -o /dev/null -w "%{http_code}" -X OPTIONS "$GW/summary" -H "Origin: http://evil.example" -H "Access-Control-Request-Method: GET")"
+if [[ "$cors_ok" == "http://localhost:3000" && "$cors_bad" == "403" ]]; then
+  echo "  PASS  CORS preflight: dashboard origin allowed, others refused"; PASS=$((PASS + 1))
+else
+  echo "  FAIL  CORS preflight (allowed origin '$cors_ok', foreign origin HTTP $cors_bad)"; FAIL=$((FAIL + 1))
+fi
 TOKEN="$SAVED_TOKEN"
 
 echo

@@ -1,0 +1,325 @@
+{
+  "info": {
+    "name": "ClinicalHarmony · Phase 7 — api-gateway (dashboard BFF)",
+    "description": "api-gateway, minimal walkthrough (12 requests) of the five dashboard views — Patient Timeline, Ontology Coverage, Validation Report, FHIR Viewer, Data Lineage — plus one steward action. Prereqs: `docker-compose up -d`, migration 22 applied, the Phase 7 Keycloak realm imported, and Silver built into Gold (POST http://localhost:8084/api/fhir/build — only needed after a `down -v`). Run 1 → 12 in order: 1 stores {{access_token}}, 4 stores {{master_id}}, 8 stores the resource 9 opens. Auth, role and error cases are covered by scripts/smoke-test.sh section 16.",
+    "schema": "https://schema.getpostman.com/json/collection/v2.1.0/collection.json"
+  },
+  "auth": {
+    "type": "bearer",
+    "bearer": [
+      {
+        "key": "token",
+        "value": "{{access_token}}",
+        "type": "string"
+      }
+    ]
+  },
+  "variable": [
+    {
+      "key": "gateway_url",
+      "value": "http://localhost:8080"
+    },
+    {
+      "key": "keycloak_url",
+      "value": "http://localhost:8180"
+    },
+    {
+      "key": "access_token",
+      "value": ""
+    },
+    {
+      "key": "master_id",
+      "value": ""
+    },
+    {
+      "key": "fhir_type",
+      "value": ""
+    },
+    {
+      "key": "fhir_id",
+      "value": ""
+    }
+  ],
+  "item": [
+    {
+      "name": "1. Auth — sign in as dana (data steward)",
+      "event": [
+        {
+          "listen": "test",
+          "script": {
+            "type": "text/javascript",
+            "exec": [
+              "pm.test('token issued', () => pm.response.to.have.status(200));",
+              "pm.collectionVariables.set('access_token', pm.response.json().access_token);"
+            ]
+          }
+        }
+      ],
+      "request": {
+        "method": "POST",
+        "header": [],
+        "url": "{{keycloak_url}}/realms/clinicalharmony/protocol/openid-connect/token",
+        "description": "DEV-ONLY password grant on client clinicalharmony-dashboard-dev, so Postman can get a USER token without a browser. The real dashboard uses Authorization Code + PKCE on client clinicalharmony-dashboard (see request 2's /config). dana has dashboard-viewer + data-steward; swap in vic / vic-dev-password to see a viewer (reads only). Tokens live 10 minutes — re-run 1 on a 401.",
+        "body": {
+          "mode": "urlencoded",
+          "urlencoded": [
+            {
+              "key": "grant_type",
+              "value": "password"
+            },
+            {
+              "key": "client_id",
+              "value": "clinicalharmony-dashboard-dev"
+            },
+            {
+              "key": "username",
+              "value": "dana"
+            },
+            {
+              "key": "password",
+              "value": "dana-dev-password"
+            }
+          ]
+        },
+        "auth": {
+          "type": "noauth"
+        }
+      }
+    },
+    {
+      "name": "2. Who am I",
+      "event": [
+        {
+          "listen": "test",
+          "script": {
+            "type": "text/javascript",
+            "exec": [
+              "pm.test('200', () => pm.response.to.have.status(200));",
+              "pm.test('dana can act', () => pm.expect(pm.response.json().canAct).to.eql(true));"
+            ]
+          }
+        }
+      ],
+      "request": {
+        "method": "GET",
+        "header": [],
+        "url": "{{gateway_url}}/api/v1/me",
+        "description": "The user, their dashboard roles, and whether the UI should show action buttons (canAct = data-steward)."
+      }
+    },
+    {
+      "name": "3. Dashboard summary",
+      "event": [
+        {
+          "listen": "test",
+          "script": {
+            "type": "text/javascript",
+            "exec": [
+              "pm.test('200', () => pm.response.to.have.status(200));"
+            ]
+          }
+        }
+      ],
+      "request": {
+        "method": "GET",
+        "header": [],
+        "url": "{{gateway_url}}/api/v1/summary",
+        "description": "One row of counts per layer: Bronze by status, Silver entities, Gold masters by match status, FHIR resources (and how many are US Core compliant), open findings by severity, pending PMI reviews, last matching run. Straight from the database via the gateway's read-only role."
+      }
+    },
+    {
+      "name": "4. Patient search — Garcia",
+      "event": [
+        {
+          "listen": "test",
+          "script": {
+            "type": "text/javascript",
+            "exec": [
+              "pm.test('200', () => pm.response.to.have.status(200));",
+              "const m = pm.response.json().items.find(p => p.sourceSystems.includes('SEED_EPIC_ADT'));",
+              "pm.test('found the Epic-sourced master', () => pm.expect(m).to.be.an('object'));",
+              "pm.collectionVariables.set('master_id', m.id);"
+            ]
+          }
+        }
+      ],
+      "request": {
+        "method": "GET",
+        "header": [],
+        "url": "{{gateway_url}}/api/v1/patients?q=garcia",
+        "description": "Gold master patients (merged masters hidden unless includeMerged=true), with every source feed behind each one. Stores {{master_id}} for 5, 8 and 10."
+      }
+    },
+    {
+      "name": "5. Patient timeline",
+      "event": [
+        {
+          "listen": "test",
+          "script": {
+            "type": "text/javascript",
+            "exec": [
+              "pm.test('200', () => pm.response.to.have.status(200));",
+              "pm.test('has events', () => pm.expect(pm.response.json().eventCount).to.be.above(0));"
+            ]
+          }
+        }
+      ],
+      "request": {
+        "method": "GET",
+        "header": [],
+        "url": "{{gateway_url}}/api/v1/patients/{{master_id}}/timeline",
+        "description": "Conditions, labs and medications from EVERY Silver record linked to this master, newest first. Each event says which feed it came from, whether its code is in the reference terminology, and which Gold FHIR resource it became. Filters: from, to (yyyy-mm-dd), types=CONDITION,OBSERVATION,MEDICATION."
+      }
+    },
+    {
+      "name": "6. Ontology coverage",
+      "event": [
+        {
+          "listen": "test",
+          "script": {
+            "type": "text/javascript",
+            "exec": [
+              "pm.test('4 terminologies', () => pm.expect(pm.response.json().terminologies).to.have.length(4));"
+            ]
+          }
+        }
+      ],
+      "request": {
+        "method": "GET",
+        "header": [],
+        "url": "{{gateway_url}}/api/v1/ontology/coverage",
+        "description": "Per terminology (ICD-10, SNOMED CT, LOINC, RxNorm): how much of what Silver uses resolves in the reference set, the top unknown codes, open CODE-00x findings, and SNOMED CT ↔ ICD-10 mapping coverage."
+      }
+    },
+    {
+      "name": "7. Validation report — summary",
+      "event": [
+        {
+          "listen": "test",
+          "script": {
+            "type": "text/javascript",
+            "exec": [
+              "pm.test('200', () => pm.response.to.have.status(200));"
+            ]
+          }
+        }
+      ],
+      "request": {
+        "method": "GET",
+        "header": [],
+        "url": "{{gateway_url}}/api/v1/validation/summary",
+        "description": "Findings from ontology-, rules-engine- and fhir-compliance-service in one place, by severity, rule and entity type. Drill down with GET /api/v1/validation/findings?severity=ERROR&ruleCode=…; the rule catalog (with which service evaluates each rule) is GET /api/v1/validation/rules."
+      }
+    },
+    {
+      "name": "8. FHIR viewer — this patient's Gold resources",
+      "event": [
+        {
+          "listen": "test",
+          "script": {
+            "type": "text/javascript",
+            "exec": [
+              "pm.test('200', () => pm.response.to.have.status(200));",
+              "const r = pm.response.json().items[0];",
+              "pm.collectionVariables.set('fhir_type', r.resourceType);",
+              "pm.collectionVariables.set('fhir_id', r.fhirId);"
+            ]
+          }
+        }
+      ],
+      "request": {
+        "method": "GET",
+        "header": [],
+        "url": "{{gateway_url}}/api/v1/fhir/resources?masterPatientId={{master_id}}",
+        "description": "Every Gold FHIR resource (all types, not just the CMS-0057 ones /fhir/r4 serves), with its US Core validator outcome. Stores the first one for 9."
+      }
+    },
+    {
+      "name": "9. FHIR viewer — one resource",
+      "event": [
+        {
+          "listen": "test",
+          "script": {
+            "type": "text/javascript",
+            "exec": [
+              "pm.test('200', () => pm.response.to.have.status(200));"
+            ]
+          }
+        }
+      ],
+      "request": {
+        "method": "GET",
+        "header": [],
+        "url": "{{gateway_url}}/api/v1/fhir/resources/{{fhir_type}}/{{fhir_id}}",
+        "description": "The resource JSON, the HL7 validator's compliance notes, and its lineage records."
+      }
+    },
+    {
+      "name": "10. Data lineage — this patient",
+      "event": [
+        {
+          "listen": "test",
+          "script": {
+            "type": "text/javascript",
+            "exec": [
+              "pm.test('has lineage', () => pm.expect(pm.response.json().records.length).to.be.above(0));"
+            ]
+          }
+        }
+      ],
+      "request": {
+        "method": "GET",
+        "header": [],
+        "url": "{{gateway_url}}/api/v1/lineage?masterPatientId={{master_id}}",
+        "description": "Every GoldWriter lineage record about this master (provisional master, PMI merges, FHIR mappings), each with its BRONZE → SILVER → GOLD step chain and hashes, plus the Bronze messages behind them. Also: ?fhirResourceId=…, GET /api/v1/bronze/messages?status=QUARANTINED."
+      }
+    },
+    {
+      "name": "11. Downstream service health",
+      "event": [
+        {
+          "listen": "test",
+          "script": {
+            "type": "text/javascript",
+            "exec": [
+              "pm.test('200', () => pm.response.to.have.status(200));"
+            ]
+          }
+        }
+      ],
+      "request": {
+        "method": "GET",
+        "header": [],
+        "url": "{{gateway_url}}/api/v1/services/health",
+        "description": "Each service's /actuator/health (2 s budget) plus the gateway's own database. status is UP or DEGRADED with the names of what's down — read views keep working while a service is down; only its actions return 503."
+      }
+    },
+    {
+      "name": "12. Run PMI matching (steward action)",
+      "event": [
+        {
+          "listen": "test",
+          "script": {
+            "type": "text/javascript",
+            "exec": [
+              "pm.test('200', () => pm.response.to.have.status(200));",
+              "pm.test('completed', () => pm.expect(pm.response.json().run.status).to.eql('COMPLETED'));",
+              "pm.test('correlation id echoed', () => pm.expect(pm.response.headers.get('X-Correlation-Id')).to.eql('postman-phase7'));"
+            ]
+          }
+        }
+      ],
+      "request": {
+        "method": "POST",
+        "header": [
+          {
+            "key": "X-Correlation-Id",
+            "value": "postman-phase7"
+          }
+        ],
+        "url": "{{gateway_url}}/api/v1/pmi/match/run",
+        "description": "Actions are proxied to the owning service with the gateway's OWN Keycloak client (api-gateway), never the user's token; the user's data-steward role is what authorizes it here. The X-Correlation-Id below shows up in patient-index-service's log too. Review decisions (POST /api/v1/pmi/candidates/{id}/accept|reject, body {\"note\"}) record the signed-in user as reviewer."
+      }
+    }
+  ]
+}

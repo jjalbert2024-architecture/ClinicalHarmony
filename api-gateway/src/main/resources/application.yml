@@ -1,0 +1,91 @@
+server:
+  port: 8080
+
+spring:
+  application:
+    name: api-gateway
+  profiles:
+    active: ${SPRING_PROFILES_ACTIVE:local}
+  mvc:
+    # Spring's own errors (404 no route, 405, 415, bad params) come out as RFC 7807 too.
+    problemdetails:
+      enabled: true
+  datasource:
+    # Least-privilege role from docs/db-init/22: SELECT-only, sessions read-only. The gateway never writes.
+    username: ${DB_USER:clinicalharmony_gateway_ro}
+    password: ${DB_PASSWORD:gateway-ro-dev-password}  # DEV-ONLY default, matches migration 22
+    hikari:
+      read-only: true
+      maximum-pool-size: 5
+  security:
+    oauth2:
+      resourceserver:
+        jwt:
+          # USER tokens from the dashboard clients. Same realm/issuer as the services, but the
+          # gateway's own audience — a service token (aud clinicalharmony-fhir) is not accepted here.
+          issuer-uri: ${OAUTH_ISSUER_URI:http://localhost:8180/realms/clinicalharmony}
+          jwk-set-uri: ${OAUTH_JWK_SET_URI:http://localhost:8180/realms/clinicalharmony/protocol/openid-connect/certs}
+          audiences: clinicalharmony-gateway
+
+gateway:
+  cors:
+    allowed-origins: ${CORS_ALLOWED_ORIGINS:http://localhost:3000}
+  # Served publicly at GET /api/v1/config so the UI can start its PKCE login.
+  ui:
+    issuer: ${OAUTH_ISSUER_URI:http://localhost:8180/realms/clinicalharmony}
+    client-id: ${DASHBOARD_CLIENT_ID:clinicalharmony-dashboard}
+  # The gateway's OWN Keycloak client for calling downstream services (client_credentials).
+  service-token:
+    token-uri: ${OAUTH_TOKEN_URI:http://localhost:8180/realms/clinicalharmony/protocol/openid-connect/token}
+    client-id: ${GATEWAY_CLIENT_ID:api-gateway}
+    client-secret: ${GATEWAY_CLIENT_SECRET:api-gateway-secret}  # DEV-ONLY default, matches keycloak/realm-clinicalharmony.json
+    scope: clinicalharmony/pipeline.write
+  # Downstream services. read-timeout is per service: fhir-compliance (HL7 validator, C-CDA) and
+  # patient-index (matching runs) do real work per call; the others answer in milliseconds.
+  services:
+    ingestion:
+      base-url: ${INGESTION_BASE_URL:http://localhost:8081}
+      connect-timeout: 2s
+      read-timeout: 5s
+    ontology:
+      base-url: ${ONTOLOGY_BASE_URL:http://localhost:8082}
+      connect-timeout: 2s
+      read-timeout: 5s
+    rules-engine:
+      base-url: ${RULES_ENGINE_BASE_URL:http://localhost:8083}
+      connect-timeout: 2s
+      read-timeout: 10s
+    fhir-compliance:
+      base-url: ${FHIR_COMPLIANCE_BASE_URL:http://localhost:8084}
+      connect-timeout: 2s
+      read-timeout: 30s
+    patient-index:
+      base-url: ${PATIENT_INDEX_BASE_URL:http://localhost:8085}
+      connect-timeout: 2s
+      read-timeout: 30s
+
+management:
+  endpoints:
+    web:
+      exposure:
+        include: health,info
+
+logging:
+  pattern:
+    console: "%d{yyyy-MM-dd HH:mm:ss.SSS} %-5level [%X{requestId}] %logger{36} - %msg%n"
+
+---
+spring:
+  config:
+    activate:
+      on-profile: local
+  datasource:
+    url: jdbc:postgresql://localhost:5432/clinicalharmony
+
+---
+spring:
+  config:
+    activate:
+      on-profile: docker
+  datasource:
+    url: jdbc:postgresql://${DB_HOST:postgres}:${DB_PORT:5432}/${DB_NAME:clinicalharmony}

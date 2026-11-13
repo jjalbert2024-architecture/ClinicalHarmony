@@ -100,6 +100,20 @@ fhir-compliance-service, plus its outbound GoldWriter client:
 | `OAUTH_TOKEN_URI` | `http://localhost:8180/realms/clinicalharmony/protocol/openid-connect/token` | Its own client_credentials token (compose: `keycloak:8080`) |
 | `PMI_CLIENT_ID` / `PMI_CLIENT_SECRET` | `patient-index-service` / `patient-index-service-secret` | Its Keycloak client (DEV-only secret, in the realm JSON) |
 
+### Environment variables (api-gateway)
+
+Same `SPRING_PROFILES_ACTIVE` + `DB_*` + inbound `OAUTH_ISSUER_URI` / `OAUTH_JWK_SET_URI` pattern, but
+`DB_USER`/`DB_PASSWORD` default to the read-only role `clinicalharmony_gateway_ro` / `gateway-ro-dev-password`
+(migration 22), and inbound tokens are USER tokens with audience `clinicalharmony-gateway`. Plus:
+
+| Variable | Default | Purpose |
+|---|---|---|
+| `OAUTH_TOKEN_URI` | `http://localhost:8180/realms/clinicalharmony/protocol/openid-connect/token` | Its own client_credentials token |
+| `GATEWAY_CLIENT_ID` / `GATEWAY_CLIENT_SECRET` | `api-gateway` / `api-gateway-secret` | Its Keycloak client (DEV-only secret, in the realm JSON) |
+| `DASHBOARD_CLIENT_ID` | `clinicalharmony-dashboard` | Public PKCE client, served by `GET /api/v1/config` |
+| `CORS_ALLOWED_ORIGINS` | `http://localhost:3000` | Comma-separated allowlist |
+| `INGESTION_BASE_URL` … `PATIENT_INDEX_BASE_URL` | `http://localhost:8081` … `:8085` | Downstream services (compose: service names) |
+
 ### Environment variables (fhir-compliance-service)
 
 Same `SPRING_PROFILES_ACTIVE` + `DB_*` pattern as ontology-service, plus (Phase 5b slice 4):
@@ -146,7 +160,7 @@ api-gateway  →  dashboard-ui (React, 5 views)
 | fhir-compliance-service | 8084 | implemented |
 | patient-index-service | 8085 | implemented (Phase 6) |
 | rules-engine-service | 8083 | implemented |
-| api-gateway | 8080 | placeholder |
+| api-gateway | 8080 | implemented (Phase 7) |
 | keycloak | 8180 | realm `clinicalharmony` (Phase 5b slice 4); container port 8080 |
 | dashboard-ui | 3000 | placeholder |
 
@@ -345,7 +359,9 @@ this project generates FHIR for, and generates FHIR resources from a canonical p
   Client `clinicalharmony-app` (confidential, client_credentials only, DEV secret
   `clinicalharmony-app-secret`) — plus, since Phase 6, client `patient-index-service` (secret
   `patient-index-service-secret`, only `clinicalharmony/pipeline.write` offered; the PMI's identity
-  when calling GoldWriter). Adding a client means `docker compose up -d --force-recreate keycloak`
+  when calling GoldWriter). Since Phase 7 also: public PKCE client `clinicalharmony-dashboard`, DEV-ONLY
+  direct-grant client `clinicalharmony-dashboard-dev`, confidential `api-gateway` (`api-gateway-secret`),
+  realm roles `dashboard-viewer`/`data-steward` and dev users `dana`/`vic` (see api-gateway below). Adding a client means `docker compose up -d --force-recreate keycloak`
   (the realm is only imported into a fresh container). All client scopes OPTIONAL (`system/<Type>.rs` × 5, `system/*.rs`,
   `clinicalharmony/pipeline.write`) — clients must request them; mappers add `aud=clinicalharmony-fhir`
   and `sub`. Realm import with explicit `clientScopes` replaces Keycloak's built-ins (no basic/roles
@@ -405,6 +421,49 @@ Patient Master Index on port 8085. Package `com.clinicalharmony.patientindex`.
   self-signed JWTs + `FakeGoldWriter` that applies decisions with SQL). The real GoldWriter side is
   covered by fhir-compliance-service's `GoldMasterIntegrationTest` (270 tests there now).
 
+### api-gateway (implemented — Phase 7)
+
+Backend-for-frontend for the dashboard on port 8080, package `com.clinicalharmony.gateway`. Plain
+Spring MVC + `RestClient` (no Spring Cloud Gateway — its Boot 3.5 line isn't in ~/.m2, and the dashboard
+needs read models no service exposes, not routing). User decisions at Phase 7 scoping (all recommended):
+
+- **Reads = SQL projections** (`read/` package) over a SELECT-only role `clinicalharmony_gateway_ro`
+  (`docs/db-init/22`, `default_transaction_read_only = on`, default privileges for future tables;
+  hikari `read-only: true`). **Actions = HTTP to the owning service** (`downstream/DownstreamClient`).
+  The gateway never writes; GoldWriter stays the only Gold writer. Read views keep working while a
+  service is down.
+- **Auth**: UI uses Keycloak public client `clinicalharmony-dashboard` (Auth Code + PKCE, redirect
+  `localhost:3000/*`); user tokens have `aud clinicalharmony-gateway`, realm roles in claim `roles`
+  (`dashboard-viewer`, `data-steward`), `preferred_username`. Gateway validates the USER token and calls
+  services with its OWN confidential client `api-gateway` (client_credentials, `pipeline.write`) via
+  `ServiceTokenProvider` (hand-rolled, cached, refresh + retry once on 401). User tokens are never
+  relayed. PMI `reviewer` = token's `preferred_username` (body value ignored). Dev users `dana`
+  (steward) / `vic` (viewer); DEV-ONLY direct-grant client `clinicalharmony-dashboard-dev` for
+  Postman/smoke. Realm-level `roles` + `users` were added to the realm JSON (force-recreate keycloak).
+- **Errors**: RFC 7807 everywhere (`web/Problems`, `GlobalExceptionHandler` extends
+  `ResponseEntityExceptionHandler`, `security/SecurityProblemResponses`), type
+  `urn:clinicalharmony:problem:<slug>`, plus `correlationId`, `service`, `downstreamStatus`.
+  Downstream: down → 503, read timeout → 504, 5xx / unusable / 401-403 on the gateway's own
+  credentials → 502, own 4xx → passed through with the service's message (`DownstreamErrors.messageOf`
+  reads `{message}`, `{detail}`, ontology's `{reason}`, OperationOutcome diagnostics). GET-only retry
+  once on connection failure; POST/PUT never replayed.
+- **Per-service read timeouts** (`gateway.services.<key>`): 5 s ingestion/ontology, 10 s rules-engine,
+  30 s fhir-compliance and patient-index. `/api/v1/services/health` probes all with 2 s each → UP / DEGRADED.
+- **Rule toggles** routed by `downstream/RuleOwnership` (7 hard-coded rules-engine codes, `USCORE_*` →
+  fhir-compliance; CODE-*/PMI_MATCH/Phase 1 rules → 409 not toggleable); the response is re-read from
+  the catalog so its shape doesn't depend on the owner.
+- **Gotcha found**: `date::timestamptz` in SQL uses the session time zone, which pgjdbc sets from the
+  JVM's — east of UTC a DATE shifted to the previous day. Timeline converts DATEs with
+  `::timestamp AT TIME ZONE 'UTC'`.
+- **Gotcha**: local `mvn package` fails offline (maven-jar-plugin 3.4.2's plexus-archiver etc. aren't in
+  ~/.m2) — Docker builds download them in-container; locally run from `target/classes` +
+  `dependency:build-classpath` if needed.
+- **Tests (42)**: `DownstreamClientTest` (JDK `HttpServer` stub with delays: token, correlation id,
+  401 retry, 4xx/5xx/timeout/down/Keycloak-down), `@WebMvcTest` `GatewayWebTest` with the real security
+  chain (`@EnableConfigurationProperties(GatewayProperties)` + `@Import` security/CORS/`TestJwts`), and
+  `ApiGatewayIntegrationTest` (Testcontainers, datasource = the read-only role, stubbed services,
+  ontology on a dead port).
+
 ### Bronze schema invariants
 
 `bronze.raw_messages` CHECK constraints that Java code must match:
@@ -444,6 +503,10 @@ Phase 4. It also made the first-ever write to `gold.fhir_resources`, a table Pha
 left unused; no schema change was needed there either, since its columns and unique constraint on
 `(resource_type, fhir_id)` already existed.
 
+Phase 7 (`docs/db-init/22`, same non-destructive pattern, applied to the running container): role
+`clinicalharmony_gateway_ro` (LOGIN, DEV-only password) with USAGE + SELECT on bronze/silver/gold/
+ontology/pmi, default privileges for future tables, and `default_transaction_read_only = on`.
+
 Phase 6 (`docs/db-init/20`, `21`, same non-destructive pattern, applied to the running container):
 `gold.master_patient_merges` (merge history incl. `moved_silver_patient_ids` / `moved_fhir_resource_ids`
 BIGINT[] so unmerge is exact; partial unique index = one live merge per absorbed master), new
@@ -457,12 +520,12 @@ schema **`pmi`** (`match_runs`, `match_candidates` with a partial unique index o
 
 - **Service-layer tests** (`*ProcessorTest` / `*ValidatorTest` / `*ServiceTest` / `*RuleTest`): plain JUnit 5, `mock(...)` the JdbcTemplate/repository, no Spring context — fast.
 - **Web-layer tests** (`*ControllerTest`): `@WebMvcTest` + `@MockBean` on the service layer — Spring MVC slice only, no DB.
-- **Integration tests** (`*IntegrationTest`, fhir-compliance-service and patient-index-service): `@SpringBootTest`
+- **Integration tests** (`*IntegrationTest`, fhir-compliance-service, patient-index-service and api-gateway): `@SpringBootTest`
   + Testcontainers Postgres initialized from `docs/db-init`, real HTTP via `TestRestTemplate`.
   `@Testcontainers(disabledWithoutDocker = true)`, so `mvn test` still passes without Docker.
   Extend `integration/AbstractIntegrationTest` (shared context + DB) and use its `withScopes(...)` /
   `anonymous()` clients — endpoints are Bearer-protected since Phase 5b slice 4.
-- **Black-box smoke test** (`scripts/smoke-test.sh`): once the stack is up (`docker-compose up -d`), this hits all four implemented services' REST endpoints over HTTP and asserts on real responses — accept/quarantine outcomes, ontology validation results, all 7 rule-engine evaluations and live rule-toggle behavior, US Core structural validation (including a `requiredAnyOf` choice-type check), and FHIR generation round-tripped back through validation to cross-check the generator against the validator. Fixture payloads live in `scripts/fixtures/`. This replaces the earlier "verified manually" note — it's now a repeatable, scriptable check (168 assertions as of Phase 6; it fetches a Bearer token from the compose Keycloak for fhir-compliance-service and patient-index-service calls; section 15 = PMI, which inserts fresh random synthetic patients each run so it stays rerunnable). Gold-layer checks with no HTTP surface yet (lineage, masters) use `check_sql` via `docker exec` into `clinicalharmony-postgres`.
+- **Black-box smoke test** (`scripts/smoke-test.sh`): once the stack is up (`docker-compose up -d`), this hits all four implemented services' REST endpoints over HTTP and asserts on real responses — accept/quarantine outcomes, ontology validation results, all 7 rule-engine evaluations and live rule-toggle behavior, US Core structural validation (including a `requiredAnyOf` choice-type check), and FHIR generation round-tripped back through validation to cross-check the generator against the validator. Fixture payloads live in `scripts/fixtures/`. This replaces the earlier "verified manually" note — it's now a repeatable, scriptable check (224 assertions as of Phase 7; it fetches a Bearer token from the compose Keycloak for fhir-compliance-service and patient-index-service calls; section 15 = PMI, which inserts fresh random synthetic patients each run so it stays rerunnable; section 16 = api-gateway, with real dana/vic user tokens from the dev direct-grant client). Gold-layer checks with no HTTP surface yet (lineage, masters) use `check_sql` via `docker exec` into `clinicalharmony-postgres`.
 
 ## Local Docker environment
 
@@ -496,7 +559,7 @@ Phases are meant to be fully complete before the next starts. Current state as o
   (done, merged as PR #11).
 - **Phase 6** (done, merged as PR #12): patient-index-service (PMI + deduplication) — see its
   section above.
-- **Phase 7**: api-gateway
+- **Phase 7** (built, in review on branch `api-gateway`): api-gateway — see its section above.
 - **Phase 8**: dashboard-ui (React, 5 views)
 - **Phase 9**: data-generator (Python)
 - **Phase 10**: Polish, final Docker test, demo script

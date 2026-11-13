@@ -608,5 +608,26 @@ Phases are meant to be fully complete before the next starts. Current state as o
   section above.
 - **Phase 7** (done, merged as PR #13): api-gateway — see its section above.
 - **Phase 8** (done, merged as PR #14): dashboard-ui — see its section above.
-- **Phase 9**: data-generator (Python)
-- **Phase 10**: Polish, final Docker test, demo script
+- **Phase 9** (planned, agreed 2026-11-13): event-driven pipeline on Kafka + data-generator, one layer
+  at a time, each its own branch/PR (details in the README roadmap):
+  - Full per-layer design (topics, consumer groups, writes, partition keys, idempotency, outbox, DLTs,
+    log events, metrics, done-when) is the README's "Phase 9 design: one layer at a time" table — keep
+    it and the code in sync. Topic naming `clinicalharmony.<layer>.<entity>.<event>`, `<topic>.dlt`.
+  - **9a** Bronze: generator v1 (100 seeded HL7 over MLLP) → ingestion-service publishes
+    `clinicalharmony.bronze.hl7v2.raw` (ACK only after Kafka `acks=all`) → new bronze listener (group
+    `bronze-writer`) writes `bronze.raw_messages` idempotently (needs unique source + checksum),
+    QUARANTINED kept, DLT for technical failures → outbox → `clinicalharmony.bronze.ingested`.
+  - **9b** Silver: new silver transformer (group `silver-transformer`) reads the Bronze row by id, maps
+    MSH/PID/DG1/OBX/RXE-RXO (AL1 needs a new `silver.allergies`), replaces child rows per
+    `raw_message_id`, Bronze → PROCESSED/FAILED, calls rules-engine with real Silver ids (fail-open →
+    re-validate later) → `clinicalharmony.silver.patient.changed`.
+  - **9c** Gold: consumer `gold-builder` INSIDE fhir-compliance-service (GoldWriter stays the only Gold
+    writer) → US Core build + validator → Gold + lineage BRONZE→SILVER→GOLD →
+    `clinicalharmony.gold.patient.changed` → `pmi-matcher` inside patient-index-service (batched runs).
+  - **9d** Full generator (FHIR / claims / C-CDA, cross-feed duplicates, defects, `--seed`/`--reset`/`--trickle`).
+  - **9e** Observability: logs to Datadog or Splunk (undecided) + dashboards/alerts.
+  - To settle at 9a scoping: Kafka host port (medistream takes 9092/2181 → e.g. 19092; cp-kafka 7.6.1
+    image already local), spring-kafka 3.3.x / kafka-clients 3.9.x are NOT in ~/.m2 (ask before
+    downloading), generator on host python3 vs a python container.
+- **Phase 10**: Polish, final Docker test, interview demo script, the draw.io diagrams listed in the
+  README's "Design diagrams (to draw)" section.

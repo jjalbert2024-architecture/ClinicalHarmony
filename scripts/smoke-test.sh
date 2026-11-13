@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 # End-to-end smoke test for ingestion-service, ontology-service, rules-engine-service,
-# fhir-compliance-service, patient-index-service, and api-gateway.
+# fhir-compliance-service, patient-index-service, api-gateway, and dashboard-ui.
 # Assumes the stack is already up: `docker-compose up -d` from the repo root.
 # Usage: ./scripts/smoke-test.sh
 set -uo pipefail
@@ -11,6 +11,7 @@ RULES_URL="${RULES_URL:-http://localhost:8083}"
 FHIR_COMPLIANCE_URL="${FHIR_COMPLIANCE_URL:-http://localhost:8084}"
 PMI_URL="${PMI_URL:-http://localhost:8085}"
 GATEWAY_URL="${GATEWAY_URL:-http://localhost:8080}"
+DASHBOARD_URL="${DASHBOARD_URL:-http://localhost:3000}"
 KEYCLOAK_URL="${KEYCLOAK_URL:-http://localhost:8180}"
 TOKEN_URL="$KEYCLOAK_URL/realms/clinicalharmony/protocol/openid-connect/token"
 CLIENT_ID="${CLIENT_ID:-clinicalharmony-app}"
@@ -658,6 +659,62 @@ else
   echo "  FAIL  CORS preflight (allowed origin '$cors_ok', foreign origin HTTP $cors_bad)"; FAIL=$((FAIL + 1))
 fi
 TOKEN="$SAVED_TOKEN"
+
+section "17. dashboard-ui — static SPA behind nginx (Phase 8)"
+# The UI itself is covered by Vitest (dashboard-ui/test) and a manual click-through
+# (dashboard-ui/CHECKLIST.md). Here: what nginx serves, the runtime config, the security headers,
+# and the two things the browser's login and API calls depend on outside this repo's JS —
+# Keycloak accepting the dashboard's PKCE request, and CORS on the gateway and Keycloak.
+DASH="$DASHBOARD_URL"
+KC_OIDC="$KEYCLOAK_URL/realms/clinicalharmony/protocol/openid-connect"
+# header_of FILE NAME — value of one response header from a curl -D dump (case-insensitive)
+header_of() { tr -d '\r' < "$1" | awk -F': ' -v h="$(echo "$2" | tr '[:upper:]' '[:lower:]')" 'tolower($1)==h{print $2}' | tail -1; }
+pass_if() {  # pass_if NAME CONDITION_RESULT(0/1) DETAIL
+  if [[ "$2" == "0" ]]; then echo "  PASS  $1"; PASS=$((PASS + 1)); else echo "  FAIL  $1 ($3)"; FAIL=$((FAIL + 1)); fi
+}
+
+code="$(curl -s -o "$TMP/dash_index.html" -D "$TMP/dash_index.h" -w "%{http_code}" "$DASH/")"
+[[ "$code" == "200" ]] && grep -q '<div id="root">' "$TMP/dash_index.html"; pass_if "GET / serves the SPA shell" $? "HTTP $code"
+code="$(curl -s -o "$TMP/dash_deep.html" -w "%{http_code}" "$DASH/patients/1?types=CONDITION")"
+[[ "$code" == "200" ]] && cmp -s "$TMP/dash_index.html" "$TMP/dash_deep.html"; pass_if "deep link /patients/1 falls back to index.html" $? "HTTP $code"
+[[ "$(header_of "$TMP/dash_index.h" Cache-Control)" == "no-cache" ]]; pass_if "  → index.html is revalidated (Cache-Control: no-cache)" $? "$(header_of "$TMP/dash_index.h" Cache-Control)"
+csp="$(header_of "$TMP/dash_index.h" Content-Security-Policy)"
+[[ "$csp" == *"connect-src 'self' $GATEWAY_URL $KEYCLOAK_URL;"* && "$csp" == *"script-src 'self';"* && "$csp" == *"frame-ancestors 'none'"* ]]
+pass_if "CSP limits scripts to self and connections to the gateway + Keycloak" $? "$csp"
+[[ "$(header_of "$TMP/dash_index.h" X-Content-Type-Options)" == "nosniff" && "$(header_of "$TMP/dash_index.h" X-Frame-Options)" == "DENY" && "$(header_of "$TMP/dash_index.h" Referrer-Policy)" == "no-referrer" ]]
+pass_if "nosniff / X-Frame-Options DENY / Referrer-Policy no-referrer" $? "missing header"
+[[ "$(header_of "$TMP/dash_index.h" Server)" == "nginx" ]]; pass_if "nginx doesn't reveal its version" $? "Server: $(header_of "$TMP/dash_index.h" Server)"
+
+curl -s -D "$TMP/dash_cfg.h" -o "$TMP/dash_config.js" "$DASH/config.js"
+grep -q "gatewayUrl: '$GATEWAY_URL'" "$TMP/dash_config.js" && [[ "$(header_of "$TMP/dash_cfg.h" Cache-Control)" == "no-store" ]]
+pass_if "config.js carries the gateway URL from the container env, never cached" $? "$(cat "$TMP/dash_config.js")"
+bundle="$(grep -oE '/assets/index-[A-Za-z0-9_-]+\.js' "$TMP/dash_index.html" | head -1)"
+code="$(curl -s -o /dev/null -D "$TMP/dash_js.h" -w "%{http_code}" "$DASH$bundle")"
+[[ -n "$bundle" && "$code" == "200" && "$(header_of "$TMP/dash_js.h" Cache-Control)" == *immutable* ]]
+pass_if "hashed bundle $bundle served with an immutable cache" $? "HTTP $code, $(header_of "$TMP/dash_js.h" Cache-Control)"
+code="$(curl -s -o /dev/null -w "%{http_code}" "$DASH/assets/does-not-exist.js")"
+[[ "$code" == "404" ]]; pass_if "a missing asset is a 404, not index.html" $? "HTTP $code"
+health="$(docker inspect -f '{{.State.Health.Status}}' clinicalharmony-dashboard-ui 2>/dev/null)"
+[[ "$(curl -s "$DASH/healthz")" == "ok" && "$health" == "healthy" ]]; pass_if "/healthz ok and container healthy" $? "docker health: $health"
+
+# Login: Keycloak must accept exactly the request oidc-client-ts builds (Auth Code + S256 PKCE,
+# redirect /callback), and refuse it without PKCE or with a foreign redirect.
+verifier="$(python3 -c 'import base64,os;print(base64.urlsafe_b64encode(os.urandom(32)).rstrip(b"=").decode())')"
+challenge="$(python3 -c "import base64,hashlib;print(base64.urlsafe_b64encode(hashlib.sha256(b'$verifier').digest()).rstrip(b'=').decode())")"
+auth_q="client_id=clinicalharmony-dashboard&response_type=code&scope=openid&state=smoke"
+cb="redirect_uri=$(python3 -c "import urllib.parse;print(urllib.parse.quote('$DASH/callback',safe=''))")"
+code="$(curl -s -o "$TMP/kc_login.html" -w "%{http_code}" "$KC_OIDC/auth?$auth_q&$cb&code_challenge=$challenge&code_challenge_method=S256")"
+[[ "$code" == "200" ]] && grep -q 'id="username"' "$TMP/kc_login.html"; pass_if "Keycloak shows its login page for the dashboard's PKCE request" $? "HTTP $code"
+loc="$(curl -s -o /dev/null -D - "$KC_OIDC/auth?$auth_q&$cb" | tr -d '\r' | awk -F': ' 'tolower($1)=="location"{print $2}')"
+[[ "$loc" == *"error=invalid_request"* && "$loc" == *"code_challenge_method"* ]]; pass_if "  → without PKCE it refuses (invalid_request)" $? "$loc"
+code="$(curl -s -o /dev/null -w "%{http_code}" "$KC_OIDC/auth?$auth_q&redirect_uri=http%3A%2F%2Fevil.example%2Fcallback&code_challenge=$challenge&code_challenge_method=S256")"
+[[ "$code" == "400" ]]; pass_if "  → a redirect outside $DASH/* is refused" $? "HTTP $code"
+kc_cors="$(curl -s -o /dev/null -D - -X OPTIONS "$KC_OIDC/token" -H "Origin: $DASH" -H "Access-Control-Request-Method: POST" | tr -d '\r' | awk -F': ' 'tolower($1)=="access-control-allow-origin"{print $2}')"
+[[ "$kc_cors" == "$DASH" ]]; pass_if "Keycloak's token endpoint allows the dashboard origin (code exchange + refresh)" $? "'$kc_cors'"
+gw_hdrs="$(curl -s -o /dev/null -D - -X OPTIONS "$GATEWAY_URL/api/v1/me" -H "Origin: $DASH" -H "Access-Control-Request-Method: GET" -H "Access-Control-Request-Headers: authorization,x-correlation-id" | tr -d '\r' | awk -F': ' 'tolower($1)=="access-control-allow-headers"{print tolower($2)}')"
+gw_expose="$(curl -s -o /dev/null -D - "$GATEWAY_URL/api/v1/config" -H "Origin: $DASH" | tr -d '\r' | awk -F': ' 'tolower($1)=="access-control-expose-headers"{print $2}')"
+[[ "$gw_hdrs" == *authorization* && "$gw_hdrs" == *x-correlation-id* && "$gw_expose" == *X-Correlation-Id* ]]
+pass_if "gateway CORS lets the UI send Authorization + X-Correlation-Id and read the echoed id" $? "allow '$gw_hdrs', expose '$gw_expose'"
 
 echo
 echo "=== Summary: $PASS passed, $FAIL failed ==="

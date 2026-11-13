@@ -1,0 +1,172 @@
+{
+  "total": 322,
+  "open": 322,
+  "resolved": 0,
+  "lastValidatedAt": "2026-11-13T07:42:56.20419Z",
+  "bySeverity": [
+    {
+      "key": "ERROR",
+      "label": "ERROR",
+      "category": null,
+      "open": 164,
+      "total": 164,
+      "lastSeen": "2026-11-13T07:42:55.728605Z"
+    },
+    {
+      "key": "WARNING",
+      "label": "WARNING",
+      "category": null,
+      "open": 158,
+      "total": 158,
+      "lastSeen": "2026-11-13T07:42:56.20419Z"
+    }
+  ],
+  "byRule": [
+    {
+      "key": "CODE-001",
+      "label": "Invalid ICD-10 Code",
+      "category": "CODE_VALIDATION",
+      "open": 68,
+      "total": 68,
+      "lastSeen": "2026-11-13T07:42:55.698196Z"
+    },
+    {
+      "key": "GENDER_PREGNANCY_CONFLICT",
+      "label": "Gender/Pregnancy Diagnosis Conflict",
+      "category": "CLINICAL_LOGIC",
+      "open": 24,
+      "total": 24,
+      "lastSeen": "2026-11-13T07:42:55.727465Z"
+    },
+    {
+      "key": "CANCER_STAGING_COMPLETENESS",
+      "label": "Cancer Diagnosis Missing Staging Information",
+      "category": "DATA_QUALITY",
+      "open": 23,
+      "total": 23,
+      "lastSeen": "2026-11-13T07:42:55.72118Z"
+    },
+    {
+      "key": "CODE-002",
+      "label": "Invalid LOINC Code",
+      "category": "CODE_VALIDATION",
+      "open": 23,
+      "total": 23,
+      "lastSeen": "2026-11-13T07:42:55.399735Z"
+    },
+    {
+      "key": "CODE-003",
+      "label": "Invalid RxNorm Code",
+      "category": "CODE_VALIDATION",
+      "open": 23,
+      "total": 23,
+      "lastSeen": "2026-11-13T07:42:55.400595Z"
+    },
+    {
+      "key": "DIAGNOSIS_DATE_SANITY",
+      "label": "Future-Dated Diagnosis",
+      "category": "DATA_QUALITY",
+      "open": 23,
+      "total": 23,
+      "lastSeen": "2026-11-13T07:42:55.725846Z"
+    },
+    {
+      "key": "FHIR_USCORE_COMPLETENESS",
+      "label": "FHIR Resource Missing US Core Required Field",
+      "category": "DATA_QUALITY",
+      "open": 23,
+      "total": 23,
+      "lastSeen": "2026-11-13T07:42:55.726557Z"
+    },
+    {
+      "key": "LAB_REFERENCE_RANGE",
+      "label": "Lab Result Outside Reference Range",
+      "category": "CLINICAL_LOGIC",
+      "open": 23,
+      "total": 23,
+      "lastSeen": "2026-11-13T07:42:55.728016Z"
+    },
+    {
+      "key": "MEDICATION_ALLERGY_CONFLICT",
+      "label": "Prescribed Medication Matches Known Allergy",
+      "category": "CLINICAL_LOGIC",
+      "open": 23,
+      "total": 23,
+      "lastSeen": "2026-11-13T07:42:55.728605Z"
+    },
+    {
+      "key": "PATIENT_AGE_CONSISTENCY",
+      "label": "Stated Age Inconsistent With Date of Birth",
+      "category": "DATA_QUALITY",
+      "open": 23,
+      "total": 23,
+      "lastSeen": "2026-11-13T07:42:55.729022Z"
+    },
+    {
+      "key": "USCORE_PATIENT_COMPLETENESS",
+      "label": "US Core Patient Missing Required Field",
+      "category": "DATA_QUALITY",
+      "open": 22,
+      "total": 22,
+      "lastSeen": "2026-11-13T07:42:56.202105Z"
+    },
+    {
+      "key": "USCORE_MEDICATIONREQUEST_COMPLETENESS",
+      "label": "US Core MedicationRequest Missing Required Field",
+      "category": "DATA_QUALITY",
+      "open": 21,
+      "total": 21,
+      "lastSeen": "2026-11-13T07:42:56.20419Z"
+    },
+    {
+      "key": "CODE-004",
+      "label": "Invalid SNOMED CT Code",
+      "category": "CODE_VALIDATION",
+      "open": 3,
+      "total": 3,
+      "lastSeen": "2026-07-07T11:30:42.1704Z"
+    }
+  ],
+  "byEntityType": [
+    {
+      "key": "CONDITION",
+      "label": "CONDITION",
+      "category": null,
+      "open": 141,
+      "total": 141,
+      "lastSeen": "2026-11-13T07:42:55.727465Z"
+    },
+    {
+      "key": "PATIENT",
+      "label": "PATIENT",
+      "category": null,
+      "open": 68,
+      "total": 68,
+      "lastSeen": "2026-11-13T07:42:56.202105Z"
+    },
+    {
+      "key": "MEDICATION",
+      "label": "MEDICATION",
+      "category": null,
+      "open": 46,
+      "total": 46,
+      "lastSeen": "2026-11-13T07:42:55.728605Z"
+    },
+    {
+      "key": "OBSERVATION",
+      "label": "OBSERVATION",
+      "category": null,
+      "open": 46,
+      "total": 46,
+      "lastSeen": "2026-11-13T07:42:55.728016Z"
+    },
+    {
+      "key": "MEDICATIONREQUEST",
+      "label": "MEDICATIONREQUEST",
+      "category": null,
+      "open": 21,
+      "total": 21,
+      "lastSeen": "2026-11-13T07:42:56.20419Z"
+    }
+  ]
+}

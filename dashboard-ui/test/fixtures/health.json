@@ -1,0 +1,49 @@
+{
+  "status": "UP",
+  "checkedAt": "2026-11-13T08:11:23.226561711Z",
+  "degraded": [],
+  "services": [
+    {
+      "service": "postgres (gateway read-only role)",
+      "status": "UP",
+      "httpStatus": null,
+      "latencyMs": 1,
+      "detail": null
+    },
+    {
+      "service": "ingestion-service",
+      "status": "UP",
+      "httpStatus": 200,
+      "latencyMs": 103,
+      "detail": null
+    },
+    {
+      "service": "ontology-service",
+      "status": "UP",
+      "httpStatus": 200,
+      "latencyMs": 98,
+      "detail": null
+    },
+    {
+      "service": "rules-engine-service",
+      "status": "UP",
+      "httpStatus": 200,
+      "latencyMs": 96,
+      "detail": null
+    },
+    {
+      "service": "fhir-compliance-service",
+      "status": "UP",
+      "httpStatus": 200,
+      "latencyMs": 106,
+      "detail": null
+    },
+    {
+      "service": "patient-index-service",
+      "status": "UP",
+      "httpStatus": 200,
+      "latencyMs": 107,
+      "detail": null
+    }
+  ]
+}

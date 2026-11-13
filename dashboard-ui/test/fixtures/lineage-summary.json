@@ -1,0 +1,51 @@
+[
+  {
+    "step": "API_GENERATE",
+    "sourceSchema": "api",
+    "targetTable": "fhir_resources",
+    "count": 8,
+    "lastTransformedAt": "2026-11-13T07:42:56.421776Z"
+  },
+  {
+    "step": "FHIR_MAP",
+    "sourceSchema": "silver",
+    "targetTable": "fhir_resources",
+    "count": 56,
+    "lastTransformedAt": "2026-11-13T07:43:05.587864Z"
+  },
+  {
+    "step": "PMI_MATCH",
+    "sourceSchema": "gold",
+    "targetTable": "master_patients",
+    "count": 17,
+    "lastTransformedAt": "2026-11-13T07:43:05.778901Z"
+  },
+  {
+    "step": "PMI_MERGE",
+    "sourceSchema": "gold",
+    "targetTable": "master_patient_merges",
+    "count": 16,
+    "lastTransformedAt": "2026-11-13T07:43:02.660541Z"
+  },
+  {
+    "step": "PMI_PROVISIONAL",
+    "sourceSchema": "silver",
+    "targetTable": "master_patients",
+    "count": 41,
+    "lastTransformedAt": "2026-11-13T07:43:05.587864Z"
+  },
+  {
+    "step": "PMI_UNMERGE",
+    "sourceSchema": "gold",
+    "targetTable": "master_patient_merges",
+    "count": 7,
+    "lastTransformedAt": "2026-11-13T07:43:02.834434Z"
+  },
+  {
+    "step": "SEED_LOAD",
+    "sourceSchema": "seed",
+    "targetTable": "fhir_resources",
+    "count": 13,
+    "lastTransformedAt": "2026-11-11T14:43:25.10271Z"
+  }
+]

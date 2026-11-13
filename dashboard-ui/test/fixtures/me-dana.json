@@ -1,0 +1,12 @@
+{
+  "username": "dana",
+  "name": "Dana Steward",
+  "subject": "38a2e0f4-de74-4d51-a121-8790e3b7294d",
+  "client": "clinicalharmony-dashboard-dev",
+  "roles": [
+    "dashboard-viewer",
+    "data-steward"
+  ],
+  "canAct": true,
+  "tokenExpiresAt": "2026-11-13T08:21:22Z"
+}

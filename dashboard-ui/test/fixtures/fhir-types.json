@@ -1,0 +1,72 @@
+[
+  {
+    "resourceType": "AllergyIntolerance",
+    "total": 1,
+    "usCoreCompliant": 1
+  },
+  {
+    "resourceType": "Condition",
+    "total": 6,
+    "usCoreCompliant": 5
+  },
+  {
+    "resourceType": "Coverage",
+    "total": 2,
+    "usCoreCompliant": 2
+  },
+  {
+    "resourceType": "Device",
+    "total": 1,
+    "usCoreCompliant": 1
+  },
+  {
+    "resourceType": "DiagnosticReport",
+    "total": 1,
+    "usCoreCompliant": 1
+  },
+  {
+    "resourceType": "Encounter",
+    "total": 1,
+    "usCoreCompliant": 1
+  },
+  {
+    "resourceType": "MeasureReport",
+    "total": 1,
+    "usCoreCompliant": 1
+  },
+  {
+    "resourceType": "MedicationKnowledge",
+    "total": 3,
+    "usCoreCompliant": 3
+  },
+  {
+    "resourceType": "MedicationRequest",
+    "total": 5,
+    "usCoreCompliant": 5
+  },
+  {
+    "resourceType": "Observation",
+    "total": 7,
+    "usCoreCompliant": 7
+  },
+  {
+    "resourceType": "Organization",
+    "total": 2,
+    "usCoreCompliant": 2
+  },
+  {
+    "resourceType": "Patient",
+    "total": 43,
+    "usCoreCompliant": 41
+  },
+  {
+    "resourceType": "Practitioner",
+    "total": 2,
+    "usCoreCompliant": 2
+  },
+  {
+    "resourceType": "PractitionerRole",
+    "total": 2,
+    "usCoreCompliant": 1
+  }
+]

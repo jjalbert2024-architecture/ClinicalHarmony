@@ -285,12 +285,22 @@ services:
     networks:
       - clinicalharmony-net
 
+  # Phase 8: React SPA, built with node:24-alpine and served as static files by nginx:1.30.6-alpine.
+  # The BROWSER calls the gateway and Keycloak directly — both URLs are as the browser sees them
+  # (localhost), not compose service names. nginx proxies nothing; CORS is the gateway's
+  # (CORS_ALLOWED_ORIGINS above), and these two URLs also feed the page's Content-Security-Policy.
   dashboard-ui:
-    image: node:20-alpine
+    build:
+      context: ./dashboard-ui
+      dockerfile: Dockerfile
     container_name: clinicalharmony-dashboard-ui
-    command: ["sh", "-c", "echo '[placeholder] dashboard-ui — Phase 8' && sleep infinity"]
+    environment:
+      GATEWAY_URL: http://localhost:8080
+      KEYCLOAK_URL: http://localhost:8180
     depends_on:
-      - api-gateway
+      # Started, not healthy: the SPA shows "gateway unreachable" with a retry rather than failing to serve.
+      api-gateway:
+        condition: service_started
     ports:
       - "3000:3000"
     networks:

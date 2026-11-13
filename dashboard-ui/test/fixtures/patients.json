@@ -1,0 +1,57 @@
+{
+  "items": [
+    {
+      "id": 3,
+      "uuid": "4a062321-18a0-4d2a-8f7f-dbd344e12651",
+      "firstName": "",
+      "lastName": "",
+      "dateOfBirth": "1990-01-01",
+      "gender": "unknown",
+      "matchStatus": "MATCHED",
+      "matchConfidenceScore": null,
+      "sourcePatientCount": 1,
+      "active": true,
+      "sourceSystems": [
+        "SEED_CLAIMS_CSV"
+      ],
+      "updatedAt": "2026-11-12T08:53:10.493528Z"
+    },
+    {
+      "id": 1,
+      "uuid": "46a58907-f72f-4f7c-b408-b91847652c79",
+      "firstName": "Maria",
+      "lastName": "Garcia",
+      "dateOfBirth": "1968-04-12",
+      "gender": "female",
+      "matchStatus": "MATCHED",
+      "matchConfidenceScore": 1.0,
+      "sourcePatientCount": 2,
+      "active": true,
+      "sourceSystems": [
+        "SEED_CLAIMS_CSV",
+        "SEED_EPIC_ADT"
+      ],
+      "updatedAt": "2026-11-12T09:22:31.043072Z"
+    },
+    {
+      "id": 6,
+      "uuid": "faf13e32-fb74-423b-bc45-5dce9de5b51c",
+      "firstName": "Maria",
+      "lastName": "Garcia",
+      "dateOfBirth": "1968-12-04",
+      "gender": "female",
+      "matchStatus": "MATCHED",
+      "matchConfidenceScore": null,
+      "sourcePatientCount": 1,
+      "active": true,
+      "sourceSystems": [
+        "SEED_EPIC_ADT"
+      ],
+      "updatedAt": "2026-11-12T09:22:31.043072Z"
+    }
+  ],
+  "page": 0,
+  "size": 3,
+  "total": 32,
+  "totalPages": 11
+}

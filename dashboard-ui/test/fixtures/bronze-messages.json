@@ -1,0 +1,32 @@
+{
+  "items": [
+    {
+      "id": 189,
+      "sourceSystem": "UNKNOWN_CLAIMS_SOURCE",
+      "messageType": "CLAIMS_CSV",
+      "messageFormat": "CSV",
+      "processingStatus": "QUARANTINED",
+      "payloadChecksum": "cc4eed1e63e7015231396f379c6234e2c87b549e4fe9868b14f0d52b84c04702",
+      "payloadLength": 101,
+      "errorMessage": "Row 2 has 2 columns, header has 3",
+      "receivedAt": "2026-11-13T07:42:55.282973Z",
+      "processedAt": null
+    },
+    {
+      "id": 188,
+      "sourceSystem": "UNKNOWN_CLAIMS_SOURCE",
+      "messageType": "CLAIMS_CSV",
+      "messageFormat": "CSV",
+      "processingStatus": "PENDING",
+      "payloadChecksum": "14b44c980f4ce33107c9a9ad0b677127a052871d76ffc62532cd5362dd07f565",
+      "payloadLength": 106,
+      "errorMessage": null,
+      "receivedAt": "2026-11-13T07:42:55.264281Z",
+      "processedAt": null
+    }
+  ],
+  "page": 0,
+  "size": 2,
+  "total": 189,
+  "totalPages": 95
+}

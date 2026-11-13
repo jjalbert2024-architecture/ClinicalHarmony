@@ -1,0 +1,37 @@
+{
+  "target": "gold.fhir_resources",
+  "targetId": 46,
+  "records": [
+    {
+      "id": 40,
+      "step": "FHIR_MAP",
+      "sourceSchema": "silver",
+      "sourceTable": "conditions",
+      "sourceId": 5,
+      "targetSchema": "gold",
+      "targetTable": "fhir_resources",
+      "targetId": 46,
+      "transformedAt": "2026-11-13T07:42:58.739693Z",
+      "details": {
+        "steps": [
+          {
+            "ref": "silver.conditions/5",
+            "stage": "SILVER",
+            "timestamp": "2026-11-11T12:26:08.416575Z",
+            "transformer": "Silver load with no Bronze link (source_system=SEED_CLAIMS_CSV)"
+          },
+          {
+            "ref": "gold.fhir_resources/46",
+            "stage": "GOLD",
+            "timestamp": "2026-11-13T07:42:58.745720631Z",
+            "input_hash": "73bb34417f36c672d85899275f6aea8b66b532e44cdc04901a6eafcf86d8e23a",
+            "output_hash": "90f82a0c417c44d4fe1594e8bcccf2af9e37b12a7794e07098268ed3c011526b",
+            "transformer": "fhir-compliance-service ConditionResourceBuilder + HL7 validator (http://hl7.org/fhir/us/core/StructureDefinition/us-core-condition-problems-health-concerns)"
+          }
+        ],
+        "target": "Condition/silver-condition-5"
+      }
+    }
+  ],
+  "bronzeMessages": []
+}

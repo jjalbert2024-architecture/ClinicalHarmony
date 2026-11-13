@@ -1,0 +1,31 @@
+{
+  "resourceType": "Patient",
+  "resourceId": "x",
+  "profile": "http://hl7.org/fhir/us/core/StructureDefinition/us-core-patient",
+  "compliant": false,
+  "errorCount": 2,
+  "warningCount": 1,
+  "violations": [
+    {
+      "severity": "ERROR",
+      "location": "Patient.identifier",
+      "message": "Patient.identifier: minimum required = 1, but only found 0 (from http://hl7.org/fhir/us/core/StructureDefinition/us-core-patient|6.1.0)",
+      "rule": "Validation_VAL_Profile_Minimum",
+      "suggestedFix": "Add a 'identifier' element (Patient.identifier) \u2014 US Core requires it."
+    },
+    {
+      "severity": "ERROR",
+      "location": "Patient.name",
+      "message": "Patient.name: minimum required = 1, but only found 0 (from http://hl7.org/fhir/us/core/StructureDefinition/us-core-patient|6.1.0)",
+      "rule": "Validation_VAL_Profile_Minimum",
+      "suggestedFix": "Add a 'name' element (Patient.name) \u2014 US Core requires it."
+    },
+    {
+      "severity": "WARNING",
+      "location": "Patient",
+      "message": "Constraint failed: dom-6: 'A resource should have narrative for robust management' (defined in http://hl7.org/fhir/StructureDefinition/DomainResource) (Best Practice Recommendation)",
+      "rule": "dom-6",
+      "suggestedFix": "Add a human-readable narrative: a 'text' element with status 'generated' and an XHTML div summarizing the resource."
+    }
+  ]
+}

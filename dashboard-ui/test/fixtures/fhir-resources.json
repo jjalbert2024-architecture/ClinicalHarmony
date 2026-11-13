@@ -1,0 +1,32 @@
+{
+  "items": [
+    {
+      "id": 5,
+      "resourceType": "AllergyIntolerance",
+      "fhirId": "allergyintolerance-4",
+      "masterPatientId": null,
+      "usCoreCompliant": true,
+      "complianceStatus": null,
+      "errorCount": null,
+      "warningCount": null,
+      "profile": null,
+      "updatedAt": "2026-11-13T07:42:56.421776Z"
+    },
+    {
+      "id": 2,
+      "resourceType": "Condition",
+      "fhirId": "condition-1",
+      "masterPatientId": null,
+      "usCoreCompliant": true,
+      "complianceStatus": null,
+      "errorCount": null,
+      "warningCount": null,
+      "profile": null,
+      "updatedAt": "2026-11-13T07:42:56.421776Z"
+    }
+  ],
+  "page": 0,
+  "size": 2,
+  "total": 77,
+  "totalPages": 39
+}

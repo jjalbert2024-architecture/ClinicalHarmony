@@ -1,0 +1,40 @@
+{
+  "items": [
+    {
+      "id": 323,
+      "ruleCode": "USCORE_MEDICATIONREQUEST_COMPLETENESS",
+      "ruleName": "US Core MedicationRequest Missing Required Field",
+      "ruleCategory": "DATA_QUALITY",
+      "severity": "WARNING",
+      "entityType": "MEDICATIONREQUEST",
+      "entityId": 900,
+      "patientId": 900,
+      "message": "MedicationRequest/m2 is missing required US Core field(s): medicationCodeableConcept|medicationReference",
+      "badValue": "medicationCodeableConcept|medicationReference",
+      "suggestedValue": "Populate the missing required field(s) before FHIR export",
+      "resolved": false,
+      "resolvedAt": null,
+      "validatedAt": "2026-11-13T07:42:56.20419Z"
+    },
+    {
+      "id": 322,
+      "ruleCode": "USCORE_PATIENT_COMPLETENESS",
+      "ruleName": "US Core Patient Missing Required Field",
+      "ruleCategory": "DATA_QUALITY",
+      "severity": "WARNING",
+      "entityType": "PATIENT",
+      "entityId": 900,
+      "patientId": 900,
+      "message": "Patient/p2 is missing required US Core field(s): identifier, name, birthDate",
+      "badValue": "identifier,name,birthDate",
+      "suggestedValue": "Populate the missing required field(s) before FHIR export",
+      "resolved": false,
+      "resolvedAt": null,
+      "validatedAt": "2026-11-13T07:42:56.202105Z"
+    }
+  ],
+  "page": 0,
+  "size": 2,
+  "total": 322,
+  "totalPages": 161
+}

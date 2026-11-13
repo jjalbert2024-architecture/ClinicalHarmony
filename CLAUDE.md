@@ -617,6 +617,10 @@ Phases are meant to be fully complete before the next starts. Current state as o
     `clinicalharmony.bronze.hl7v2.raw` (ACK only after Kafka `acks=all`) → new bronze listener (group
     `bronze-writer`) writes `bronze.raw_messages` idempotently (needs unique source + checksum),
     QUARANTINED kept, DLT for technical failures → outbox → `clinicalharmony.bronze.ingested`.
+    Generator: option A only (writes seeded .hl7 files, then sends them over MLLP; no folder pickup).
+    Add **Kafbat UI** (`kafbat/kafka-ui`, maintained Apache-2.0 fork of provectuslabs/kafka-ui) to compose
+    on a free host port to watch topics / messages / consumer lag — confirm image version + size with the
+    user before pulling. CLI fallback: `kafka-consumer-groups --describe` inside the kafka container.
   - **9b** Silver: new silver transformer (group `silver-transformer`) reads the Bronze row by id, maps
     MSH/PID/DG1/OBX/RXE-RXO (AL1 needs a new `silver.allergies`), replaces child rows per
     `raw_message_id`, Bronze → PROCESSED/FAILED, calls rules-engine with real Silver ids (fail-open →

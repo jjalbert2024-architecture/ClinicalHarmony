@@ -1,0 +1,99 @@
+{
+  "summary": {
+    "id": 46,
+    "resourceType": "Condition",
+    "fhirId": "silver-condition-5",
+    "masterPatientId": 3,
+    "usCoreCompliant": false,
+    "complianceStatus": null,
+    "errorCount": 1,
+    "warningCount": 0,
+    "profile": "http://hl7.org/fhir/us/core/StructureDefinition/us-core-condition-problems-health-concerns",
+    "updatedAt": "2026-11-13T07:42:58.739693Z"
+  },
+  "resource": {
+    "id": "silver-condition-5",
+    "meta": {
+      "profile": [
+        "http://hl7.org/fhir/us/core/StructureDefinition/us-core-condition-problems-health-concerns"
+      ]
+    },
+    "text": {
+      "div": "<div xmlns=\"http://www.w3.org/1999/xhtml\">Condition: (unknown) (ICD-10 (unknown)), active</div>",
+      "status": "generated"
+    },
+    "subject": {
+      "reference": "Patient/silver-patient-3"
+    },
+    "category": [
+      {
+        "coding": [
+          {
+            "code": "problem-list-item",
+            "system": "http://terminology.hl7.org/CodeSystem/condition-category",
+            "display": "Problem List Item"
+          }
+        ]
+      }
+    ],
+    "recordedDate": "2024-05-01",
+    "resourceType": "Condition",
+    "clinicalStatus": {
+      "coding": [
+        {
+          "code": "active",
+          "system": "http://terminology.hl7.org/CodeSystem/condition-clinical"
+        }
+      ]
+    }
+  },
+  "complianceNotes": {
+    "profile": "http://hl7.org/fhir/us/core/StructureDefinition/us-core-condition-problems-health-concerns",
+    "compliant": false,
+    "validator": "HL7 FHIR Validator (HAPI FHIR 8.2.0) / US Core 6.1.0, Da Vinci US Drug Formulary 2.1.0, Da Vinci DEQM 5.0.0",
+    "errorCount": 1,
+    "violations": [
+      {
+        "rule": "Validation_VAL_Profile_Minimum",
+        "message": "Condition.code: minimum required = 1, but only found 0 (from http://hl7.org/fhir/us/core/StructureDefinition/us-core-condition-problems-health-concerns|6.1.0)",
+        "location": "Condition.code",
+        "severity": "ERROR",
+        "suggestedFix": "Add a 'code' element (Condition.code) \u2014 US Core requires it."
+      }
+    ],
+    "validatedAt": "2026-11-13T07:42:58.745189464Z",
+    "warningCount": 0
+  },
+  "lineage": [
+    {
+      "id": 40,
+      "step": "FHIR_MAP",
+      "sourceSchema": "silver",
+      "sourceTable": "conditions",
+      "sourceId": 5,
+      "targetSchema": "gold",
+      "targetTable": "fhir_resources",
+      "targetId": 46,
+      "transformedAt": "2026-11-13T07:42:58.739693Z",
+      "details": {
+        "steps": [
+          {
+            "ref": "silver.conditions/5",
+            "stage": "SILVER",
+            "timestamp": "2026-11-11T12:26:08.416575Z",
+            "transformer": "Silver load with no Bronze link (source_system=SEED_CLAIMS_CSV)"
+          },
+          {
+            "ref": "gold.fhir_resources/46",
+            "stage": "GOLD",
+            "timestamp": "2026-11-13T07:42:58.745720631Z",
+            "input_hash": "73bb34417f36c672d85899275f6aea8b66b532e44cdc04901a6eafcf86d8e23a",
+            "output_hash": "90f82a0c417c44d4fe1594e8bcccf2af9e37b12a7794e07098268ed3c011526b",
+            "transformer": "fhir-compliance-service ConditionResourceBuilder + HL7 validator (http://hl7.org/fhir/us/core/StructureDefinition/us-core-condition-problems-health-concerns)"
+          }
+        ],
+        "target": "Condition/silver-condition-5"
+      }
+    }
+  ]
+}

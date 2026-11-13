@@ -1,0 +1,115 @@
+{
+  "master": {
+    "id": 1,
+    "uuid": "46a58907-f72f-4f7c-b408-b91847652c79",
+    "firstName": "Maria",
+    "lastName": "Garcia",
+    "dateOfBirth": "1968-04-12",
+    "gender": "female",
+    "matchStatus": "MATCHED",
+    "matchConfidenceScore": 1.0,
+    "sourcePatientCount": 2,
+    "active": true,
+    "sourceSystems": [
+      "SEED_CLAIMS_CSV",
+      "SEED_EPIC_ADT"
+    ],
+    "updatedAt": "2026-11-12T09:22:31.043072Z"
+  },
+  "mergedIntoMasterId": null,
+  "sources": [
+    {
+      "silverPatientId": 1,
+      "sourceSystem": "SEED_EPIC_ADT",
+      "sourcePatientId": "SEED-0001",
+      "mrn": "MRN100001",
+      "firstName": "Maria",
+      "lastName": "Garcia",
+      "dateOfBirth": "1968-04-12",
+      "gender": "female",
+      "addressLine1": "1200 Congress Ave",
+      "city": "Austin",
+      "state": "TX",
+      "postalCode": "78701",
+      "phone": "512-555-0101",
+      "rawMessageId": null
+    },
+    {
+      "silverPatientId": 7,
+      "sourceSystem": "SEED_CLAIMS_CSV",
+      "sourcePatientId": "PMI-0001",
+      "mrn": null,
+      "firstName": "Maria",
+      "lastName": "Garcia",
+      "dateOfBirth": "1968-04-12",
+      "gender": "female",
+      "addressLine1": "1200 Congress Avenue",
+      "city": "Austin",
+      "state": "TX",
+      "postalCode": "78701",
+      "phone": "(512) 555-0101",
+      "rawMessageId": null
+    }
+  ],
+  "merges": [
+    {
+      "mergeId": 8,
+      "survivorMasterId": 1,
+      "absorbedMasterId": 6,
+      "score": 0.6471,
+      "matchMethod": "MANUAL",
+      "decidedBy": "reviewer:dana via patient-index-service",
+      "mergedAt": "2026-11-12T09:22:26.453069Z",
+      "movedSilverPatients": 1,
+      "unmergedAt": "2026-11-12T09:22:31.043072Z",
+      "unmergedBy": "reviewer:lee via patient-index-service",
+      "unmergeReason": "Different person after chart review"
+    },
+    {
+      "mergeId": 1,
+      "survivorMasterId": 1,
+      "absorbedMasterId": 4,
+      "score": 1.0,
+      "matchMethod": "DETERMINISTIC",
+      "decidedBy": "pmi-run-1 via patient-index-service",
+      "mergedAt": "2026-11-12T08:53:10.452931Z",
+      "movedSilverPatients": 1,
+      "unmergedAt": null,
+      "unmergedBy": null,
+      "unmergeReason": null
+    }
+  ],
+  "fhirResources": [
+    {
+      "resourceType": "Condition",
+      "total": 2,
+      "usCoreCompliant": 2
+    },
+    {
+      "resourceType": "Coverage",
+      "total": 1,
+      "usCoreCompliant": 1
+    },
+    {
+      "resourceType": "MeasureReport",
+      "total": 1,
+      "usCoreCompliant": 1
+    },
+    {
+      "resourceType": "MedicationRequest",
+      "total": 2,
+      "usCoreCompliant": 2
+    },
+    {
+      "resourceType": "Observation",
+      "total": 3,
+      "usCoreCompliant": 3
+    },
+    {
+      "resourceType": "Patient",
+      "total": 2,
+      "usCoreCompliant": 2
+    }
+  ],
+  "pendingReviews": 0
+}

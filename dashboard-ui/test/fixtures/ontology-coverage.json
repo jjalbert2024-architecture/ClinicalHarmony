@@ -1,0 +1,85 @@
+{
+  "terminologies": [
+    {
+      "terminology": "ICD-10",
+      "referenceSetSize": 20,
+      "usages": 4,
+      "distinctCodes": 4,
+      "knownDistinctCodes": 3,
+      "knownUsages": 3,
+      "coveragePercent": 75.0,
+      "openFindings": 68,
+      "validationRule": "CODE-001",
+      "topUnknownCodes": [
+        {
+          "code": "",
+          "usages": 1
+        }
+      ]
+    },
+    {
+      "terminology": "SNOMED-CT",
+      "referenceSetSize": 15,
+      "usages": 1,
+      "distinctCodes": 1,
+      "knownDistinctCodes": 1,
+      "knownUsages": 1,
+      "coveragePercent": 100.0,
+      "openFindings": 3,
+      "validationRule": "CODE-004",
+      "topUnknownCodes": []
+    },
+    {
+      "terminology": "LOINC",
+      "referenceSetSize": 20,
+      "usages": 6,
+      "distinctCodes": 6,
+      "knownDistinctCodes": 6,
+      "knownUsages": 6,
+      "coveragePercent": 100.0,
+      "openFindings": 23,
+      "validationRule": "CODE-002",
+      "topUnknownCodes": []
+    },
+    {
+      "terminology": "RxNorm",
+      "referenceSetSize": 21,
+      "usages": 4,
+      "distinctCodes": 4,
+      "knownDistinctCodes": 4,
+      "knownUsages": 4,
+      "coveragePercent": 100.0,
+      "openFindings": 23,
+      "validationRule": "CODE-003",
+      "topUnknownCodes": []
+    }
+  ],
+  "mappings": [
+    {
+      "sourceSystem": "SNOMED",
+      "targetSystem": "ICD-10",
+      "mappingType": "BROADER",
+      "count": 1
+    },
+    {
+      "sourceSystem": "SNOMED",
+      "targetSystem": "ICD-10",
+      "mappingType": "EQUIVALENT",
+      "count": 19
+    }
+  ],
+  "mappingCoverage": [
+    {
+      "usedTerminology": "SNOMED-CT",
+      "distinctUsedCodes": 1,
+      "withMapping": 1,
+      "mapsTo": "ICD-10"
+    },
+    {
+      "usedTerminology": "ICD-10",
+      "distinctUsedCodes": 4,
+      "withMapping": 2,
+      "mapsTo": "SNOMED-CT"
+    }
+  ]
+}

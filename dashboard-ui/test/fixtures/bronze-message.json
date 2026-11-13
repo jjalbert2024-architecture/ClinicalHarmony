@@ -1,0 +1,16 @@
+{
+  "summary": {
+    "id": 1,
+    "sourceSystem": "CITY_HOSPITAL",
+    "messageType": "HL7V2",
+    "messageFormat": "TEXT",
+    "processingStatus": "PENDING",
+    "payloadChecksum": "a5d177569aebb02f29370645fb6e7a870ac4f7fd984e4f20da15c0364e45c4e9",
+    "payloadLength": 148,
+    "errorMessage": null,
+    "receivedAt": "2026-07-02T12:50:49.604104Z",
+    "processedAt": null
+  },
+  "rawPayload": "MSH|^~\\&|REG_SYSTEM|CITY_HOSPITAL|CLINICALHARMONY|INGESTION|20260702101500||ADT^A01^ADT_A01|MSG00001|P|2.5\rPID|1||MRN1^^^X^MR||DOE^JANE||19800515|F\r",
+  "silverRows": []
+}

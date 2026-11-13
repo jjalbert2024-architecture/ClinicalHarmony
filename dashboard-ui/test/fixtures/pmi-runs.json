@@ -1,0 +1,41 @@
+[
+  {
+    "id": 30,
+    "status": "COMPLETED",
+    "triggeredBy": "api:api-gateway",
+    "startedAt": "2026-11-13T07:51:18.944707Z",
+    "finishedAt": "2026-11-13T07:51:18.951213Z",
+    "provisionalMasters": 0,
+    "pairsCompared": 0,
+    "autoMerges": 0,
+    "queuedForReview": 0,
+    "confirmedSingletons": 0,
+    "errorMessage": null
+  },
+  {
+    "id": 29,
+    "status": "COMPLETED",
+    "triggeredBy": "api:api-gateway",
+    "startedAt": "2026-11-13T07:47:51.351856Z",
+    "finishedAt": "2026-11-13T07:47:51.358704Z",
+    "provisionalMasters": 0,
+    "pairsCompared": 0,
+    "autoMerges": 0,
+    "queuedForReview": 0,
+    "confirmedSingletons": 0,
+    "errorMessage": null
+  },
+  {
+    "id": 28,
+    "status": "COMPLETED",
+    "triggeredBy": "api:api-gateway",
+    "startedAt": "2026-11-13T07:43:05.625944Z",
+    "finishedAt": "2026-11-13T07:43:05.631231Z",
+    "provisionalMasters": 2,
+    "pairsCompared": 1,
+    "autoMerges": 0,
+    "queuedForReview": 1,
+    "confirmedSingletons": 0,
+    "errorMessage": null
+  }
+]

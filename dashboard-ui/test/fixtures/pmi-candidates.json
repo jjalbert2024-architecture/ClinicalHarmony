@@ -1,0 +1,262 @@
+[
+  {
+    "id": 27,
+    "runId": 28,
+    "silverPatientAId": 43,
+    "silverPatientBId": 44,
+    "masterAId": 40,
+    "masterBId": 41,
+    "score": 0.7143,
+    "matchMethod": "PROBABILISTIC",
+    "deterministicRule": null,
+    "breakdown": {
+      "score": 0.7143,
+      "fields": [
+        {
+          "field": "lastName",
+          "valueA": "gwbnbefarn",
+          "valueB": "gwbnbefarn",
+          "weight": 4.0,
+          "outcome": "EXACT",
+          "maxWeight": 4.0
+        },
+        {
+          "field": "firstName",
+          "valueA": "maria",
+          "valueB": "mario",
+          "weight": 2.0,
+          "outcome": "SIMILAR",
+          "maxWeight": 3.5,
+          "similarity": 0.92
+        },
+        {
+          "field": "birthDate",
+          "valueA": "1981-10-22",
+          "valueB": "1981-10-22",
+          "weight": 5.0,
+          "outcome": "EXACT",
+          "maxWeight": 5.0
+        },
+        {
+          "field": "gender",
+          "valueA": "female",
+          "valueB": "male",
+          "weight": -4.0,
+          "outcome": "DISAGREE",
+          "maxWeight": 0.5
+        },
+        {
+          "field": "phone",
+          "valueA": "4045551801",
+          "valueB": "4045551801",
+          "weight": 4.0,
+          "outcome": "EXACT",
+          "maxWeight": 4.0
+        },
+        {
+          "field": "postalCode",
+          "valueA": "30301",
+          "valueB": "30301",
+          "weight": 1.5,
+          "outcome": "EXACT",
+          "maxWeight": 1.5
+        },
+        {
+          "field": "address",
+          "valueA": "12 harbor rd",
+          "valueB": "12 harbor rd",
+          "weight": 2.5,
+          "outcome": "EXACT",
+          "maxWeight": 2.5
+        }
+      ],
+      "method": "PROBABILISTIC",
+      "decision": "REVIEW",
+      "maxWeight": 21.0,
+      "totalWeight": 15.0,
+      "weightedScore": 0.7143,
+      "silverPatientAId": 43,
+      "silverPatientBId": 44,
+      "deterministicRule": null
+    },
+    "status": "REJECTED",
+    "mergeId": null,
+    "reviewedBy": "dana",
+    "reviewedAt": "2026-11-13T07:43:05.765955Z",
+    "reviewNote": "twin brother",
+    "createdAt": "2026-11-13T07:43:05.630519Z"
+  },
+  {
+    "id": 26,
+    "runId": 26,
+    "silverPatientAId": 39,
+    "silverPatientBId": 42,
+    "masterAId": 36,
+    "masterBId": 39,
+    "score": 0.7143,
+    "matchMethod": "PROBABILISTIC",
+    "deterministicRule": null,
+    "breakdown": {
+      "score": 0.7143,
+      "fields": [
+        {
+          "field": "lastName",
+          "valueA": "smkrhpctwrd",
+          "valueB": "smkrhpctwrd",
+          "weight": 4.0,
+          "outcome": "EXACT",
+          "maxWeight": 4.0
+        },
+        {
+          "field": "firstName",
+          "valueA": "maria",
+          "valueB": "mario",
+          "weight": 2.0,
+          "outcome": "SIMILAR",
+          "maxWeight": 3.5,
+          "similarity": 0.92
+        },
+        {
+          "field": "birthDate",
+          "valueA": "1936-03-09",
+          "valueB": "1936-03-09",
+          "weight": 5.0,
+          "outcome": "EXACT",
+          "maxWeight": 5.0
+        },
+        {
+          "field": "gender",
+          "valueA": "female",
+          "valueB": "male",
+          "weight": -4.0,
+          "outcome": "DISAGREE",
+          "maxWeight": 0.5
+        },
+        {
+          "field": "phone",
+          "valueA": "4045554612",
+          "valueB": "4045554612",
+          "weight": 4.0,
+          "outcome": "EXACT",
+          "maxWeight": 4.0
+        },
+        {
+          "field": "postalCode",
+          "valueA": "30301",
+          "valueB": "30301",
+          "weight": 1.5,
+          "outcome": "EXACT",
+          "maxWeight": 1.5
+        },
+        {
+          "field": "address",
+          "valueA": "12 harbor rd",
+          "valueB": "12 harbor rd",
+          "weight": 2.5,
+          "outcome": "EXACT",
+          "maxWeight": 2.5
+        }
+      ],
+      "method": "PROBABILISTIC",
+      "decision": "REVIEW",
+      "maxWeight": 21.0,
+      "totalWeight": 15.0,
+      "weightedScore": 0.7143,
+      "silverPatientAId": 39,
+      "silverPatientBId": 42,
+      "deterministicRule": null
+    },
+    "status": "REJECTED",
+    "mergeId": null,
+    "reviewedBy": "smoke",
+    "reviewedAt": "2026-11-13T07:43:02.476847Z",
+    "reviewNote": "twin brother",
+    "createdAt": "2026-11-13T07:43:02.051321Z"
+  },
+  {
+    "id": 25,
+    "runId": 26,
+    "silverPatientAId": 39,
+    "silverPatientBId": 41,
+    "masterAId": 36,
+    "masterBId": 38,
+    "score": 0.6471,
+    "matchMethod": "PROBABILISTIC",
+    "deterministicRule": null,
+    "breakdown": {
+      "score": 0.6471,
+      "fields": [
+        {
+          "field": "lastName",
+          "valueA": "smkrhpctwrd",
+          "valueB": "smkrhpctwrd",
+          "weight": 4.0,
+          "outcome": "EXACT",
+          "maxWeight": 4.0
+        },
+        {
+          "field": "firstName",
+          "valueA": "maria",
+          "valueB": "maria",
+          "weight": 3.5,
+          "outcome": "EXACT",
+          "maxWeight": 3.5
+        },
+        {
+          "field": "birthDate",
+          "valueA": "1936-03-09",
+          "valueB": "1936-09-03",
+          "weight": 2.0,
+          "outcome": "PARTIAL",
+          "maxWeight": 5.0
+        },
+        {
+          "field": "gender",
+          "valueA": "female",
+          "valueB": "female",
+          "weight": 0.5,
+          "outcome": "EXACT",
+          "maxWeight": 0.5
+        },
+        {
+          "field": "phone",
+          "valueA": "4045554612",
+          "weight": 0.0,
+          "outcome": "MISSING",
+          "maxWeight": 0.0
+        },
+        {
+          "field": "postalCode",
+          "valueA": "30301",
+          "valueB": "30301",
+          "weight": 1.5,
+          "outcome": "EXACT",
+          "maxWeight": 1.5
+        },
+        {
+          "field": "address",
+          "valueA": "12 harbor rd",
+          "valueB": "88 peachtree st",
+          "weight": -0.5,
+          "outcome": "DISAGREE",
+          "maxWeight": 2.5,
+          "similarity": 0.5167
+        }
+      ],
+      "method": "PROBABILISTIC",
+      "decision": "REVIEW",
+      "maxWeight": 17.0,
+      "totalWeight": 11.0,
+      "weightedScore": 0.6471,
+      "silverPatientAId": 39,
+      "silverPatientBId": 41,
+      "deterministicRule": null
+    },
+    "status": "ACCEPTED",
+    "mergeId": 16,
+    "reviewedBy": "smoke",
+    "reviewedAt": "2026-11-13T07:43:02.665102Z",
+    "reviewNote": "DOB keyed day-first",
+    "createdAt": "2026-11-13T07:43:02.050161Z"
+  }
+]

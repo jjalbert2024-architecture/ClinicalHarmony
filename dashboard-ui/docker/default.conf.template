@@ -1,0 +1,37 @@
+# Rendered by the nginx image's envsubst step (only variables that are set get substituted).
+server {
+    listen 3000;
+    server_name _;
+    root /usr/share/nginx/html;
+    server_tokens off;
+    charset utf-8;
+
+    gzip on;
+    gzip_types text/css application/javascript application/json image/svg+xml;
+
+    location = /healthz {
+        access_log off;
+        default_type text/plain;
+        return 200 "ok\n";
+    }
+
+    # Runtime config and the HTML shell must never be cached: they change per deployment.
+    location = /config.js {
+        include /etc/nginx/snippets/security-headers.conf;
+        add_header Cache-Control "no-store" always;
+    }
+
+    # Vite's content-hashed bundles can be cached forever.
+    location /assets/ {
+        include /etc/nginx/snippets/security-headers.conf;
+        add_header Cache-Control "public, max-age=31536000, immutable" always;
+        try_files $uri =404;
+    }
+
+    # SPA: any unknown path (deep links such as /patients/12) serves index.html.
+    location / {
+        include /etc/nginx/snippets/security-headers.conf;
+        add_header Cache-Control "no-cache" always;
+        try_files $uri /index.html;
+    }
+}

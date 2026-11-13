@@ -1,0 +1,123 @@
+{
+  "candidate": {
+    "id": 27,
+    "runId": 28,
+    "silverPatientAId": 43,
+    "silverPatientBId": 44,
+    "masterAId": 40,
+    "masterBId": 41,
+    "score": 0.7143,
+    "matchMethod": "PROBABILISTIC",
+    "deterministicRule": null,
+    "breakdown": {
+      "score": 0.7143,
+      "fields": [
+        {
+          "field": "lastName",
+          "valueA": "gwbnbefarn",
+          "valueB": "gwbnbefarn",
+          "weight": 4.0,
+          "outcome": "EXACT",
+          "maxWeight": 4.0
+        },
+        {
+          "field": "firstName",
+          "valueA": "maria",
+          "valueB": "mario",
+          "weight": 2.0,
+          "outcome": "SIMILAR",
+          "maxWeight": 3.5,
+          "similarity": 0.92
+        },
+        {
+          "field": "birthDate",
+          "valueA": "1981-10-22",
+          "valueB": "1981-10-22",
+          "weight": 5.0,
+          "outcome": "EXACT",
+          "maxWeight": 5.0
+        },
+        {
+          "field": "gender",
+          "valueA": "female",
+          "valueB": "male",
+          "weight": -4.0,
+          "outcome": "DISAGREE",
+          "maxWeight": 0.5
+        },
+        {
+          "field": "phone",
+          "valueA": "4045551801",
+          "valueB": "4045551801",
+          "weight": 4.0,
+          "outcome": "EXACT",
+          "maxWeight": 4.0
+        },
+        {
+          "field": "postalCode",
+          "valueA": "30301",
+          "valueB": "30301",
+          "weight": 1.5,
+          "outcome": "EXACT",
+          "maxWeight": 1.5
+        },
+        {
+          "field": "address",
+          "valueA": "12 harbor rd",
+          "valueB": "12 harbor rd",
+          "weight": 2.5,
+          "outcome": "EXACT",
+          "maxWeight": 2.5
+        }
+      ],
+      "method": "PROBABILISTIC",
+      "decision": "REVIEW",
+      "maxWeight": 21.0,
+      "totalWeight": 15.0,
+      "weightedScore": 0.7143,
+      "silverPatientAId": 43,
+      "silverPatientBId": 44,
+      "deterministicRule": null
+    },
+    "status": "REJECTED",
+    "mergeId": null,
+    "reviewedBy": "dana",
+    "reviewedAt": "2026-11-13T07:43:05.765955Z",
+    "reviewNote": "twin brother",
+    "createdAt": "2026-11-13T07:43:05.630519Z"
+  },
+  "recordA": {
+    "silverPatientId": 43,
+    "masterPatientId": 40,
+    "masterStatus": "MATCHED",
+    "sourceSystem": "SMOKE_EPIC",
+    "sourcePatientId": "SMK-bnbefarn-GA",
+    "mrn": "MGAbnbefarn",
+    "firstName": "Maria",
+    "lastName": "Gwbnbefarn",
+    "dateOfBirth": "1981-10-22",
+    "gender": "female",
+    "addressLine1": "12 Harbor Rd",
+    "city": "Atlanta",
+    "state": "GA",
+    "postalCode": "30301",
+    "phone": "404-555-1801"
+  },
+  "recordB": {
+    "silverPatientId": 44,
+    "masterPatientId": 41,
+    "masterStatus": "MATCHED",
+    "sourceSystem": "SMOKE_EPIC",
+    "sourcePatientId": "SMK-bnbefarn-GT",
+    "mrn": "MGTbnbefarn",
+    "firstName": "Mario",
+    "lastName": "Gwbnbefarn",
+    "dateOfBirth": "1981-10-22",
+    "gender": "male",
+    "addressLine1": "12 Harbor Rd",
+    "city": "Atlanta",
+    "state": "GA",
+    "postalCode": "30301",
+    "phone": "404-555-1801"
+  }
+}

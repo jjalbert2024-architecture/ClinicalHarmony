@@ -1,0 +1,17 @@
+{
+  "apiVersion": "v1",
+  "auth": {
+    "issuer": "http://localhost:8180/realms/clinicalharmony",
+    "clientId": "clinicalharmony-dashboard",
+    "flow": "authorization_code",
+    "pkce": "S256",
+    "authorizationEndpoint": "http://localhost:8180/realms/clinicalharmony/protocol/openid-connect/auth",
+    "tokenEndpoint": "http://localhost:8180/realms/clinicalharmony/protocol/openid-connect/token",
+    "logoutEndpoint": "http://localhost:8180/realms/clinicalharmony/protocol/openid-connect/logout",
+    "scope": "openid",
+    "roles": {
+      "viewer": "dashboard-viewer",
+      "steward": "data-steward"
+    }
+  }
+}

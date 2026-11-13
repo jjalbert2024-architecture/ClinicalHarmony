@@ -114,6 +114,16 @@ Same `SPRING_PROFILES_ACTIVE` + `DB_*` + inbound `OAUTH_ISSUER_URI` / `OAUTH_JWK
 | `CORS_ALLOWED_ORIGINS` | `http://localhost:3000` | Comma-separated allowlist |
 | `INGESTION_BASE_URL` … `PATIENT_INDEX_BASE_URL` | `http://localhost:8081` … `:8085` | Downstream services (compose: service names) |
 
+### Environment variables (dashboard-ui)
+
+nginx container; both are URLs **as the browser sees them** (not compose service names), rendered at
+container start by `docker/40-runtime-config.sh` into `/config.js` and the CSP `connect-src`:
+
+| Variable | Default | Purpose |
+|---|---|---|
+| `GATEWAY_URL` | `http://localhost:8080` | The only runtime setting the SPA reads; everything about Keycloak comes from `GET /api/v1/config` |
+| `KEYCLOAK_URL` | `http://localhost:8180` | CSP `connect-src` only (code exchange + refresh go to Keycloak's token endpoint) |
+
 ### Environment variables (fhir-compliance-service)
 
 Same `SPRING_PROFILES_ACTIVE` + `DB_*` pattern as ontology-service, plus (Phase 5b slice 4):
@@ -162,7 +172,7 @@ api-gateway  →  dashboard-ui (React, 5 views)
 | rules-engine-service | 8083 | implemented |
 | api-gateway | 8080 | implemented (Phase 7) |
 | keycloak | 8180 | realm `clinicalharmony` (Phase 5b slice 4); container port 8080 |
-| dashboard-ui | 3000 | placeholder |
+| dashboard-ui | 3000 | implemented (Phase 8); nginx, static SPA |
 
 Services still showing `[placeholder]` in docker-compose.yml boot a bare `eclipse-temurin:17-jre` image and idle. When a service is implemented, replace its `image`/`command` with a `build:` block pointing to that service's `Dockerfile`.
 
@@ -464,6 +474,42 @@ needs read models no service exposes, not routing). User decisions at Phase 7 sc
   `ApiGatewayIntegrationTest` (Testcontainers, datasource = the read-only role, stubbed services,
   ontology on a dead port).
 
+### dashboard-ui (implemented — Phase 8)
+
+React 19 + TypeScript 7 (strict) SPA, Vite 8, React Router 8, TanStack Query 5, `oidc-client-ts` 3.5;
+no UI/chart library (hand-written CSS tokens + CSS/SVG bars and timeline strip). Talks ONLY to the
+api-gateway's `/api/v1` — no gateway change was needed for any view. User decisions at Phase 8
+scoping (all recommended):
+
+- **Toolchain in Docker, no Node on the host**: `docker run --rm -v "$PWD":/app -w /app node:24-alpine
+  npm test|run build|ci` from `dashboard-ui/`. Exact versions pinned (`.npmrc` save-exact), each ≥2
+  weeks old when chosen. The Dockerfile's build stage runs `npm test` + typecheck + `vite build`
+  (red tests = no image), then `nginx:1.30.6-alpine` serves `dist/`.
+- **Auth**: Auth Code + PKCE S256 against public client `clinicalharmony-dashboard`, endpoints passed
+  as explicit metadata from `GET /api/v1/config` (no discovery). Tokens in memory only
+  (`InMemoryWebStorage`); reload = silent redirect via Keycloak SSO back to the same route (route in
+  OIDC `state`, `safeReturnTo` blocks open redirects). Refresh = refresh-token grant only (CSP
+  forbids iframes). `ApiClient` on 401: refresh once, retry with the SAME correlation id, else
+  re-login. Logout → Keycloak end-session → `/signed-out`.
+- **Roles**: `/me.canAct` drives `StewardButton` — viewers see steward buttons disabled with
+  "Requires the data-steward role"; also disabled with "<service> is down" when `/services/health`
+  (polled 30 s) lists the owning service in `degraded`. Every steward action goes through
+  `ConfirmDialog` (unmerge reason + reject note required); the UI never sends `reviewer`.
+- **Errors**: one `ProblemView` for every RFC 7807 problem (detail, service, downstreamStatus,
+  errors[], copyable correlation id); unreachable gateway/CORS and non-JSON bodies get synthesized
+  problems. Every call sends `X-Correlation-Id: ui-<12 hex>`, visible in gateway + PMI logs.
+- **nginx**: no proxying (CORS stays the gateway's); SPA fallback, real 404 for missing assets,
+  no-cache index / no-store config.js / immutable hashed assets, strict CSP + nosniff/DENY/
+  no-referrer, `server_tokens off`, `/healthz`.
+- **Gotchas**: MSW 3 renamed `onUnhandledRequest` → `onUnhandledFrame` (old name silently ignored);
+  React StrictMode double-runs effects so the `/callback` exchange is memoized per attempt
+  (`startBoot` in `main.tsx`); the Vite dev server needs port 3000 (the only registered redirect
+  URI), so stop the compose container first.
+- **Tests (56, Vitest + jsdom + Testing Library + MSW)**: the MSW gateway stub serves REAL responses
+  captured from the live gateway (`test/fixtures/`), and any unhandled request fails the test.
+  No Playwright (2 GB image); instead smoke section 17 + `dashboard-ui/CHECKLIST.md` (12-step manual
+  click-through, replaces a Postman collection for this phase).
+
 ### Bronze schema invariants
 
 `bronze.raw_messages` CHECK constraints that Java code must match:
@@ -525,13 +571,14 @@ schema **`pmi`** (`match_runs`, `match_candidates` with a partial unique index o
   `@Testcontainers(disabledWithoutDocker = true)`, so `mvn test` still passes without Docker.
   Extend `integration/AbstractIntegrationTest` (shared context + DB) and use its `withScopes(...)` /
   `anonymous()` clients — endpoints are Bearer-protected since Phase 5b slice 4.
-- **Black-box smoke test** (`scripts/smoke-test.sh`): once the stack is up (`docker-compose up -d`), this hits all four implemented services' REST endpoints over HTTP and asserts on real responses — accept/quarantine outcomes, ontology validation results, all 7 rule-engine evaluations and live rule-toggle behavior, US Core structural validation (including a `requiredAnyOf` choice-type check), and FHIR generation round-tripped back through validation to cross-check the generator against the validator. Fixture payloads live in `scripts/fixtures/`. This replaces the earlier "verified manually" note — it's now a repeatable, scriptable check (224 assertions as of Phase 7; it fetches a Bearer token from the compose Keycloak for fhir-compliance-service and patient-index-service calls; section 15 = PMI, which inserts fresh random synthetic patients each run so it stays rerunnable; section 16 = api-gateway, with real dana/vic user tokens from the dev direct-grant client). Gold-layer checks with no HTTP surface yet (lineage, masters) use `check_sql` via `docker exec` into `clinicalharmony-postgres`.
+- **UI tests** (dashboard-ui, `test/*.test.ts(x)`): Vitest + jsdom + Testing Library against an MSW gateway stub serving real captured `/api/v1` responses; run in `node:24-alpine` via `docker run` (no host Node).
+- **Black-box smoke test** (`scripts/smoke-test.sh`): once the stack is up (`docker-compose up -d`), this hits all four implemented services' REST endpoints over HTTP and asserts on real responses — accept/quarantine outcomes, ontology validation results, all 7 rule-engine evaluations and live rule-toggle behavior, US Core structural validation (including a `requiredAnyOf` choice-type check), and FHIR generation round-tripped back through validation to cross-check the generator against the validator. Fixture payloads live in `scripts/fixtures/`. This replaces the earlier "verified manually" note — it's now a repeatable, scriptable check (239 assertions as of Phase 8; it fetches a Bearer token from the compose Keycloak for fhir-compliance-service and patient-index-service calls; section 15 = PMI, which inserts fresh random synthetic patients each run so it stays rerunnable; section 16 = api-gateway, with real dana/vic user tokens from the dev direct-grant client; section 17 = dashboard-ui's nginx: SPA fallback, caching, CSP/headers, runtime config, Keycloak accepting the dashboard's PKCE request and refusing it without PKCE or with a foreign redirect, CORS). Gold-layer checks with no HTTP surface yet (lineage, masters) use `check_sql` via `docker exec` into `clinicalharmony-postgres`.
 
 ## Local Docker environment
 
 **Port conflicts**: an unrelated "medistream" project auto-starts containers on ports 5432, 3306, 9092, 2181, and 8083 whenever Docker Desktop restarts. Do not stop or reconfigure those containers. Use a throwaway `docker network create` + `docker run` for isolated local verification rather than `docker-compose.override.yml` (Compose merges `ports:` by concatenation, so overrides can't replace conflicting mappings).
 
-**Apple Silicon image constraint**: `eclipse-temurin:*-alpine` tags have no arm64 manifest and will fail to pull on this machine. Always use the Debian-based tag (e.g. `eclipse-temurin:17-jre`) for all service Dockerfiles. This applies to Phase 3 onward, not just ingestion-service.
+**Apple Silicon image constraint**: `eclipse-temurin:*-alpine` tags have no arm64 manifest and will fail to pull on this machine. Always use the Debian-based tag (e.g. `eclipse-temurin:17-jre`) for all service Dockerfiles. This applies to Phase 3 onward, not just ingestion-service. (The `node:*-alpine` and `nginx:*-alpine` images used by dashboard-ui DO have arm64 manifests — the problem is specific to eclipse-temurin.)
 
 **Network desync after multiple daemon restarts**: after several `open -a Docker` restarts in one session, a container's `HostConfig.NetworkMode` can say it's on `clinicalharmony_clinicalharmony-net` while `NetworkSettings.Networks` is actually empty (`{}`) — other containers then get `UnknownHostException` resolving it by service name, even though the container itself is `Up`/healthy. `docker network connect` and `docker restart` on just the affected container do **not** reliably fix this. The reliable fix: `docker compose down` (no `-v`, volume/data untouched) then `docker compose up -d` again — cheap since it doesn't touch the Postgres volume, and fully resets the network.
 
@@ -560,6 +607,6 @@ Phases are meant to be fully complete before the next starts. Current state as o
 - **Phase 6** (done, merged as PR #12): patient-index-service (PMI + deduplication) — see its
   section above.
 - **Phase 7** (done, merged as PR #13): api-gateway — see its section above.
-- **Phase 8**: dashboard-ui (React, 5 views)
+- **Phase 8** (built, in review on branch `dashboard-ui`): dashboard-ui — see its section above.
 - **Phase 9**: data-generator (Python)
 - **Phase 10**: Polish, final Docker test, demo script

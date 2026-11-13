@@ -239,12 +239,47 @@ services:
       - clinicalharmony-net
 
   api-gateway:
-    image: eclipse-temurin:17-jre
+    build:
+      context: ./api-gateway
+      dockerfile: Dockerfile
     container_name: clinicalharmony-api-gateway
-    command: ["sh", "-c", "echo '[placeholder] api-gateway — Phase 7' && sleep infinity"]
+    environment:
+      SPRING_PROFILES_ACTIVE: docker
+      DB_HOST: postgres
+      DB_PORT: 5432
+      DB_NAME: clinicalharmony
+      # Least-privilege, read-only login from docs/db-init/22 — the gateway never writes.
+      DB_USER: clinicalharmony_gateway_ro
+      DB_PASSWORD: gateway-ro-dev-password  # DEV-ONLY
+      # Inbound: USER tokens from the dashboard clients (audience clinicalharmony-gateway).
+      OAUTH_ISSUER_URI: http://localhost:8180/realms/clinicalharmony
+      OAUTH_JWK_SET_URI: http://keycloak:8080/realms/clinicalharmony/protocol/openid-connect/certs
+      # Outbound: the gateway's own client for calling the services.
+      OAUTH_TOKEN_URI: http://keycloak:8080/realms/clinicalharmony/protocol/openid-connect/token
+      GATEWAY_CLIENT_ID: api-gateway
+      GATEWAY_CLIENT_SECRET: api-gateway-secret  # DEV-ONLY, from keycloak/realm-clinicalharmony.json
+      CORS_ALLOWED_ORIGINS: http://localhost:3000
+      INGESTION_BASE_URL: http://ingestion-service:8081
+      ONTOLOGY_BASE_URL: http://ontology-service:8082
+      RULES_ENGINE_BASE_URL: http://rules-engine-service:8083
+      FHIR_COMPLIANCE_BASE_URL: http://fhir-compliance-service:8084
+      PATIENT_INDEX_BASE_URL: http://patient-index-service:8085
     depends_on:
       postgres:
         condition: service_healthy
+      keycloak:
+        condition: service_healthy
+      # Started, not healthy: a downstream that's down is a 503 for its actions, not a gateway that won't boot.
+      ingestion-service:
+        condition: service_started
+      ontology-service:
+        condition: service_started
+      rules-engine-service:
+        condition: service_started
+      fhir-compliance-service:
+        condition: service_started
+      patient-index-service:
+        condition: service_started
     ports:
       - "8080:8080"
     networks:

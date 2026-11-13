@@ -607,6 +607,6 @@ Phases are meant to be fully complete before the next starts. Current state as o
 - **Phase 6** (done, merged as PR #12): patient-index-service (PMI + deduplication) — see its
   section above.
 - **Phase 7** (done, merged as PR #13): api-gateway — see its section above.
-- **Phase 8** (built, in review on branch `dashboard-ui`): dashboard-ui — see its section above.
+- **Phase 8** (done, merged as PR #14): dashboard-ui — see its section above.
 - **Phase 9**: data-generator (Python)
 - **Phase 10**: Polish, final Docker test, demo script

@@ -21,11 +21,12 @@ problems, it never hides them** — malformed input is quarantined rather than d
 never papered over with invented values, so a non-compliant resource is flagged with the exact
 reason instead of quietly "fixed".
 
-> **Status (2026-11-13):** Phases 1–8 and all four Phase 5b slices are done (Phase 8, the React
-> dashboard, merged as PR #14). Next is Phase 9, the synthetic data generator. Six services
-> are live — ingestion, ontology, rules engine, FHIR compliance, patient index and the API gateway
-> in front of them — plus Keycloak as the authorization server, and the dashboard on
-> `localhost:3000`. See the [Roadmap](#roadmap).
+> **Status (2026-11-14):** Phases 1–8 and all four Phase 5b slices are done (Phase 8, the React
+> dashboard, merged as PR #14). **Phase 9a (Bronze over Kafka) is built, in review:** HL7 v2 from
+> the new `data-generator` goes over MLLP into Kafka, and a new `bronze-listener-service` stores it in
+> Bronze. Seven services are live — ingestion, bronze listener, ontology, rules engine, FHIR
+> compliance, patient index and the API gateway in front of them — plus Kafka (KRaft), Kafbat UI,
+> Keycloak as the authorization server, and the dashboard on `localhost:3000`. See the [Roadmap](#roadmap).
 
 ## Architecture
 
@@ -38,9 +39,14 @@ stage, orchestrated by Docker Compose.
                             ▼                  ▼              ▼                    │
   INGEST            ┌─────────────────────────────────────────────┐                │
                     │ ingestion-service              ✅ Phase 2   │                │
-                    └─────────────────────┬───────────────────────┘                │
-                                          ▼                                        │
+                    └──────────┬──────────────────────────┬───────┘                │
+                    MLLP (9a)  ▼                          │ REST                   │
+  KAFKA             clinicalharmony.bronze.hl7v2.raw      │                        │
+                               ▼                          │                        │
+                    bronze-listener-service  🔄 9a        │                        │
+                               ▼                          ▼                        │
   BRONZE            bronze.raw_messages  (every payload + SHA-256; bad → QUARANTINED)
+                               │ outbox → clinicalharmony.bronze.ingested (for 9b)
                                           │
                                           ▼  (Silver parsing: not yet built)       │
   SILVER            silver.patients · conditions · observations · medications       │
@@ -67,7 +73,7 @@ stage, orchestrated by Docker Compose.
   SERVE             CMS-0057 FHIR read APIs ✅ 5b  ·  SMART on FHIR ✅ 5b  ·  api-gateway ✅ 7
                                           │
                                           ▼
-  VIEW              dashboard-ui 🔄 8   Patient Timeline · Ontology Coverage ·
+  VIEW              dashboard-ui ✅ 8   Patient Timeline · Ontology Coverage ·
                                        Validation Report · FHIR Viewer · Data Lineage
 ```
 
@@ -75,14 +81,15 @@ stage, orchestrated by Docker Compose.
 
 | Service | Port | Phase | Responsibility | Status |
 |---|---|---|---|---|
-| [`ingestion-service`](ingestion-service) | 8081 (+ MLLP 8887) | 2 / 2b | Apache Camel MLLP listener + REST intake for HL7 v2, FHIR JSON and claims CSV; checksums, quarantine, real HL7 ACK/NAK | ✅ Implemented |
+| [`ingestion-service`](ingestion-service) | 8081 (+ MLLP 8887) | 2 / 2b / 9a | Apache Camel MLLP listener + REST intake for HL7 v2, FHIR JSON and claims CSV; checksums, quarantine, real HL7 ACK/NAK. Since 9a, MLLP messages are published to Kafka (ACK `AA` only after `acks=all`) instead of written to Bronze directly | ✅ Implemented (9a change in review) |
+| [`bronze-listener-service`](bronze-listener-service) | 8086 | 9a | Kafka consumer group `bronze-writer`: `clinicalharmony.bronze.hl7v2.raw` → `bronze.raw_messages` (PENDING / QUARANTINED, idempotent), transactional outbox → `clinicalharmony.bronze.ingested`, retries then `.dlt`, JSON logs | 🔄 Built, in review |
 | [`ontology-service`](ontology-service) | 8082 | 3 | Code validation (ICD-10, SNOMED CT, LOINC, RxNorm) and SNOMED ↔ ICD-10 concept mapping | ✅ Implemented |
 | [`rules-engine-service`](rules-engine-service) | 8083 | 4 | 7 clinical plausibility rules, tunable as data (JSONB), orchestrated with ontology validation | ✅ Implemented |
 | [`fhir-compliance-service`](fhir-compliance-service) | 8084 | 5 / 5b | Official HL7 FHIR validator vs US Core 6.1.0 + Da Vinci Formulary/DEQM, Silver → FHIR builders, C-CDA → FHIR conversion, GoldWriter (master patients, FHIR resources, lineage), CMS-0057-F read API, SMART on FHIR backend-services auth (Keycloak) | ✅ Done (PR #7–#11) |
 | [`patient-index-service`](patient-index-service) | 8085 | 6 | Master patient index: blocking + deterministic rules + Fellegi-Sunter-style weighted matching across sources, auto-merge / review queue / unmerge, applied to Gold through GoldWriter | ✅ Done (PR #12) |
 | [`api-gateway`](api-gateway) | 8080 | 7 | Backend-for-frontend for the dashboard: `/api/v1` read models for the 5 views over a read-only DB role, actions proxied to the owning service with its own Keycloak client; user login via Keycloak (PKCE), viewer/steward roles, RFC 7807 errors, correlation ids end to end | ✅ Done (PR #13) |
 | [`dashboard-ui`](dashboard-ui) | 3000 | 8 | React + TypeScript SPA for the 5 views, talking only to `/api/v1`; Keycloak Auth Code + PKCE (tokens in memory), viewer/steward UI with confirmed steward actions, RFC 7807 problems with correlation ids, DEGRADED-aware; static build behind nginx with a strict CSP | ✅ Done (PR #14) |
-| [`data-generator`](data-generator) | — | 9 | Python synthetic data in all source formats | ⏳ Planned |
+| [`data-generator`](data-generator) | — | 9a / 9d | Python (stdlib only) synthetic data. v1 (9a): seeded HL7 v2.5 ADT + ORU, ~10% deliberately malformed, written to `.hl7` files + manifest and sent over MLLP. All formats in 9d | 🔄 v1 built, in review |
 
 Planned services boot as placeholder containers so the full topology and port map exist from day one.
 
@@ -107,8 +114,8 @@ hand-verified in Postman — before the next one starts.
 | **6** | `patient-index-service` | Master patient index: blocking (DOB · Double Metaphone surname + birth year · phone), deterministic rules, weighted field agreement (Jaro-Winkler, nicknames, DOB day/month swaps); ≥ 0.85 auto-merges, 0.60–0.85 goes to a review queue; accept / reject / manual merge / unmerge, with human "not the same person" decisions remembered. GoldWriter stays the only Gold writer (PMI calls it with its own Keycloak client) | ✅ Done (PR #12) |
 | **7** | `api-gateway` | Backend-for-frontend: one `/api/v1` for the dashboard's 5 views. Reads are SQL projections over a SELECT-only Postgres role (patient timeline across every source, ontology coverage, validation findings, Gold FHIR + validator notes, lineage back to Bronze); actions (PMI review, matching runs, rule toggles, FHIR validation, C-CDA) are proxied to the service that owns them. Keycloak user login (Auth Code + PKCE) with `dashboard-viewer` / `data-steward` roles; RFC 7807 errors; 503/504/502 when a service is down, slow or broken | ✅ Done (PR #13) |
 | **8** | `dashboard-ui` | React: Patient Timeline (with the PMI review queue), Ontology Coverage, Validation Report (with the rule catalog), FHIR Viewer (with validate / C-CDA tools), Data Lineage (back to the raw Bronze message). Signs users in with Keycloak Auth Code + PKCE; viewers see everything, data stewards also run matching, accept / reject / unmerge, and toggle rules, each behind a confirmation | ✅ Done (PR #14) |
-| **9** | Event-driven pipeline + `data-generator` | Rebuild the Bronze → Silver → Gold flow on Kafka, **one layer at a time** (9a–9e below), fed by a Python generator of synthetic hospital data. Each sub-phase is its own branch and PR | ⏳ Planned |
-| **9a** | Bronze over Kafka | `data-generator` v1 sends 100 seeded HL7 v2 messages over **MLLP**; ingestion-service publishes them to Kafka; a new **bronze listener** stores them in `bronze.raw_messages` and announces each one. **Kafbat UI** is added to Compose to watch topics, messages and consumer lag. Details in [Phase 9 design](#phase-9-design-one-layer-at-a-time). FHIR and claims REST intake unchanged for now | ⏳ Next |
+| **9** | Event-driven pipeline + `data-generator` | Rebuild the Bronze → Silver → Gold flow on Kafka, **one layer at a time** (9a–9e below), fed by a Python generator of synthetic hospital data. Each sub-phase is its own branch and PR | 🔄 In progress |
+| **9a** | Bronze over Kafka | `data-generator` v1 sends 100 seeded HL7 v2 messages over **MLLP**; ingestion-service publishes them to Kafka; a new **bronze listener** stores them in `bronze.raw_messages` and announces each one. **Kafbat UI** is added to Compose to watch topics, messages and consumer lag. Details in [Phase 9 design](#phase-9-design-one-layer-at-a-time). FHIR and claims REST intake unchanged for now | 🔄 Built, in review |
 | **9b** | Silver transformation | A new **silver transformer** turns each Bronze HL7 message into `silver.*` rows linked to the raw message, runs ontology + rules validation, and announces each changed patient. Closes the "no Bronze → Silver parser" gap. Details in [Phase 9 design](#phase-9-design-one-layer-at-a-time) | ⏳ Planned |
 | **9c** | Gold over Kafka | A consumer in fhir-compliance-service builds and validates US Core FHIR for each changed patient and writes Gold through **GoldWriter**; lineage now starts at the raw HL7 message; a consumer in patient-index-service runs matching. Details in [Phase 9 design](#phase-9-design-one-layer-at-a-time) | ⏳ Planned |
 | **9d** | Full generator | All feeds: FHIR JSON, claims CSV and C-CDA alongside HL7; ~20% of patients in more than one feed (typos, nicknames, swapped dates) for the PMI; ~10–15% defects for validation; `--seed` for repeatable demos, `--reset`, and a `--trickle` mode that looks like a live feed. REST intake paths move onto Kafka too | ⏳ Planned |
@@ -125,19 +132,19 @@ scaled or replaced on its own. The same building blocks repeat in every layer: *
 | | **9a — Bronze** | **9b — Silver** | **9c — Gold** |
 |---|---|---|---|
 | **Input** | HL7 v2 over MLLP (port 8887) from `data-generator` | Topic `clinicalharmony.bronze.ingested` | Topic `clinicalharmony.silver.patient.changed` |
-| **Producer → topic** | ingestion-service validates the MLLP frame and publishes the raw message to `clinicalharmony.bronze.hl7v2.raw`. It sends ACK `AA` only after Kafka confirms the write (`acks=all`); if Kafka can't take it, the sender gets a NAK and retries | — | — |
+| **Producer → topic** | ingestion-service validates the MLLP frame and publishes the raw message to `clinicalharmony.bronze.hl7v2.raw`. It sends ACK `AA` only after Kafka confirms the write (`acks=all`, idempotent producer); if Kafka can't take it, the sender gets `AE` ("not stored, retry later") and retries. It only *peeks* at MSH/PID for the key and source system, so a malformed message is still accepted (`AA`) and quarantined by the listener — Bronze keeps everything | — | — |
 | **Listener (consumer group)** | New **bronze listener** service (`bronze-writer`) | New **silver transformer** service (`silver-transformer`) | Consumer inside **fhir-compliance-service** (`gold-builder`), so GoldWriter stays the only Gold writer; then a consumer inside **patient-index-service** (`pmi-matcher`) |
 | **What it does** | Stores every message as it arrived and checks it parses as HL7 v2 | Reads the raw message from Bronze by id (the event carries the id, not the payload). Maps **MSH** → source, **PID** → patient, **DG1** → conditions, **OBX** → observations, **RXE / RXO** → medications (**AL1** → allergies needs a new `silver.allergies` table). Then calls rules-engine `POST /api/rules/evaluate` (which calls ontology-service) with the real Silver ids | Builds US Core Patient / Condition / Observation / MedicationRequest, checks each with the official HL7 validator, and writes them through GoldWriter. Non-compliant resources are still written, with their violations in `compliance_notes`. `pmi-matcher` then runs matching for the changed patients, batched a few seconds apart (runs are serialized) |
 | **Writes** | `bronze.raw_messages`: `PENDING`, or `QUARANTINED` with the parse error | `silver.patients` (upsert on `source_system` + `source_patient_id`), `silver.conditions` / `observations` / `medications` with `raw_message_id`; findings in `silver.validation_reports`; Bronze row → `PROCESSED`, or `FAILED` with the reason | `gold.fhir_resources`, `gold.master_patients` (PROVISIONAL) + `patient_source_xref`, `gold.data_lineage` with the full **BRONZE → SILVER → GOLD** chain and hashes; PMI merges and review queue as today |
 | **Output topic** | `clinicalharmony.bronze.ingested` (raw message id, type, checksum), for `PENDING` rows only. Quarantined messages stay in Bronze for a data steward | `clinicalharmony.silver.patient.changed` (Silver patient id, source, raw message id, `CREATED` / `UPDATED`) | `clinicalharmony.gold.patient.changed` (master id, resource ids, compliance summary) → read by `pmi-matcher` |
 | **Partition key** (keeps one patient's messages in order) | Source system + PID-3 patient id; MSH-10 control id when PID can't be read | Same patient key | Master patient id |
-| **Safe when a message arrives twice** | Unique constraint on source system + `payload_checksum` (new migration); a repeat is skipped | Child rows for a `raw_message_id` are replaced in one transaction; the patient upsert is naturally repeatable | `fhir_resources` upsert on (`resource_type`, `fhir_id`), lineage upsert on (target, step), both existing unique indexes |
-| **Event never lost or sent for a rolled-back write** | The output event is written to an **outbox** table in the same transaction as the Bronze row, then relayed to Kafka (to confirm at scoping) | Same outbox pattern | Same outbox pattern |
+| **Safe when a message arrives twice** | Partial unique index on source system + `payload_checksum` for `intake_channel = 'MLLP_KAFKA'` rows (migration 23); the insert is `ON CONFLICT DO NOTHING`, a repeat is logged `bronze.duplicate` and gets no second event. (REST rows stay non-unique until 9d moves REST onto Kafka: existing data and the smoke test post the same fixture many times) | Child rows for a `raw_message_id` are replaced in one transaction; the patient upsert is naturally repeatable | `fhir_resources` upsert on (`resource_type`, `fhir_id`), lineage upsert on (target, step), both existing unique indexes |
+| **Event never lost or sent for a rolled-back write** | The output event is written to an **outbox** table in the same transaction as the Bronze row, then relayed to Kafka by a poller in the same service (`bronze.outbox_events`, id order, `FOR UPDATE SKIP LOCKED`, stops at the first failure so nothing overtakes it) | Same outbox pattern | Same outbox pattern |
 | **Bad data** (a business problem, kept and shown) | `QUARANTINED` in Bronze | Bronze row `FAILED` with the mapping error; nothing half-written to Silver | Violations recorded in `compliance_notes` and the Validation Report |
-| **Technical failure** (database or a service down) | 3 retries with backoff, then dead-letter topic `clinicalharmony.bronze.hl7v2.raw.dlt` | Retries, then `clinicalharmony.bronze.ingested.dlt`. If rules-engine is down, Silver is still written and the patient is marked for re-validation | Retries, then `clinicalharmony.silver.patient.changed.dlt` / `clinicalharmony.gold.patient.changed.dlt` |
-| **Structured log events** | `hl7.received`, `hl7.published` (partition, offset), `bronze.stored` (raw message id), `bronze.quarantined` (reason), `bronze.deadlettered` | `silver.consumed`, `silver.mapped` (segment counts, Silver ids), `silver.validated` (findings by severity), `silver.failed`, `silver.published` | `gold.consumed`, `gold.built` (resources, compliant vs not), `gold.lineage.written`, `pmi.run` (run id, auto-merges, queued for review), `gold.published` |
-| **Watch it live** (dev) | **Kafbat UI** (new container, free Apache-2.0 Kafka console): message counts per topic, `bronze-writer` lag per partition, raw HL7 on the topic, the `.dlt` topic | Same console: `bronze.ingested`, `silver-transformer` lag | Same console: `silver.patient.changed` / `gold.patient.changed`, `gold-builder` and `pmi-matcher` lag |
-| **Metrics** (for the 9e dashboards) | Messages in, quarantined, ACK latency, consumer lag | Messages mapped, failed, findings per rule, consumer lag | Resources built, US Core compliance %, PMI auto-merges vs reviews, end-to-end latency (MLLP received → Gold written) |
+| **Technical failure** (database or a service down) | 3 retries with exponential backoff (1 s, 2 s, 4 s), then dead-letter topic `clinicalharmony.bronze.hl7v2.raw.dlt` (same partition, with Spring Kafka's exception headers). A broken event (not JSON, checksum mismatch) can't be fixed by retrying: straight to the DLT | Retries, then `clinicalharmony.bronze.ingested.dlt`. If rules-engine is down, Silver is still written and the patient is marked for re-validation | Retries, then `clinicalharmony.silver.patient.changed.dlt` / `clinicalharmony.gold.patient.changed.dlt` |
+| **Structured log events** | `hl7.received`, `hl7.published` (partition, offset), `hl7.publish_failed`, `bronze.stored` (raw message id), `bronze.quarantined` (reason), `bronze.duplicate`, `bronze.delivery_failed` (attempt), `bronze.deadlettered`, `bronze.published` (outbox relay) | `silver.consumed`, `silver.mapped` (segment counts, Silver ids), `silver.validated` (findings by severity), `silver.failed`, `silver.published` | `gold.consumed`, `gold.built` (resources, compliant vs not), `gold.lineage.written`, `pmi.run` (run id, auto-merges, queued for review), `gold.published` |
+| **Watch it live** (dev) | **Kafbat UI** on `localhost:8090` (read-only, Apache-2.0 Kafka console): message counts per topic, `bronze-writer` lag per partition, raw HL7 on the topic, the `.dlt` topic | Same console: `bronze.ingested`, `silver-transformer` lag | Same console: `silver.patient.changed` / `gold.patient.changed`, `gold-builder` and `pmi-matcher` lag |
+| **Metrics** (for the 9e dashboards) | Messages in, quarantined, ACK latency, consumer lag — as Micrometer meters `clinicalharmony.hl7.mllp.received{outcome}`, `clinicalharmony.hl7.mllp.ack.latency`, `clinicalharmony.bronze.messages{outcome}`, `clinicalharmony.bronze.outbox.backlog` (`/actuator/metrics`); lag from Kafbat / `kafka-consumer-groups` | Messages mapped, failed, findings per rule, consumer lag | Resources built, US Core compliance %, PMI auto-merges vs reviews, end-to-end latency (MLLP received → Gold written) |
 | **Done when** | 100 generated messages → ~90 `PENDING` + ~10 `QUARANTINED`, no duplicates after a listener restart mid-run, visible in **Data Lineage → Bronze** | The same messages appear as Silver patients in **Patient Timeline**, with validation findings in **Validation Report** | **FHIR Viewer** shows the resources, **Data Lineage** traces them back to the raw HL7 bytes, **PMI Review** shows the generated duplicates |
 
 **Shared by every layer**
@@ -168,8 +175,9 @@ scaled or replaced on its own. The same building blocks repeat in every layer: *
   run — fine at demo scale, not at millions of records.
 - **CMS-0057 payer data is a synthetic seed** (`docs/db-init/19`). Nothing upstream produces
   Coverage, PractitionerRole, MedicationKnowledge, MeasureReport or Device yet.
-- **Kafka** (and Zookeeper) is provisioned in Docker Compose, but no service publishes to or consumes from it yet
-  (planned: Phase 9a onward).
+- **Kafka carries HL7 over MLLP only (Phase 9a).** FHIR JSON, claims CSV and HL7 over REST still write
+  Bronze directly from ingestion-service (they move onto Kafka in 9d), and nothing consumes
+  `clinicalharmony.bronze.ingested` yet (the 9b silver transformer will).
 - **Terminology** runs offline: code *existence* is checked by ontology-service against seeded subsets,
   not full licensed code systems, so the FHIR validator reports LOINC/SNOMED/RxNorm codes as warnings.
 - **Dev-grade auth.** Keycloak runs in dev mode with a fixed client secret checked into
@@ -196,7 +204,7 @@ PostgreSQL 16 with a medallion layout plus a reference schema. Full DDL and seed
 
 | Schema | Purpose | Key tables |
 |---|---|---|
-| `bronze` | Raw, immutable intake payloads, valid or quarantined | `raw_messages` |
+| `bronze` | Raw, immutable intake payloads, valid or quarantined | `raw_messages` (+ intake channel, correlation id, Kafka topic / partition / offset since 9a), `outbox_events` |
 | `silver` | Parsed, typed clinical entities (before deduplication) and every validation finding | `patients`, `conditions`, `observations`, `medications`, `validation_reports` |
 | `gold` | Conformed, deduplicated, US Core FHIR resources with lineage — all written by one component, GoldWriter | `master_patients` (+ `match_status`), `patient_source_xref`, `master_patient_merges`, `fhir_resources` (+ `compliance_notes`), `data_lineage` (JSONB step chains) |
 | `pmi` | patient-index-service's working state | `match_runs`, `match_candidates` (review queue), `match_exclusions` |
@@ -206,7 +214,8 @@ PostgreSQL 16 with a medallion layout plus a reference schema. Full DDL and seed
 
 Java 17 · Spring Boot 3.5 · Apache Camel 4.4 (MLLP) · HAPI HL7 v2 · HAPI FHIR 8.2 (validator) ·
 PostgreSQL 16 (plain `JdbcTemplate`, no ORM) · Docker Compose · JUnit 5 / Mockito / Spring MVC
-test slices · Testcontainers (`@SpringBootTest` integration) · Keycloak 26.8 + Spring Security OAuth2 resource server · *planned:* React, Python.
+test slices · Testcontainers (`@SpringBootTest` integration, Postgres + Kafka) · Keycloak 26.8 + Spring Security OAuth2 resource server ·
+Apache Kafka (Confluent cp-kafka 7.6.1, KRaft) + Spring for Apache Kafka 3.3 · Kafbat UI · React 19 + TypeScript · Python 3 (stdlib) data generator.
 
 ## Getting started
 
@@ -226,7 +235,9 @@ docker-compose down -v
 | Component | Address |
 |---|---|
 | PostgreSQL | `localhost:5432` (db / user / password: `clinicalharmony`) |
-| Kafka | `localhost:9092` |
+| Kafka (KRaft, no Zookeeper) | `localhost:19092` (containers: `kafka:29092`) |
+| Kafbat UI (Kafka console, read-only) | `localhost:8090` |
+| bronze-listener-service | `localhost:8086` (health / metrics only) |
 | ingestion-service | `localhost:8081` (REST) · `localhost:8887` (HL7 v2 MLLP) |
 | ontology-service | `localhost:8082` |
 | rules-engine-service | `localhost:8083` |
@@ -242,7 +253,7 @@ docker-compose down -v
 ./scripts/smoke-test.sh
 ```
 
-This runs 239 black-box assertions against the live services: intake accept and quarantine, code
+This runs 263 black-box assertions against the live services: intake accept and quarantine, code
 validation, every clinical rule and live rule toggling, US Core validation, Silver → FHIR builds,
 C-CDA conversion, GoldWriter master patients and lineage, the CMS-0057 read/search API, SMART
 auth (it gets real tokens from Keycloak, then checks discovery, 401/403 and scope enforcement), and
@@ -250,14 +261,28 @@ patient matching end to end (fresh synthetic duplicates each run: auto-merge, re
 accept, unmerge, re-run), and the API gateway (user logins and roles, every dashboard read model
 cross-checked against SQL, actions relayed with the signed-in user as reviewer, correlation ids,
 CORS, and a database login that can't write), and the dashboard's nginx (SPA fallback, runtime
-config, CSP and security headers, Keycloak accepting its PKCE login). Each implemented service also has Postman collections (one per
-phase/slice, in `fhir-compliance-service/postman/`, `patient-index-service/postman/` and
-`api-gateway/postman/`) or curl
+config, CSP and security headers, Keycloak accepting its PKCE login), and the Phase 9a Kafka path (it
+runs the generator with a fresh seed: every message ACKed, the exact PENDING / QUARANTINED split from
+the manifest, Kafka provenance on each row, outbox events, a full re-send stored zero times, consumer
+lag back to 0, Kafbat). Each implemented service also has Postman collections (one per
+phase/slice, in `fhir-compliance-service/postman/`, `patient-index-service/postman/`,
+`api-gateway/postman/` and `bronze-listener-service/postman/`) or curl
 examples in its own README, and unit tests via `mvn test` from the service directory.
 
 ## Try it
 
-**Ingest** — every payload lands in `bronze.raw_messages`. Malformed ones are quarantined (HTTP 422), not dropped.
+**Generate HL7 and send it over MLLP → Kafka → Bronze** (Phase 9a; host `python3`, nothing to install):
+
+```bash
+python3 data-generator/generate.py            # 100 messages, seed 42 → 90 PENDING + 10 QUARANTINED
+python3 data-generator/generate.py --help     # --count, --seed, --malformed-rate, --no-send, --send-dir …
+```
+
+Then watch `clinicalharmony.bronze.hl7v2.raw` and the `bronze-writer` group in Kafbat UI
+(`localhost:8090`), and the rows in the dashboard's **Data Lineage → Bronze**. Running the same seed
+again re-sends identical bytes: all ACKed, nothing stored twice.
+
+**Ingest over REST** — every payload lands in `bronze.raw_messages`. Malformed ones are quarantined (HTTP 422), not dropped.
 
 ```bash
 # HL7 v2 ADT^A01
@@ -430,8 +455,9 @@ ClinicalHarmony/
 ├── keycloak/                   # Realm import: clients, SMART scopes, audience mappers, dashboard roles + dev users
 ├── patient-index-service/      # ✅ Master patient index: matching, review queue, merge/unmerge via GoldWriter
 ├── api-gateway/                # ✅ Dashboard BFF: /api/v1 read models + proxied actions
-├── dashboard-ui/               # 🔄 React + TypeScript dashboard (Vite, nginx)
-└── data-generator/             # ⏳ Python synthetic data generator
+├── dashboard-ui/               # ✅ React + TypeScript dashboard (Vite, nginx)
+├── bronze-listener-service/    # 🔄 Kafka → bronze.raw_messages (+ outbox → bronze.ingested), Phase 9a
+└── data-generator/             # 🔄 Python synthetic data generator (v1: seeded HL7 over MLLP)
 ```
 
 Each implemented service has its own README with its endpoints, design notes and test instructions.

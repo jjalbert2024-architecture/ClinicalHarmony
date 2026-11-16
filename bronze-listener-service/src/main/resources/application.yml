@@ -1,0 +1,86 @@
+server:
+  port: 8086
+
+spring:
+  application:
+    name: bronze-listener-service
+  profiles:
+    active: ${SPRING_PROFILES_ACTIVE:local}
+  kafka:
+    consumer:
+      group-id: bronze-writer
+      auto-offset-reset: earliest
+      enable-auto-commit: false
+      key-deserializer: org.apache.kafka.common.serialization.StringDeserializer
+      value-deserializer: org.apache.kafka.common.serialization.StringDeserializer
+      max-poll-records: 50
+    producer:
+      # Used by the outbox relay and the dead-letter publisher.
+      acks: all
+      key-serializer: org.apache.kafka.common.serialization.StringSerializer
+      value-serializer: org.apache.kafka.common.serialization.StringSerializer
+      properties:
+        enable.idempotence: true
+        max.block.ms: 5000
+        request.timeout.ms: 5000
+        delivery.timeout.ms: 9000
+    listener:
+      # Offset committed after EACH record, i.e. only after its database transaction has committed.
+      ack-mode: record
+      # One consumer thread per partition of clinicalharmony.bronze.hl7v2.raw.
+      concurrency: 3
+
+bronze:
+  partitions: 3
+  retry:
+    # Technical failures (DB down…): 3 retries with exponential backoff, then <topic>.dlt.
+    max-retries: 3
+    initial-interval: 1s
+    multiplier: 2.0
+  outbox:
+    poll-interval: 500ms
+    batch-size: 100
+    send-timeout: 10s
+  hl7:
+    default-source-system: ${HL7_DEFAULT_SOURCE_SYSTEM:UNKNOWN_HL7_SOURCE}
+
+management:
+  endpoints:
+    web:
+      exposure:
+        include: health,info,metrics
+
+# One JSON object per log line (Logstash layout): MDC + SLF4J key/values become top-level fields.
+logging:
+  structured:
+    format:
+      console: logstash
+    json:
+      add:
+        service: ${spring.application.name}
+
+---
+# Local profile: `mvn spring-boot:run` on the host against the compose containers' published ports.
+spring:
+  config:
+    activate:
+      on-profile: local
+  datasource:
+    url: jdbc:postgresql://localhost:5432/clinicalharmony
+    username: clinicalharmony
+    password: clinicalharmony
+  kafka:
+    bootstrap-servers: localhost:19092
+
+---
+# Docker profile: SPRING_PROFILES_ACTIVE=docker in docker-compose.yml.
+spring:
+  config:
+    activate:
+      on-profile: docker
+  datasource:
+    url: jdbc:postgresql://${DB_HOST:postgres}:${DB_PORT:5432}/${DB_NAME:clinicalharmony}
+    username: ${DB_USER:clinicalharmony}
+    password: ${DB_PASSWORD:clinicalharmony}
+  kafka:
+    bootstrap-servers: ${KAFKA_BOOTSTRAP_SERVERS:kafka:29092}

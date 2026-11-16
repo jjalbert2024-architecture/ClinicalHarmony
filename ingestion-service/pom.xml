@@ -66,6 +66,12 @@
             <artifactId>camel-mllp-starter</artifactId>
         </dependency>
 
+        <!-- Phase 9a: MLLP intake publishes to Kafka (version managed by Boot: 3.3.x / kafka-clients 3.9.x) -->
+        <dependency>
+            <groupId>org.springframework.kafka</groupId>
+            <artifactId>spring-kafka</artifactId>
+        </dependency>
+
         <!-- Claims CSV parsing -->
         <dependency>
             <groupId>org.apache.commons</groupId>
@@ -89,6 +95,16 @@
         <dependency>
             <groupId>org.springframework.boot</groupId>
             <artifactId>spring-boot-starter-test</artifactId>
+            <scope>test</scope>
+        </dependency>
+        <dependency>
+            <groupId>org.testcontainers</groupId>
+            <artifactId>junit-jupiter</artifactId>
+            <scope>test</scope>
+        </dependency>
+        <dependency>
+            <groupId>org.testcontainers</groupId>
+            <artifactId>kafka</artifactId>
             <scope>test</scope>
         </dependency>
     </dependencies>

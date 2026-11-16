@@ -41,7 +41,8 @@ The Postgres container auto-runs `docs/db-init/` scripts in lexical order on fir
 | HAPI HL7 v2 | 2.3 (`hapi-structures-v25`) |
 | Apache Commons CSV | 1.10.0 |
 | Java | 17 |
-| Testcontainers (test scope, Boot-managed) | 1.21.4 |
+| Testcontainers (test scope, Boot-managed) | 1.21.4 (`postgresql`, `kafka` modules) |
+| spring-kafka / kafka-clients (Boot-managed, Phase 9a) | 3.3.16 / 3.9.2 |
 
 New services should use the same Spring Boot parent version and align Camel via its BOM (`camel-spring-boot-bom`) to avoid dependency conflicts.
 
@@ -62,8 +63,15 @@ All have sane defaults for local development:
 | `HL7_DEFAULT_SOURCE_SYSTEM` | `UNKNOWN_HL7_SOURCE` | Fallback source tag |
 | `FHIR_DEFAULT_SOURCE_SYSTEM` | `UNKNOWN_FHIR_SOURCE` | Fallback source tag |
 | `CLAIMS_DEFAULT_SOURCE_SYSTEM` | `UNKNOWN_CLAIMS_SOURCE` | Fallback source tag |
+| `KAFKA_BOOTSTRAP_SERVERS` | `localhost:19092` | Phase 9a: MLLP intake publishes here (compose: `kafka:29092`) |
 
 Future services follow the same pattern: `DB_*` env vars for the datasource, a `default-source-system` config key per intake path.
+
+### Environment variables (bronze-listener-service)
+
+Same `SPRING_PROFILES_ACTIVE` (`local`/`docker`) + `DB_*` pattern as ontology-service, plus
+`KAFKA_BOOTSTRAP_SERVERS` (docker profile; default `kafka:29092`; the `local` profile uses `localhost:19092`).
+Tunables under `bronze.*` in `application.yml` (partitions, retry, outbox poll/batch/send-timeout).
 
 ### Environment variables (ontology-service)
 
@@ -144,6 +152,8 @@ Sources (HL7 v2 · FHIR JSON · Claims CSV)
         │
         ▼
 ingestion-service  →  bronze.raw_messages  (every payload, valid or not)
+   │ MLLP since 9a: → Kafka clinicalharmony.bronze.hl7v2.raw → bronze-listener-service → bronze.raw_messages
+   │                  (+ outbox → clinicalharmony.bronze.ingested, consumed from 9b on)
         │
         ▼
 ontology-service   →  silver.* validated against ICD-10/SNOMED/LOINC/RxNorm
@@ -173,6 +183,9 @@ api-gateway  →  dashboard-ui (React, 5 views)
 | api-gateway | 8080 | implemented (Phase 7) |
 | keycloak | 8180 | realm `clinicalharmony` (Phase 5b slice 4); container port 8080 |
 | dashboard-ui | 3000 | implemented (Phase 8); nginx, static SPA |
+| bronze-listener-service | 8086 | Phase 9a (built, in review); health/metrics only |
+| kafka | 19092 | KRaft, no Zookeeper (Phase 9a); containers use `kafka:29092` |
+| kafbat-ui | 8090 | Kafka console, read-only (Phase 9a); container port 8080 |
 
 Services still showing `[placeholder]` in docker-compose.yml boot a bare `eclipse-temurin:17-jre` image and idle. When a service is implemented, replace its `image`/`command` with a `build:` block pointing to that service's `Dockerfile`.
 
@@ -188,6 +201,54 @@ Three parallel intake paths, all sharing a single `RawMessageRepository` write t
 All paths: SHA-256 checksum on the raw payload, quarantine (not drop) on parse failure, 201/422 on REST.
 
 `ClaimsMessageProcessor.process()` is `@Transactional`: a DB failure during the write phase rolls back all rows for that file. Parse failures quarantine the whole file as a single row (intentional — a partial claim set is worse for downstream reconciliation than a rejected one).
+
+### ingestion-service — Phase 9a change (MLLP → Kafka)
+
+- MLLP no longer writes Postgres. `kafka/Hl7MllpIntakeService`: `Hl7Envelope.peek` (string split of
+  MSH/PID, never throws, no HAPI) → `Hl7RawPublisher` → topic `clinicalharmony.bronze.hl7v2.raw`
+  (declared here, 3 partitions), key `source|PID-3` → `source|msh10:<id>` → `sha256:<checksum>`,
+  headers `event-id/event-type/schema-version/produced-at/producer/correlation-id` (`mllp-<12 hex>`),
+  value JSON with `rawPayload` + `sourceSystem` + `payloadChecksum` + `receivedAt`. Blocks on
+  `send().get(10s)` (`acks=all`, idempotence, `max.block.ms` 5 s) → `Hl7AckBuilder` AA, else AE.
+  Malformed HL7 still gets AA (the listener quarantines it).
+- **Gotcha found**: camel-mllp sends the exchange PROPERTY `CamelMllpAcknowledgementString`, not the
+  body; without it it auto-ACKs AA from the inbound MSH. The pre-9a route set only the body, so MLLP
+  NAKs never reached senders. The route now sets the property.
+- REST HL7/FHIR/claims paths unchanged (still `RawMessageRepository`, `intake_channel` defaults `REST`).
+- Structured JSON logs (Boot `logging.structured.format.console: logstash` + `json.add.service`);
+  SLF4J fluent `addKeyValue` fields and MDC become top-level JSON keys. Same in bronze-listener-service.
+
+### bronze-listener-service (Phase 9a — built, in review)
+
+Port 8086, package `com.clinicalharmony.bronze`, consumer group `bronze-writer` on
+`clinicalharmony.bronze.hl7v2.raw` (`ack-mode: record`, `concurrency: 3`).
+
+- `store/BronzeWriter.store()` — ONE transaction: verify checksum, `hl7/Hl7Inspector` (HAPI 2.3 v25,
+  noValidation, thread-local parser; QUARANTINED if it won't parse or MSH-9/MSH-10 empty), `INSERT …
+  ON CONFLICT (source_system, payload_checksum) WHERE intake_channel = 'MLLP_KAFKA' DO NOTHING`, and
+  for PENDING rows an outbox row. Conflict → DUPLICATE (no event).
+- `outbox/OutboxRelay` — `@Scheduled` 500 ms, `FOR UPDATE SKIP LOCKED` batch in id order, send `.get()`,
+  stamp `published_at`; stops at the first failure (`attempts`/`last_error`). Event
+  `clinicalharmony.bronze.ingested` keeps the input key, adds `causation-id` = input `event-id`.
+- `config/KafkaConfig` — `DefaultErrorHandler`: `ExponentialBackOff` 1 s ×2, 3 retries →
+  `DeadLetterPublishingRecoverer` to `<topic>.dlt` same partition; `InvalidEventException` (bad JSON,
+  no rawPayload, checksum mismatch) is not retryable. Declares `.dlt` + `bronze.ingested` topics.
+  Broker auto-create is OFF: every topic is declared by its owner (`NewTopic` beans).
+- Bronze rows from here: `intake_channel = MLLP_KAFKA`, `correlation_id`, `kafka_topic/partition/offset`,
+  `received_at` = MLLP receipt time from the event.
+- Tests (17): inspector, event parsing, relay ordering; `BronzeListenerIntegrationTest` (Testcontainers
+  Postgres from `docs/db-init` + `ConfluentKafkaContainer` `confluentinc/cp-kafka:7.6.1`, both via
+  `@ServiceConnection` without `@Container`; a background tail consumer must be started in
+  `@BeforeEach`, NOT `@BeforeAll` — the containers aren't up before the context).
+
+### data-generator (Phase 9a v1 — built, in review)
+
+Python 3.9+ stdlib only, run on the host: `python3 data-generator/generate.py [--count 100] [--seed 42]
+[--malformed-rate 0.10] [--no-send] [--send-dir DIR]`. Writes `data-generator/out/seed-<n>/*.hl7` +
+`manifest.json` (git-ignored), then sends over MLLP with retry on AE/timeout. Same seed → same bytes.
+Exactly round(count × rate) malformed, cycling MISSING_MSH / NOT_HL7 / EMPTY_CONTROL_ID /
+EMPTY_MESSAGE_TYPE / TRUNCATED_HEADER. Codes from the db-init terminology subsets. 13 unittest tests
+(`cd data-generator && python3 -m unittest discover -s tests -t .`).
 
 ### ontology-service (implemented — Phase 3)
 
@@ -517,6 +578,13 @@ scoping (all recommended):
 - `message_format`: `TEXT`, `JSON`, `CSV`
 - `processing_status`: `PENDING`, `PROCESSING`, `PROCESSED`, `FAILED`, `QUARANTINED`
 
+Phase 9a (`docs/db-init/23`, non-destructive, applied to the running container): `intake_channel`
+(`REST` default / `MLLP_KAFKA`, CHECK), `correlation_id`, `kafka_topic`, `kafka_partition`,
+`kafka_offset`; partial unique index `uq_raw_messages_kafka_source_checksum` on (source_system,
+payload_checksum) WHERE intake_channel = 'MLLP_KAFKA' (REST rows stay non-unique — the smoke test
+posts the same fixture every run; 9d widens it when REST moves onto Kafka); table
+`bronze.outbox_events`. The gateway's read-only role sees it via default privileges.
+
 `RawMessageRecord` factory methods (`accepted(...)` → `PENDING`, `quarantined(...)` → `QUARANTINED`) are the only correct way to build these records.
 
 `RawMessageRepository` uses plain `JdbcTemplate` (not Spring Data JPA / no ORM). The HikariCP pool is configured with `hikari.schema: bronze`, so the Postgres search path is scoped to the Bronze schema automatically. Future services writing to `silver.*` or `gold.*` must set their own `hikari.schema` accordingly (or qualify table names explicitly).
@@ -571,12 +639,15 @@ schema **`pmi`** (`match_runs`, `match_candidates` with a partial unique index o
   `@Testcontainers(disabledWithoutDocker = true)`, so `mvn test` still passes without Docker.
   Extend `integration/AbstractIntegrationTest` (shared context + DB) and use its `withScopes(...)` /
   `anonymous()` clients — endpoints are Bearer-protected since Phase 5b slice 4.
+- **Kafka tests**: Testcontainers `org.testcontainers.kafka.ConfluentKafkaContainer` with the compose
+  image `confluentinc/cp-kafka:7.6.1` (KRaft) — no new image. ingestion-service's publisher test uses
+  it without Spring; bronze-listener-service's integration test via `@ServiceConnection`.
 - **UI tests** (dashboard-ui, `test/*.test.ts(x)`): Vitest + jsdom + Testing Library against an MSW gateway stub serving real captured `/api/v1` responses; run in `node:24-alpine` via `docker run` (no host Node).
-- **Black-box smoke test** (`scripts/smoke-test.sh`): once the stack is up (`docker-compose up -d`), this hits all four implemented services' REST endpoints over HTTP and asserts on real responses — accept/quarantine outcomes, ontology validation results, all 7 rule-engine evaluations and live rule-toggle behavior, US Core structural validation (including a `requiredAnyOf` choice-type check), and FHIR generation round-tripped back through validation to cross-check the generator against the validator. Fixture payloads live in `scripts/fixtures/`. This replaces the earlier "verified manually" note — it's now a repeatable, scriptable check (239 assertions as of Phase 8; it fetches a Bearer token from the compose Keycloak for fhir-compliance-service and patient-index-service calls; section 15 = PMI, which inserts fresh random synthetic patients each run so it stays rerunnable; section 16 = api-gateway, with real dana/vic user tokens from the dev direct-grant client; section 17 = dashboard-ui's nginx: SPA fallback, caching, CSP/headers, runtime config, Keycloak accepting the dashboard's PKCE request and refusing it without PKCE or with a foreign redirect, CORS). Gold-layer checks with no HTTP surface yet (lineage, masters) use `check_sql` via `docker exec` into `clinicalharmony-postgres`.
+- **Black-box smoke test** (`scripts/smoke-test.sh`): once the stack is up (`docker-compose up -d`), this hits all four implemented services' REST endpoints over HTTP and asserts on real responses — accept/quarantine outcomes, ontology validation results, all 7 rule-engine evaluations and live rule-toggle behavior, US Core structural validation (including a `requiredAnyOf` choice-type check), and FHIR generation round-tripped back through validation to cross-check the generator against the validator. Fixture payloads live in `scripts/fixtures/`. This replaces the earlier "verified manually" note — it's now a repeatable, scriptable check (263 assertions as of Phase 9a — section 18 runs the generator with a random seed over MLLP and checks Bronze/outbox/idempotency/Kafbat; it fetches a Bearer token from the compose Keycloak for fhir-compliance-service and patient-index-service calls; section 15 = PMI, which inserts fresh random synthetic patients each run so it stays rerunnable; section 16 = api-gateway, with real dana/vic user tokens from the dev direct-grant client; section 17 = dashboard-ui's nginx: SPA fallback, caching, CSP/headers, runtime config, Keycloak accepting the dashboard's PKCE request and refusing it without PKCE or with a foreign redirect, CORS). Gold-layer checks with no HTTP surface yet (lineage, masters) use `check_sql` via `docker exec` into `clinicalharmony-postgres`.
 
 ## Local Docker environment
 
-**Port conflicts**: an unrelated "medistream" project auto-starts containers on ports 5432, 3306, 9092, 2181, and 8083 whenever Docker Desktop restarts. Do not stop or reconfigure those containers. Use a throwaway `docker network create` + `docker run` for isolated local verification rather than `docker-compose.override.yml` (Compose merges `ports:` by concatenation, so overrides can't replace conflicting mappings).
+**Port conflicts**: an unrelated "medistream" project auto-starts containers on ports 5432, 3306, 9092, 2181, and 8083 whenever Docker Desktop restarts. Do not stop or reconfigure those containers without asking (on 2026-11-14 the user approved `docker stop` of all six medistream containers to run the stack — ask again each time). ClinicalHarmony's Kafka is on host 19092 (KRaft, no Zookeeper) to avoid 9092/2181, but Postgres 5432 and rules-engine 8083 still collide. Use a throwaway `docker network create` + `docker run` for isolated local verification rather than `docker-compose.override.yml` (Compose merges `ports:` by concatenation, so overrides can't replace conflicting mappings).
 
 **Apple Silicon image constraint**: `eclipse-temurin:*-alpine` tags have no arm64 manifest and will fail to pull on this machine. Always use the Debian-based tag (e.g. `eclipse-temurin:17-jre`) for all service Dockerfiles. This applies to Phase 3 onward, not just ingestion-service. (The `node:*-alpine` and `nginx:*-alpine` images used by dashboard-ui DO have arm64 manifests — the problem is specific to eclipse-temurin.)
 
@@ -584,7 +655,7 @@ schema **`pmi`** (`match_runs`, `match_candidates` with a partial unique index o
 
 ## Build order / phase plan
 
-Phases are meant to be fully complete before the next starts. Current state as of 2026-11-13:
+Phases are meant to be fully complete before the next starts. Current state as of 2026-11-14:
 
 - **Phase 1** (done): Foundation — docker-compose.yml, all 7 `docs/db-init/` SQL scripts, seed data.
 - **Phase 2 / 2b** (done): ingestion-service — all three intake paths (HL7 v2, FHIR JSON, Claims CSV) landing to Bronze.
@@ -613,14 +684,18 @@ Phases are meant to be fully complete before the next starts. Current state as o
   - Full per-layer design (topics, consumer groups, writes, partition keys, idempotency, outbox, DLTs,
     log events, metrics, done-when) is the README's "Phase 9 design: one layer at a time" table — keep
     it and the code in sync. Topic naming `clinicalharmony.<layer>.<entity>.<event>`, `<topic>.dlt`.
-  - **9a** Bronze: generator v1 (100 seeded HL7 over MLLP) → ingestion-service publishes
-    `clinicalharmony.bronze.hl7v2.raw` (ACK only after Kafka `acks=all`) → new bronze listener (group
-    `bronze-writer`) writes `bronze.raw_messages` idempotently (needs unique source + checksum),
-    QUARANTINED kept, DLT for technical failures → outbox → `clinicalharmony.bronze.ingested`.
-    Generator: option A only (writes seeded .hl7 files, then sends them over MLLP; no folder pickup).
-    Add **Kafbat UI** (`kafbat/kafka-ui`, maintained Apache-2.0 fork of provectuslabs/kafka-ui) to compose
-    on a free host port to watch topics / messages / consumer lag — confirm image version + size with the
-    user before pulling. CLI fallback: `kafka-consumer-groups --describe` inside the kafka container.
+  - **9a** (BUILT 2026-11-14, in review on branch `data-generator`; flip to done after the user's PR merges)
+    Bronze: generator v1 (host python3, 100 seeded HL7 over MLLP) → ingestion-service publishes
+    `clinicalharmony.bronze.hl7v2.raw` (ACK AA only after `acks=all`, AE otherwise) → bronze-listener-service
+    (group `bronze-writer`, port 8086) → `bronze.raw_messages` idempotently (migration 23 partial unique
+    index), QUARANTINED kept, retries → `.dlt` → outbox → `clinicalharmony.bronze.ingested`. Kafka moved to
+    KRaft on host 19092 (Zookeeper removed); Kafbat UI `kafbat/kafka-ui:v1.5.0` on 8090 (read-only).
+    User decisions at scoping (all recommended): KRaft/19092; Boot-managed spring-kafka 3.3.16 + kafka-clients
+    3.9.2 (downloaded with approval); Testcontainers `kafka` module with the local cp-kafka image; host python3;
+    outbox + relay in the listener; partial unique index scoped to MLLP_KAFKA rows; name/port/profiles as above.
+    Verified live: 100 → 90 PENDING + 10 QUARANTINED, no duplicates after `docker restart` and `docker kill`
+    mid-run, same-seed resend → 100 duplicates skipped, Kafka stopped → AE then AA once back, rows in the
+    dashboard's Data Lineage → Bronze; smoke 263/263 twice.
   - **9b** Silver: new silver transformer (group `silver-transformer`) reads the Bronze row by id, maps
     MSH/PID/DG1/OBX/RXE-RXO (AL1 needs a new `silver.allergies`), replaces child rows per
     `raw_message_id`, Bronze → PROCESSED/FAILED, calls rules-engine with real Silver ids (fail-open →

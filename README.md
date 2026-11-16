@@ -21,8 +21,8 @@ problems, it never hides them** — malformed input is quarantined rather than d
 never papered over with invented values, so a non-compliant resource is flagged with the exact
 reason instead of quietly "fixed".
 
-> **Status (2026-11-14):** Phases 1–8 and all four Phase 5b slices are done (Phase 8, the React
-> dashboard, merged as PR #14). **Phase 9a (Bronze over Kafka) is built, in review:** HL7 v2 from
+> **Status (2026-11-16):** Phases 1–8, all four Phase 5b slices and **Phase 9a (Bronze over Kafka,
+> merged as PR #15)** are done; next is 9b (Silver over Kafka). HL7 v2 from
 > the new `data-generator` goes over MLLP into Kafka, and a new `bronze-listener-service` stores it in
 > Bronze. Seven services are live — ingestion, bronze listener, ontology, rules engine, FHIR
 > compliance, patient index and the API gateway in front of them — plus Kafka (KRaft), Kafbat UI,
@@ -43,7 +43,7 @@ stage, orchestrated by Docker Compose.
                     MLLP (9a)  ▼                          │ REST                   │
   KAFKA             clinicalharmony.bronze.hl7v2.raw      │                        │
                                ▼                          │                        │
-                    bronze-listener-service  🔄 9a        │                        │
+                    bronze-listener-service  ✅ 9a        │                        │
                                ▼                          ▼                        │
   BRONZE            bronze.raw_messages  (every payload + SHA-256; bad → QUARANTINED)
                                │ outbox → clinicalharmony.bronze.ingested (for 9b)
@@ -81,15 +81,15 @@ stage, orchestrated by Docker Compose.
 
 | Service | Port | Phase | Responsibility | Status |
 |---|---|---|---|---|
-| [`ingestion-service`](ingestion-service) | 8081 (+ MLLP 8887) | 2 / 2b / 9a | Apache Camel MLLP listener + REST intake for HL7 v2, FHIR JSON and claims CSV; checksums, quarantine, real HL7 ACK/NAK. Since 9a, MLLP messages are published to Kafka (ACK `AA` only after `acks=all`) instead of written to Bronze directly | ✅ Implemented (9a change in review) |
-| [`bronze-listener-service`](bronze-listener-service) | 8086 | 9a | Kafka consumer group `bronze-writer`: `clinicalharmony.bronze.hl7v2.raw` → `bronze.raw_messages` (PENDING / QUARANTINED, idempotent), transactional outbox → `clinicalharmony.bronze.ingested`, retries then `.dlt`, JSON logs | 🔄 Built, in review |
+| [`ingestion-service`](ingestion-service) | 8081 (+ MLLP 8887) | 2 / 2b / 9a | Apache Camel MLLP listener + REST intake for HL7 v2, FHIR JSON and claims CSV; checksums, quarantine, real HL7 ACK/NAK. Since 9a, MLLP messages are published to Kafka (ACK `AA` only after `acks=all`) instead of written to Bronze directly | ✅ Implemented (9a: PR #15) |
+| [`bronze-listener-service`](bronze-listener-service) | 8086 | 9a | Kafka consumer group `bronze-writer`: `clinicalharmony.bronze.hl7v2.raw` → `bronze.raw_messages` (PENDING / QUARANTINED, idempotent), transactional outbox → `clinicalharmony.bronze.ingested`, retries then `.dlt`, JSON logs | ✅ Done (PR #15) |
 | [`ontology-service`](ontology-service) | 8082 | 3 | Code validation (ICD-10, SNOMED CT, LOINC, RxNorm) and SNOMED ↔ ICD-10 concept mapping | ✅ Implemented |
 | [`rules-engine-service`](rules-engine-service) | 8083 | 4 | 7 clinical plausibility rules, tunable as data (JSONB), orchestrated with ontology validation | ✅ Implemented |
 | [`fhir-compliance-service`](fhir-compliance-service) | 8084 | 5 / 5b | Official HL7 FHIR validator vs US Core 6.1.0 + Da Vinci Formulary/DEQM, Silver → FHIR builders, C-CDA → FHIR conversion, GoldWriter (master patients, FHIR resources, lineage), CMS-0057-F read API, SMART on FHIR backend-services auth (Keycloak) | ✅ Done (PR #7–#11) |
 | [`patient-index-service`](patient-index-service) | 8085 | 6 | Master patient index: blocking + deterministic rules + Fellegi-Sunter-style weighted matching across sources, auto-merge / review queue / unmerge, applied to Gold through GoldWriter | ✅ Done (PR #12) |
 | [`api-gateway`](api-gateway) | 8080 | 7 | Backend-for-frontend for the dashboard: `/api/v1` read models for the 5 views over a read-only DB role, actions proxied to the owning service with its own Keycloak client; user login via Keycloak (PKCE), viewer/steward roles, RFC 7807 errors, correlation ids end to end | ✅ Done (PR #13) |
 | [`dashboard-ui`](dashboard-ui) | 3000 | 8 | React + TypeScript SPA for the 5 views, talking only to `/api/v1`; Keycloak Auth Code + PKCE (tokens in memory), viewer/steward UI with confirmed steward actions, RFC 7807 problems with correlation ids, DEGRADED-aware; static build behind nginx with a strict CSP | ✅ Done (PR #14) |
-| [`data-generator`](data-generator) | — | 9a / 9d | Python (stdlib only) synthetic data. v1 (9a): seeded HL7 v2.5 ADT + ORU, ~10% deliberately malformed, written to `.hl7` files + manifest and sent over MLLP. All formats in 9d | 🔄 v1 built, in review |
+| [`data-generator`](data-generator) | — | 9a / 9d | Python (stdlib only) synthetic data. v1 (9a): seeded HL7 v2.5 ADT + ORU, ~10% deliberately malformed, written to `.hl7` files + manifest and sent over MLLP. All formats in 9d | ✅ v1 done (PR #15) |
 
 Planned services boot as placeholder containers so the full topology and port map exist from day one.
 
@@ -115,7 +115,7 @@ hand-verified in Postman — before the next one starts.
 | **7** | `api-gateway` | Backend-for-frontend: one `/api/v1` for the dashboard's 5 views. Reads are SQL projections over a SELECT-only Postgres role (patient timeline across every source, ontology coverage, validation findings, Gold FHIR + validator notes, lineage back to Bronze); actions (PMI review, matching runs, rule toggles, FHIR validation, C-CDA) are proxied to the service that owns them. Keycloak user login (Auth Code + PKCE) with `dashboard-viewer` / `data-steward` roles; RFC 7807 errors; 503/504/502 when a service is down, slow or broken | ✅ Done (PR #13) |
 | **8** | `dashboard-ui` | React: Patient Timeline (with the PMI review queue), Ontology Coverage, Validation Report (with the rule catalog), FHIR Viewer (with validate / C-CDA tools), Data Lineage (back to the raw Bronze message). Signs users in with Keycloak Auth Code + PKCE; viewers see everything, data stewards also run matching, accept / reject / unmerge, and toggle rules, each behind a confirmation | ✅ Done (PR #14) |
 | **9** | Event-driven pipeline + `data-generator` | Rebuild the Bronze → Silver → Gold flow on Kafka, **one layer at a time** (9a–9e below), fed by a Python generator of synthetic hospital data. Each sub-phase is its own branch and PR | 🔄 In progress |
-| **9a** | Bronze over Kafka | `data-generator` v1 sends 100 seeded HL7 v2 messages over **MLLP**; ingestion-service publishes them to Kafka; a new **bronze listener** stores them in `bronze.raw_messages` and announces each one. **Kafbat UI** is added to Compose to watch topics, messages and consumer lag. Details in [Phase 9 design](#phase-9-design-one-layer-at-a-time). FHIR and claims REST intake unchanged for now | 🔄 Built, in review |
+| **9a** | Bronze over Kafka | `data-generator` v1 sends 100 seeded HL7 v2 messages over **MLLP**; ingestion-service publishes them to Kafka; a new **bronze listener** stores them in `bronze.raw_messages` and announces each one. **Kafbat UI** is added to Compose to watch topics, messages and consumer lag. Details in [Phase 9 design](#phase-9-design-one-layer-at-a-time). FHIR and claims REST intake unchanged for now | ✅ Done (PR #15) |
 | **9b** | Silver transformation | A new **silver transformer** turns each Bronze HL7 message into `silver.*` rows linked to the raw message, runs ontology + rules validation, and announces each changed patient. Closes the "no Bronze → Silver parser" gap. Details in [Phase 9 design](#phase-9-design-one-layer-at-a-time) | ⏳ Planned |
 | **9c** | Gold over Kafka | A consumer in fhir-compliance-service builds and validates US Core FHIR for each changed patient and writes Gold through **GoldWriter**; lineage now starts at the raw HL7 message; a consumer in patient-index-service runs matching. Details in [Phase 9 design](#phase-9-design-one-layer-at-a-time) | ⏳ Planned |
 | **9d** | Full generator | All feeds: FHIR JSON, claims CSV and C-CDA alongside HL7; ~20% of patients in more than one feed (typos, nicknames, swapped dates) for the PMI; ~10–15% defects for validation; `--seed` for repeatable demos, `--reset`, and a `--trickle` mode that looks like a live feed. REST intake paths move onto Kafka too | ⏳ Planned |
@@ -456,8 +456,8 @@ ClinicalHarmony/
 ├── patient-index-service/      # ✅ Master patient index: matching, review queue, merge/unmerge via GoldWriter
 ├── api-gateway/                # ✅ Dashboard BFF: /api/v1 read models + proxied actions
 ├── dashboard-ui/               # ✅ React + TypeScript dashboard (Vite, nginx)
-├── bronze-listener-service/    # 🔄 Kafka → bronze.raw_messages (+ outbox → bronze.ingested), Phase 9a
-└── data-generator/             # 🔄 Python synthetic data generator (v1: seeded HL7 over MLLP)
+├── bronze-listener-service/    # ✅ Kafka → bronze.raw_messages (+ outbox → bronze.ingested), Phase 9a
+└── data-generator/             # ✅ Python synthetic data generator (v1: seeded HL7 over MLLP; all formats in 9d)
 ```
 
 Each implemented service has its own README with its endpoints, design notes and test instructions.

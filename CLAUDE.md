@@ -183,7 +183,7 @@ api-gateway  →  dashboard-ui (React, 5 views)
 | api-gateway | 8080 | implemented (Phase 7) |
 | keycloak | 8180 | realm `clinicalharmony` (Phase 5b slice 4); container port 8080 |
 | dashboard-ui | 3000 | implemented (Phase 8); nginx, static SPA |
-| bronze-listener-service | 8086 | Phase 9a (built, in review); health/metrics only |
+| bronze-listener-service | 8086 | implemented (Phase 9a, PR #15); health/metrics only |
 | kafka | 19092 | KRaft, no Zookeeper (Phase 9a); containers use `kafka:29092` |
 | kafbat-ui | 8090 | Kafka console, read-only (Phase 9a); container port 8080 |
 
@@ -218,7 +218,7 @@ All paths: SHA-256 checksum on the raw payload, quarantine (not drop) on parse f
 - Structured JSON logs (Boot `logging.structured.format.console: logstash` + `json.add.service`);
   SLF4J fluent `addKeyValue` fields and MDC become top-level JSON keys. Same in bronze-listener-service.
 
-### bronze-listener-service (Phase 9a — built, in review)
+### bronze-listener-service (Phase 9a — done, merged as PR #15)
 
 Port 8086, package `com.clinicalharmony.bronze`, consumer group `bronze-writer` on
 `clinicalharmony.bronze.hl7v2.raw` (`ack-mode: record`, `concurrency: 3`).
@@ -241,7 +241,7 @@ Port 8086, package `com.clinicalharmony.bronze`, consumer group `bronze-writer` 
   `@ServiceConnection` without `@Container`; a background tail consumer must be started in
   `@BeforeEach`, NOT `@BeforeAll` — the containers aren't up before the context).
 
-### data-generator (Phase 9a v1 — built, in review)
+### data-generator (Phase 9a v1 — done, merged as PR #15)
 
 Python 3.9+ stdlib only, run on the host: `python3 data-generator/generate.py [--count 100] [--seed 42]
 [--malformed-rate 0.10] [--no-send] [--send-dir DIR]`. Writes `data-generator/out/seed-<n>/*.hl7` +
@@ -655,7 +655,7 @@ schema **`pmi`** (`match_runs`, `match_candidates` with a partial unique index o
 
 ## Build order / phase plan
 
-Phases are meant to be fully complete before the next starts. Current state as of 2026-11-14:
+Phases are meant to be fully complete before the next starts. Current state as of 2026-11-16:
 
 - **Phase 1** (done): Foundation — docker-compose.yml, all 7 `docs/db-init/` SQL scripts, seed data.
 - **Phase 2 / 2b** (done): ingestion-service — all three intake paths (HL7 v2, FHIR JSON, Claims CSV) landing to Bronze.
@@ -684,7 +684,7 @@ Phases are meant to be fully complete before the next starts. Current state as o
   - Full per-layer design (topics, consumer groups, writes, partition keys, idempotency, outbox, DLTs,
     log events, metrics, done-when) is the README's "Phase 9 design: one layer at a time" table — keep
     it and the code in sync. Topic naming `clinicalharmony.<layer>.<entity>.<event>`, `<topic>.dlt`.
-  - **9a** (BUILT 2026-11-14, in review on branch `data-generator`; flip to done after the user's PR merges)
+  - **9a** (done, merged as PR #15 on 2026-11-16, branch `data-generator`)
     Bronze: generator v1 (host python3, 100 seeded HL7 over MLLP) → ingestion-service publishes
     `clinicalharmony.bronze.hl7v2.raw` (ACK AA only after `acks=all`, AE otherwise) → bronze-listener-service
     (group `bronze-writer`, port 8086) → `bronze.raw_messages` idempotently (migration 23 partial unique
@@ -705,8 +705,12 @@ Phases are meant to be fully complete before the next starts. Current state as o
     `clinicalharmony.gold.patient.changed` → `pmi-matcher` inside patient-index-service (batched runs).
   - **9d** Full generator (FHIR / claims / C-CDA, cross-feed duplicates, defects, `--seed`/`--reset`/`--trickle`).
   - **9e** Observability: logs to Datadog or Splunk (undecided) + dashboards/alerts.
-  - To settle at 9a scoping: Kafka host port (medistream takes 9092/2181 → e.g. 19092; cp-kafka 7.6.1
-    image already local), spring-kafka 3.3.x / kafka-clients 3.9.x are NOT in ~/.m2 (ask before
-    downloading), generator on host python3 vs a python container.
+  - **Next, before 9b** (agreed 2026-11-16 during the 9a manual test, own branch e.g.
+    `pmi-review-recent-decisions`): dashboard ordering fixes — PMI Review decided candidates newest first
+    (`MatchCandidateRepository` sorts every status `score DESC, id`) + a "Recently decided" card (+ optional
+    clickable run counts); FHIR Viewer list sorted by number, not text (`FhirQueries` `ORDER BY fhir_id`);
+    Data Lineage "Transformations recorded" in pipeline order, not alphabetical (`LineageQueries`); FHIR
+    resource page "Download .json" next to "Copy JSON".
+  - Open for 9b: the generator has no RXE/RXO yet; decide AL1 → new `silver.allergies`.
 - **Phase 10**: Polish, final Docker test, interview demo script, the draw.io diagrams listed in the
   README's "Design diagrams (to draw)" section.

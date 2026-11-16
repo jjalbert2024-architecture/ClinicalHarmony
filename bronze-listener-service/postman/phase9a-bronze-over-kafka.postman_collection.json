@@ -1,0 +1,222 @@
+{
+  "info": {
+    "name": "ClinicalHarmony · Phase 9a — Bronze over Kafka",
+    "description": "Happy-path walkthrough (6 requests) of Phase 9a: data-generator → MLLP :8887 → ingestion-service → Kafka clinicalharmony.bronze.hl7v2.raw → bronze-listener-service → bronze.raw_messages (+ outbox → clinicalharmony.bronze.ingested). MLLP isn't HTTP, so the messages are sent by the generator from a terminal (see request 3), and Postman checks the results through the api-gateway's Bronze read model and Kafbat UI. Prereqs: `docker-compose up -d`, migration 23 applied. Idempotency, dead letters, ACK details and error cases are covered by scripts/smoke-test.sh section 18.",
+    "schema": "https://schema.getpostman.com/json/collection/v2.1.0/collection.json"
+  },
+  "item": [
+    {
+      "name": "1. Auth — sign in as dana (data steward)",
+      "event": [
+        {
+          "listen": "test",
+          "script": {
+            "type": "text/javascript",
+            "exec": [
+              "pm.test('token issued', () => pm.response.to.have.status(200));",
+              "pm.collectionVariables.set('access_token', pm.response.json().access_token);"
+            ]
+          }
+        }
+      ],
+      "request": {
+        "method": "POST",
+        "header": [],
+        "url": "{{keycloak_url}}/realms/clinicalharmony/protocol/openid-connect/token",
+        "description": "DEV-ONLY password grant on client clinicalharmony-dashboard-dev (same as the Phase 7 collection) so the gateway's Bronze read model can be called. Tokens live 10 minutes — re-run 1 on a 401.",
+        "auth": {
+          "type": "noauth"
+        },
+        "body": {
+          "mode": "urlencoded",
+          "urlencoded": [
+            {
+              "key": "grant_type",
+              "value": "password"
+            },
+            {
+              "key": "client_id",
+              "value": "clinicalharmony-dashboard-dev"
+            },
+            {
+              "key": "username",
+              "value": "dana"
+            },
+            {
+              "key": "password",
+              "value": "dana-dev-password"
+            }
+          ]
+        }
+      }
+    },
+    {
+      "name": "2. bronze-listener-service is up",
+      "event": [
+        {
+          "listen": "test",
+          "script": {
+            "type": "text/javascript",
+            "exec": [
+              "pm.test('UP', () => pm.expect(pm.response.json().status).to.eql('UP'));"
+            ]
+          }
+        }
+      ],
+      "request": {
+        "method": "GET",
+        "header": [],
+        "url": "{{bronze_url}}/actuator/health",
+        "description": "The new Phase 9a listener (consumer group bronze-writer). Health + metrics only; it has no business REST API — its input is Kafka.",
+        "auth": {
+          "type": "noauth"
+        }
+      }
+    },
+    {
+      "name": "3. Bronze — generated HL7 messages stored as PENDING",
+      "event": [
+        {
+          "listen": "test",
+          "script": {
+            "type": "text/javascript",
+            "exec": [
+              "pm.test('200', () => pm.response.to.have.status(200));",
+              "pm.test('has PENDING HL7 rows', () => pm.expect(pm.response.json().items.length).to.be.above(0));"
+            ]
+          }
+        }
+      ],
+      "request": {
+        "method": "GET",
+        "header": [],
+        "url": "{{gateway_url}}/api/v1/bronze/messages?messageType=HL7V2&status=PENDING&size=10",
+        "description": "Run the generator first, in a terminal from the repo root:  python3 data-generator/generate.py  (100 seeded messages over MLLP to :8887). This is the dashboard's Data Lineage → Bronze list: newest first, PENDING = parsed as HL7 v2 and announced on clinicalharmony.bronze.ingested for the 9b Silver transformer.",
+        "auth": {
+          "type": "bearer",
+          "bearer": [
+            {
+              "key": "token",
+              "value": "{{access_token}}",
+              "type": "string"
+            }
+          ]
+        }
+      }
+    },
+    {
+      "name": "4. Bronze — malformed ones QUARANTINED (kept, not dropped)",
+      "event": [
+        {
+          "listen": "test",
+          "script": {
+            "type": "text/javascript",
+            "exec": [
+              "pm.test('200', () => pm.response.to.have.status(200));",
+              "const items = pm.response.json().items;",
+              "pm.test('has QUARANTINED HL7 rows', () => pm.expect(items.length).to.be.above(0));",
+              "if (items.length) pm.collectionVariables.set('bronze_id', items[0].id);"
+            ]
+          }
+        }
+      ],
+      "request": {
+        "method": "GET",
+        "header": [],
+        "url": "{{gateway_url}}/api/v1/bronze/messages?messageType=HL7V2&status=QUARANTINED&size=10",
+        "description": "The ~10% deliberately malformed messages (missing MSH, free text, empty MSH-9/MSH-10, truncated header). The sender still got ACK AA: Bronze keeps everything, the listener quarantines it with the parse error. Stores the newest one's id for request 5.",
+        "auth": {
+          "type": "bearer",
+          "bearer": [
+            {
+              "key": "token",
+              "value": "{{access_token}}",
+              "type": "string"
+            }
+          ]
+        }
+      }
+    },
+    {
+      "name": "5. Bronze — one quarantined message, raw bytes + reason",
+      "event": [
+        {
+          "listen": "test",
+          "script": {
+            "type": "text/javascript",
+            "exec": [
+              "pm.test('200', () => pm.response.to.have.status(200));",
+              "pm.test('quarantined with a reason', () => { const s = pm.response.json().summary; pm.expect(s.processingStatus).to.eql('QUARANTINED'); pm.expect(s.errorMessage).to.be.a('string'); });"
+            ]
+          }
+        }
+      ],
+      "request": {
+        "method": "GET",
+        "header": [],
+        "url": "{{gateway_url}}/api/v1/bronze/messages/{{bronze_id}}",
+        "description": "The raw payload exactly as it arrived over MLLP, its SHA-256, and errorMessage = why it was quarantined.",
+        "auth": {
+          "type": "bearer",
+          "bearer": [
+            {
+              "key": "token",
+              "value": "{{access_token}}",
+              "type": "string"
+            }
+          ]
+        }
+      }
+    },
+    {
+      "name": "6. Kafka — bronze-writer consumer group (Kafbat UI API)",
+      "event": [
+        {
+          "listen": "test",
+          "script": {
+            "type": "text/javascript",
+            "exec": [
+              "pm.test('200', () => pm.response.to.have.status(200));",
+              "pm.test('bronze-writer group', () => pm.expect(pm.response.json().groupId).to.eql('bronze-writer'));"
+            ]
+          }
+        }
+      ],
+      "request": {
+        "method": "GET",
+        "header": [],
+        "url": "{{kafbat_url}}/api/clusters/clinicalharmony/consumer-groups/bronze-writer",
+        "description": "Same data as Kafbat UI's Consumers page (open {{kafbat_url}} in a browser): 3 partitions of clinicalharmony.bronze.hl7v2.raw, current offsets and lag (0 once caught up). Re-running the generator with the same --seed re-sends identical bytes: offsets move, Bronze row counts don't (idempotent).",
+        "auth": {
+          "type": "noauth"
+        }
+      }
+    }
+  ],
+  "variable": [
+    {
+      "key": "gateway_url",
+      "value": "http://localhost:8080"
+    },
+    {
+      "key": "keycloak_url",
+      "value": "http://localhost:8180"
+    },
+    {
+      "key": "bronze_url",
+      "value": "http://localhost:8086"
+    },
+    {
+      "key": "kafbat_url",
+      "value": "http://localhost:8090"
+    },
+    {
+      "key": "access_token",
+      "value": ""
+    },
+    {
+      "key": "bronze_id",
+      "value": ""
+    }
+  ]
+}

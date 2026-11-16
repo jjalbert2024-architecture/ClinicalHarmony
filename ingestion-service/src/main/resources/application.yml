@@ -10,6 +10,20 @@ spring:
     password: ${DB_PASSWORD:clinicalharmony}
     hikari:
       schema: bronze
+  # Phase 9a: MLLP intake → clinicalharmony.bronze.hl7v2.raw. acks=all + idempotent producer; the route
+  # blocks on the send (ingestion.kafka.send-timeout) and only then ACKs AA.
+  kafka:
+    bootstrap-servers: ${KAFKA_BOOTSTRAP_SERVERS:localhost:19092}
+    producer:
+      acks: all
+      key-serializer: org.apache.kafka.common.serialization.StringSerializer
+      value-serializer: org.apache.kafka.common.serialization.StringSerializer
+      properties:
+        enable.idempotence: true
+        max.block.ms: 5000
+        request.timeout.ms: 5000
+        delivery.timeout.ms: 9000
+        linger.ms: 0
 
 camel:
   springboot:
@@ -23,9 +37,22 @@ ingestion:
     default-source-system: ${FHIR_DEFAULT_SOURCE_SYSTEM:UNKNOWN_FHIR_SOURCE}
   claims:
     default-source-system: ${CLAIMS_DEFAULT_SOURCE_SYSTEM:UNKNOWN_CLAIMS_SOURCE}
+  kafka:
+    send-timeout: 10s
+    partitions: 3
 
 management:
   endpoints:
     web:
       exposure:
-        include: health,info
+        include: health,info,metrics
+
+# Phase 9a: one JSON object per log line (Logstash layout): MDC (correlationId) and SLF4J key/values
+# (event, topic, partition, offset, durationMs…) become top-level fields for Datadog / Splunk in 9e.
+logging:
+  structured:
+    format:
+      console: logstash
+    json:
+      add:
+        service: ${spring.application.name}

@@ -1,6 +1,7 @@
 #!/usr/bin/env bash
 # End-to-end smoke test for ingestion-service, ontology-service, rules-engine-service,
-# fhir-compliance-service, patient-index-service, api-gateway, and dashboard-ui.
+# fhir-compliance-service, patient-index-service, api-gateway, dashboard-ui, and (Phase 9a) the
+# MLLP → Kafka → bronze-listener-service path driven by data-generator.
 # Assumes the stack is already up: `docker-compose up -d` from the repo root.
 # Usage: ./scripts/smoke-test.sh
 set -uo pipefail
@@ -12,6 +13,11 @@ FHIR_COMPLIANCE_URL="${FHIR_COMPLIANCE_URL:-http://localhost:8084}"
 PMI_URL="${PMI_URL:-http://localhost:8085}"
 GATEWAY_URL="${GATEWAY_URL:-http://localhost:8080}"
 DASHBOARD_URL="${DASHBOARD_URL:-http://localhost:3000}"
+BRONZE_URL="${BRONZE_URL:-http://localhost:8086}"
+KAFBAT_URL="${KAFBAT_URL:-http://localhost:8090}"
+MLLP_HOST="${MLLP_HOST:-localhost}"
+MLLP_PORT="${MLLP_PORT:-8887}"
+KAFKA_CONTAINER="${KAFKA_CONTAINER:-clinicalharmony-kafka}"
 KEYCLOAK_URL="${KEYCLOAK_URL:-http://localhost:8180}"
 TOKEN_URL="$KEYCLOAK_URL/realms/clinicalharmony/protocol/openid-connect/token"
 CLIENT_ID="${CLIENT_ID:-clinicalharmony-app}"
@@ -111,7 +117,7 @@ check_header() {
 }
 
 section "0. Health checks"
-for pair in "ingestion:$INGESTION_URL" "ontology:$ONTOLOGY_URL" "rules-engine:$RULES_URL" "fhir-compliance:$FHIR_COMPLIANCE_URL" "patient-index:$PMI_URL"; do
+for pair in "ingestion:$INGESTION_URL" "ontology:$ONTOLOGY_URL" "rules-engine:$RULES_URL" "fhir-compliance:$FHIR_COMPLIANCE_URL" "patient-index:$PMI_URL" "bronze-listener:$BRONZE_URL"; do
   name="${pair%%:*}"; url="${pair#*:}"
   check_http "$name-service is up" GET "$url/actuator/health" 200
 done
@@ -715,6 +721,102 @@ gw_hdrs="$(curl -s -o /dev/null -D - -X OPTIONS "$GATEWAY_URL/api/v1/me" -H "Ori
 gw_expose="$(curl -s -o /dev/null -D - "$GATEWAY_URL/api/v1/config" -H "Origin: $DASH" | tr -d '\r' | awk -F': ' 'tolower($1)=="access-control-expose-headers"{print $2}')"
 [[ "$gw_hdrs" == *authorization* && "$gw_hdrs" == *x-correlation-id* && "$gw_expose" == *X-Correlation-Id* ]]
 pass_if "gateway CORS lets the UI send Authorization + X-Correlation-Id and read the echoed id" $? "allow '$gw_hdrs', expose '$gw_expose'"
+
+section "18. Bronze over Kafka — data-generator → MLLP → Kafka → bronze-listener (Phase 9a)"
+# Needs migration 23, the KRaft kafka container, and bronze-listener-service. A fresh random seed per
+# run makes every payload new, so the section is rerunnable without wiping Bronze.
+kexec() { docker exec "$KAFKA_CONTAINER" "$@" 2>/dev/null; }
+for t in clinicalharmony.bronze.hl7v2.raw clinicalharmony.bronze.hl7v2.raw.dlt clinicalharmony.bronze.ingested; do
+  parts="$(kexec kafka-topics --bootstrap-server localhost:29092 --describe --topic "$t" | grep -c 'Partition: ')"
+  [[ "$parts" == "3" ]]; pass_if "topic $t exists with 3 partitions" $? "$parts partitions"
+done
+# Sum of LAG for a consumer group over one topic ("-" counts as 0).
+group_lag() { kexec kafka-consumer-groups --bootstrap-server localhost:29092 --describe --group "$1" \
+  | awk -v t="$2" '$2==t && $6 ~ /^[0-9]+$/ {s+=$6} END {print s+0}'; }
+wait_lag_zero() { for _ in $(seq 1 60); do [[ "$(group_lag bronze-writer clinicalharmony.bronze.hl7v2.raw)" == "0" ]] && return 0; sleep 0.5; done; return 1; }
+in_list() { python3 -c "import json;print(','.join(\"'%s'\" % m['sha256'] for m in json.load(open('$1'))['messages']))"; }
+
+SEED="$(( (RANDOM << 15) | RANDOM ))"
+GEN_OUT="$TMP/generator"
+python3 "$SCRIPT_DIR/../data-generator/generate.py" --count 20 --seed "$SEED" --malformed-rate 0.10 \
+  --out "$GEN_OUT" --host "$MLLP_HOST" --port "$MLLP_PORT" --quiet > "$TMP/gen.out" 2>&1
+gen_rc=$?
+[[ $gen_rc -eq 0 ]] && grep -q "20 ACK AA" "$TMP/gen.out"
+pass_if "generator sent 20 messages (seed $SEED) and every one got ACK AA — incl. the 2 malformed" $? "$(tail -1 "$TMP/gen.out")"
+MANIFEST="$GEN_OUT/seed-$SEED/manifest.json"
+SHAS="$(in_list "$MANIFEST")"
+wait_lag_zero; pass_if "bronze-writer caught up (consumer lag 0)" $? "lag $(group_lag bronze-writer clinicalharmony.bronze.hl7v2.raw)"
+check_sql "all 20 landed in bronze.raw_messages via MLLP_KAFKA" \
+  "SELECT count(*) FROM bronze.raw_messages WHERE intake_channel = 'MLLP_KAFKA' AND payload_checksum IN ($SHAS)" "20"
+check_sql "  → 18 PENDING + 2 QUARANTINED, exactly as the manifest says" \
+  "SELECT string_agg(processing_status || '=' || n, ',' ORDER BY processing_status) FROM (SELECT processing_status, count(*) n FROM bronze.raw_messages WHERE payload_checksum IN ($SHAS) GROUP BY 1) x" \
+  "PENDING=18,QUARANTINED=2"
+mismatch="$(python3 - "$MANIFEST" <<'PY'
+import json, subprocess, sys
+m = json.load(open(sys.argv[1]))["messages"]
+rows = subprocess.run(["docker", "exec", "clinicalharmony-postgres", "psql", "-U", "clinicalharmony", "-d", "clinicalharmony", "-Atc",
+    "SELECT payload_checksum || ' ' || processing_status FROM bronze.raw_messages WHERE intake_channel='MLLP_KAFKA' AND payload_checksum IN (%s)"
+    % ",".join("'%s'" % x["sha256"] for x in m)], capture_output=True, text=True).stdout.split()
+got = dict(zip(rows[::2], rows[1::2]))
+print(sum(1 for x in m if got.get(x["sha256"]) != x["expectedStatus"]))
+PY
+)"
+[[ "$mismatch" == "0" ]]; pass_if "  → every message has the status its manifest entry expects" $? "$mismatch mismatches"
+check_sql "  → each row carries its correlation id + Kafka topic/partition/offset" \
+  "SELECT count(*) FROM bronze.raw_messages WHERE payload_checksum IN ($SHAS) AND correlation_id LIKE 'mllp-%' AND kafka_topic = 'clinicalharmony.bronze.hl7v2.raw' AND kafka_partition BETWEEN 0 AND 2 AND kafka_offset IS NOT NULL" "20"
+check_sql "  → quarantined rows keep the parse error for the data steward" \
+  "SELECT count(*) FROM bronze.raw_messages WHERE payload_checksum IN ($SHAS) AND processing_status = 'QUARANTINED' AND length(error_message) > 0" "2"
+check_sql "  → valid rows are tagged with their MSH-4 sending facility" \
+  "SELECT count(*) FROM bronze.raw_messages WHERE payload_checksum IN ($SHAS) AND processing_status = 'PENDING' AND source_system IN ('CITY_HOSPITAL','NORTH_CLINIC','REGIONAL_LAB')" "18"
+for _ in $(seq 1 30); do
+  [[ "$(docker exec "$PG_CONTAINER" psql -U clinicalharmony -d clinicalharmony -Atc "SELECT count(*) FROM bronze.outbox_events o JOIN bronze.raw_messages b ON b.id = o.aggregate_id WHERE b.payload_checksum IN ($SHAS) AND o.published_at IS NOT NULL")" == "18" ]] && break
+  sleep 0.5
+done
+check_sql "outbox: one bronze.ingested event per PENDING row, relayed to Kafka" \
+  "SELECT count(*) || '/' || count(published_at) FROM bronze.outbox_events o JOIN bronze.raw_messages b ON b.id = o.aggregate_id WHERE b.payload_checksum IN ($SHAS)" "18/18"
+check_sql "  → events carry the correlation id and the hl7v2.raw event id as causation id" \
+  "SELECT count(*) FROM bronze.outbox_events o JOIN bronze.raw_messages b ON b.id = o.aggregate_id WHERE b.payload_checksum IN ($SHAS) AND o.headers->>'correlation-id' = b.correlation_id AND length(o.headers->>'causation-id') = 36 AND (o.payload->>'rawMessageId')::bigint = b.id" "18"
+
+# Idempotency: send the very same 20 files again (a sender retry storm) → all ACKed, nothing new stored.
+python3 "$SCRIPT_DIR/../data-generator/generate.py" --send-dir "$GEN_OUT/seed-$SEED" --host "$MLLP_HOST" --port "$MLLP_PORT" --quiet > "$TMP/gen2.out" 2>&1
+[[ $? -eq 0 ]] && grep -q "20 ACK AA" "$TMP/gen2.out"; pass_if "re-sending the same 20 files is ACKed AA again" $? "$(tail -1 "$TMP/gen2.out")"
+wait_lag_zero; pass_if "  → bronze-writer consumed the repeats (lag 0)" $? ""
+check_sql "  → still exactly 20 rows: repeats are skipped, not duplicated" \
+  "SELECT count(*) FROM bronze.raw_messages WHERE payload_checksum IN ($SHAS)" "20"
+check_sql "  → and no second bronze.ingested event" \
+  "SELECT count(*) FROM bronze.outbox_events o JOIN bronze.raw_messages b ON b.id = o.aggregate_id WHERE b.payload_checksum IN ($SHAS)" "18"
+check_sql "partial unique index guards MLLP_KAFKA rows (migration 23)" \
+  "SELECT count(*) FROM pg_indexes WHERE indexname = 'uq_raw_messages_kafka_source_checksum'" "1"
+
+# Raw MLLP: a malformed frame still gets AA (kept + quarantined downstream), and the ACK echoes MSH-10.
+ack="$(python3 - "$MLLP_HOST" "$MLLP_PORT" "SMOKE-$SEED" <<'PY'
+import socket, sys
+host, port, ctrl = sys.argv[1], int(sys.argv[2]), sys.argv[3]
+msg = "MSH|^~\\&|SMOKE|SMOKE_FACILITY|CH|ING|20261114||ADT^A01^ADT_A01|%s|P|2.5\rPID|1||SMK1^^^SMOKE_FACILITY^MR||TEST^SMOKE\r" % ctrl
+s = socket.create_connection((host, port), timeout=15)
+s.sendall(b"\x0b" + msg.encode() + b"\x1c\x0d")
+buf = b""
+while b"\x1c\x0d" not in buf:
+    buf += s.recv(4096)
+print(buf.decode().strip("\x0b\x1c\r").replace("\r", " / "))
+PY
+)"
+[[ "$ack" == *"MSA|AA|SMOKE-$SEED"* && "$ack" == *"ACK^A01^ACK"* ]]; pass_if "MLLP ACK is AA and echoes MSH-10 (MSA-2)" $? "$ack"
+
+# Dashboard read path: the gateway's Data Lineage → Bronze view lists the new rows.
+BRONZE_ID="$(docker exec "$PG_CONTAINER" psql -U clinicalharmony -d clinicalharmony -Atc "SELECT id FROM bronze.raw_messages WHERE payload_checksum IN ($SHAS) AND processing_status='QUARANTINED' ORDER BY id LIMIT 1")"
+TOKEN="$(user_token dana)"   # fresh: section 16's token may have expired by now
+check_http "gateway shows a generated QUARANTINED message in Data Lineage → Bronze" GET "$GW/bronze/messages/$BRONZE_ID" 200
+check_json "  → status and parse error visible to the data steward" "$TMP/last_response.json" \
+  "(d['summary']['processingStatus'], len(d['summary']['errorMessage'] or '') > 0)" "('QUARANTINED', True)"
+TOKEN=""
+
+# Kafbat UI (dev console) sees the cluster and the bronze-writer group.
+code="$(curl -s -o "$TMP/kafbat.json" -w "%{http_code}" "$KAFBAT_URL/api/clusters")"
+[[ "$code" == "200" ]] && grep -q '"name":"clinicalharmony"' "$TMP/kafbat.json" && grep -q '"status":"ONLINE"' "$TMP/kafbat.json"
+pass_if "Kafbat UI on $KAFBAT_URL sees cluster clinicalharmony online" $? "HTTP $code"
+code="$(curl -s -o "$TMP/kafbat_cg.json" -w "%{http_code}" "$KAFBAT_URL/api/clusters/clinicalharmony/consumer-groups/bronze-writer")"
+[[ "$code" == "200" ]] && grep -q '"groupId":"bronze-writer"' "$TMP/kafbat_cg.json"; pass_if "  → and the bronze-writer consumer group" $? "HTTP $code"
 
 echo
 echo "=== Summary: $PASS passed, $FAIL failed ==="

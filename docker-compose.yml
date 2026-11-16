@@ -26,45 +26,57 @@ services:
     networks:
       - clinicalharmony-net
 
-  zookeeper:
-    image: confluentinc/cp-zookeeper:7.6.1
-    container_name: clinicalharmony-zookeeper
-    environment:
-      ZOOKEEPER_CLIENT_PORT: 2181
-      ZOOKEEPER_TICK_TIME: 2000
-    ports:
-      - "2181:2181"
-    healthcheck:
-      test: ["CMD-SHELL", "echo ruok | nc -w 2 localhost 2181 | grep imok"]
-      interval: 10s
-      timeout: 5s
-      retries: 5
-      start_period: 10s
-    networks:
-      - clinicalharmony-net
-
+  # Phase 9a: single-node Kafka in KRaft mode (no Zookeeper) — the same cp-kafka 7.6.1 image the
+  # Testcontainers tests run. Host port 19092 (an unrelated project grabs 9092/2181 on Docker
+  # restart); containers use kafka:29092. Topics are declared by the services that own them
+  # (3 partitions each), so broker auto-create is off and a typo'd topic name fails loudly.
   kafka:
     image: confluentinc/cp-kafka:7.6.1
     container_name: clinicalharmony-kafka
-    depends_on:
-      zookeeper:
-        condition: service_healthy
     environment:
-      KAFKA_BROKER_ID: 1
-      KAFKA_ZOOKEEPER_CONNECT: zookeeper:2181
-      KAFKA_LISTENER_SECURITY_PROTOCOL_MAP: PLAINTEXT:PLAINTEXT,PLAINTEXT_HOST:PLAINTEXT
-      KAFKA_ADVERTISED_LISTENERS: PLAINTEXT://kafka:29092,PLAINTEXT_HOST://localhost:9092
+      CLUSTER_ID: Q2xpbmljYWxIYXJtb255MQ
+      KAFKA_NODE_ID: 1
+      KAFKA_PROCESS_ROLES: broker,controller
+      KAFKA_CONTROLLER_QUORUM_VOTERS: 1@kafka:29093
+      KAFKA_LISTENERS: PLAINTEXT://0.0.0.0:29092,CONTROLLER://0.0.0.0:29093,PLAINTEXT_HOST://0.0.0.0:19092
+      KAFKA_ADVERTISED_LISTENERS: PLAINTEXT://kafka:29092,PLAINTEXT_HOST://localhost:19092
+      KAFKA_LISTENER_SECURITY_PROTOCOL_MAP: CONTROLLER:PLAINTEXT,PLAINTEXT:PLAINTEXT,PLAINTEXT_HOST:PLAINTEXT
+      KAFKA_CONTROLLER_LISTENER_NAMES: CONTROLLER
       KAFKA_INTER_BROKER_LISTENER_NAME: PLAINTEXT
       KAFKA_OFFSETS_TOPIC_REPLICATION_FACTOR: 1
-      KAFKA_AUTO_CREATE_TOPICS_ENABLE: "true"
+      KAFKA_TRANSACTION_STATE_LOG_REPLICATION_FACTOR: 1
+      KAFKA_TRANSACTION_STATE_LOG_MIN_ISR: 1
+      KAFKA_MIN_INSYNC_REPLICAS: 1
+      KAFKA_GROUP_INITIAL_REBALANCE_DELAY_MS: 0
+      KAFKA_AUTO_CREATE_TOPICS_ENABLE: "false"
     ports:
-      - "9092:9092"
+      - "19092:19092"
+    volumes:
+      - kafka-data:/var/lib/kafka/data
     healthcheck:
-      test: ["CMD-SHELL", "kafka-broker-api-versions --bootstrap-server localhost:9092"]
+      test: ["CMD-SHELL", "kafka-broker-api-versions --bootstrap-server localhost:29092 > /dev/null"]
       interval: 10s
       timeout: 10s
-      retries: 5
+      retries: 10
       start_period: 20s
+    networks:
+      - clinicalharmony-net
+
+  # Phase 9a: Kafbat UI (Apache-2.0 fork of provectuslabs/kafka-ui) to watch topics, messages,
+  # consumer lag and dead letters in dev. Read-only, no auth: never expose it beyond localhost.
+  kafbat-ui:
+    image: kafbat/kafka-ui:v1.5.0
+    container_name: clinicalharmony-kafbat-ui
+    environment:
+      KAFKA_CLUSTERS_0_NAME: clinicalharmony
+      KAFKA_CLUSTERS_0_BOOTSTRAPSERVERS: kafka:29092
+      KAFKA_CLUSTERS_0_READONLY: "true"
+      DYNAMIC_CONFIG_ENABLED: "false"
+    depends_on:
+      kafka:
+        condition: service_healthy
+    ports:
+      - "8090:8080"
     networks:
       - clinicalharmony-net
 
@@ -127,12 +139,41 @@ services:
       HL7_DEFAULT_SOURCE_SYSTEM: UNKNOWN_HL7_SOURCE
       FHIR_DEFAULT_SOURCE_SYSTEM: UNKNOWN_FHIR_SOURCE
       CLAIMS_DEFAULT_SOURCE_SYSTEM: UNKNOWN_CLAIMS_SOURCE
+      # Phase 9a: MLLP messages go to Kafka (ACK only after acks=all), not straight to Bronze.
+      KAFKA_BOOTSTRAP_SERVERS: kafka:29092
     depends_on:
       postgres:
+        condition: service_healthy
+      kafka:
         condition: service_healthy
     ports:
       - "8081:8081"  # REST intake + actuator health
       - "8887:8887"  # HL7 v2 MLLP intake
+    networks:
+      - clinicalharmony-net
+
+  # Phase 9a: consumer group bronze-writer — clinicalharmony.bronze.hl7v2.raw → bronze.raw_messages
+  # (+ outbox) → clinicalharmony.bronze.ingested. Health/metrics only, no business REST API.
+  bronze-listener-service:
+    build:
+      context: ./bronze-listener-service
+      dockerfile: Dockerfile
+    container_name: clinicalharmony-bronze-listener-service
+    environment:
+      SPRING_PROFILES_ACTIVE: docker
+      DB_HOST: postgres
+      DB_PORT: 5432
+      DB_NAME: clinicalharmony
+      DB_USER: clinicalharmony
+      DB_PASSWORD: clinicalharmony
+      KAFKA_BOOTSTRAP_SERVERS: kafka:29092
+    depends_on:
+      postgres:
+        condition: service_healthy
+      kafka:
+        condition: service_healthy
+    ports:
+      - "8086:8086"
     networks:
       - clinicalharmony-net
 
@@ -312,3 +353,4 @@ networks:
 
 volumes:
   postgres-data:
+  kafka-data:

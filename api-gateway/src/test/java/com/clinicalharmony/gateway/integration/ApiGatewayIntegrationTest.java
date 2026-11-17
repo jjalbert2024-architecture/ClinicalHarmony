@@ -116,6 +116,20 @@ class ApiGatewayIntegrationTest {
                 INSERT INTO bronze.raw_messages (source_system, message_type, message_format, raw_payload, processing_status,
                                                  error_message)
                 VALUES ('LAB_X', 'CLAIMS_CSV', 'CSV', 'a,b\\n1', 'QUARANTINED', 'Row 2 has 1 columns, header has 2')""");
+        // HL7 message types derived from MSH-9 (all PROCESSED so the QUARANTINED counts above stay 1)
+        for (String payload : List.of(
+                "MSH|^~\\&|LAB|REGIONAL_LAB|CH|ING|20261102||ORU^R01^ORU_R01|T1|P|2.5\rPID|1||X1",
+                "MSH|^~\\&|EHR|NC|CH|ING|20261102||ADT^A08^ADT_A01|T2|P|2.5\nPID|1||X2",   // \n terminators
+                "MSH|^~\\&|EHR|NC|CH|ING|20261102||ADT|T3|P|2.5\rPID|1||X3",              // MSH-9.1 only
+                "MSH|^~\\&|EHR\rPID|1||X4|a|b|c|d|e|f|g|h",                            // truncated header
+                "PID|1||X5")) {                                                       // no MSH at all
+            admin.update("""
+                    INSERT INTO bronze.raw_messages (source_system, message_type, message_format, raw_payload, processing_status)
+                    VALUES ('HL7TYPE_TEST', 'HL7V2', 'TEXT', ?, 'PROCESSED')""", payload);
+        }
+        admin.update("""
+                INSERT INTO bronze.raw_messages (source_system, message_type, message_format, raw_payload, processing_status)
+                VALUES ('HL7TYPE_TEST', 'FHIR_JSON', 'JSON', '{"resourceType":"Patient","x":"MSH|a|b|c|d|e|f|g|ORU^R01"}', 'PROCESSED')""");
         mariaE119 = admin.queryForObject("SELECT id FROM silver.conditions WHERE patient_id = ? AND code = 'E11.9'",
                 Long.class, seed1);
         admin.update("UPDATE silver.conditions SET raw_message_id = ? WHERE id = ?", bronzeId, mariaE119);
@@ -309,6 +323,26 @@ class ApiGatewayIntegrationTest {
         assertThat(summary.at("/fhirResources").asLong()) // ours + migration 19's CMS-0057 seed
                 .isEqualTo(gatewayJdbc.queryForObject("SELECT count(*) FROM gold.fhir_resources", Long.class));
         assertThat(summary.at("/bronzeByStatus/QUARANTINED").asInt()).isEqualTo(1);
+    }
+
+    @Test
+    void bronzeListShowsAndFiltersTheHl7MessageType() throws Exception {
+        JsonNode all = getJson("/api/v1/bronze/messages?sourceSystem=HL7TYPE_TEST&size=50");
+        assertThat(all.at("/total").asInt()).isEqualTo(6);
+        // newest first: FHIR, no MSH, truncated, MSH-9.1 only, \n-terminated ADT, ORU
+        assertThat(all.at("/items").findValuesAsText("messageType"))
+                .containsExactly("FHIR_JSON", "HL7V2", "HL7V2", "HL7V2", "HL7V2", "HL7V2");
+        List<String> types = new java.util.ArrayList<>();
+        all.at("/items").forEach(m -> types.add(m.path("hl7MessageType").isNull() ? null : m.path("hl7MessageType").asText()));
+        assertThat(types).containsExactly(null, null, null, "ADT", "ADT^A08", "ORU^R01");
+
+        JsonNode adt = getJson("/api/v1/bronze/messages?sourceSystem=HL7TYPE_TEST&hl7Type=ADT");
+        assertThat(adt.at("/items").findValuesAsText("hl7MessageType")).containsExactly("ADT", "ADT^A08");
+        JsonNode oru = getJson("/api/v1/bronze/messages?sourceSystem=HL7TYPE_TEST&messageType=HL7V2&hl7Type=ORU");
+        assertThat(oru.at("/total").asInt()).isEqualTo(1);
+        // an HL7 type never matches a FHIR / claims row, even one whose JSON contains "MSH|"
+        assertThat(getJson("/api/v1/bronze/messages?sourceSystem=HL7TYPE_TEST&messageType=FHIR_JSON&hl7Type=ORU")
+                .at("/total").asInt()).isZero();
     }
 
     @Test

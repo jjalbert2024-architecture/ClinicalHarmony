@@ -925,6 +925,10 @@ check_http "gateway Validation Report lists the conflict" GET "$GW/validation/fi
 check_json "  → one ERROR finding" "$TMP/last_response.json" "(d['total'], d['items'][0]['severity'])" "(1, 'ERROR')"
 check_http "gateway Data Lineage → Bronze shows the FAILED message and why" GET "$GW/bronze/messages/${FAILED_ID:-0}" 200
 check_json "  → status and mapping error" "$TMP/last_response.json" "(d['summary']['processingStatus'], 'PID-7' in (d['summary']['errorMessage'] or ''))" "('FAILED', True)"
+check_http "gateway Bronze list filtered to HL7 type RDE (pharmacy orders)" GET "$GW/bronze/messages?hl7Type=RDE&size=200" 200
+check_json "  → only HL7 v2 RDE rows, as many as Bronze has" "$TMP/last_response.json" \
+  "(d['total'] > 0, all(m['messageType'] == 'HL7V2' and m['hl7MessageType'].startswith('RDE^') for m in d['items']), d['total'])" \
+  "(True, True, $(psql_id "SELECT count(*) FROM bronze.raw_messages WHERE message_type = 'HL7V2' AND raw_payload ~ '^MSH\|([^|\r\n]*\|){7}RDE(\^|\|)'"))"
 TOKEN=""
 code="$(curl -s -o "$TMP/kafbat_sg.json" -w "%{http_code}" "$KAFBAT_URL/api/clusters/clinicalharmony/consumer-groups/silver-transformer")"
 [[ "$code" == "200" ]] && grep -q '"groupId":"silver-transformer"' "$TMP/kafbat_sg.json"; pass_if "Kafbat UI sees the silver-transformer consumer group" $? "HTTP $code"

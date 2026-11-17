@@ -260,7 +260,7 @@ docker-compose down -v
 ./scripts/smoke-test.sh
 ```
 
-This runs 293 black-box assertions against the live services: intake accept and quarantine, code
+This runs 297 black-box assertions against the live services: intake accept and quarantine, code
 validation, every clinical rule and live rule toggling, US Core validation, Silver → FHIR builds,
 C-CDA conversion, GoldWriter master patients and lineage, the CMS-0057 read/search API, SMART
 auth (it gets real tokens from Keycloak, then checks discovery, 401/403 and scope enforcement), and

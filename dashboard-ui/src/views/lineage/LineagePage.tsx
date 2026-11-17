@@ -127,40 +127,82 @@ function StepSummaryCard() {
   );
 }
 
+/** Bronze payload formats (`message_type`), labelled as the filter shows them. */
+export const PAYLOAD_FORMATS: Record<string, string> = { HL7V2: 'HL7 v2', FHIR_JSON: 'FHIR JSON', CLAIMS_CSV: 'Claims CSV' };
+
+/** HL7 v2 message codes (MSH-9.1) the pipeline receives. */
+export const HL7_TYPES: Record<string, string> = {
+  ADT: 'ADT (admit / update)',
+  ORU: 'ORU (lab results)',
+  RDE: 'RDE (pharmacy order)',
+  OMP: 'OMP (pharmacy order)',
+};
+
 function BronzeCard() {
   const api = useApi();
   const [params, setParams] = useSearchParams();
   const status = params.get('bronzeStatus') ?? '';
   const messageType = params.get('messageType') ?? '';
   const page = Number(params.get('bronzePage') ?? '0');
+  // an HL7 message type only exists in HL7 v2 payloads (a hand-edited URL with both is read as format only)
+  const hl7TypeDisabled = messageType !== '' && messageType !== 'HL7V2';
+  const hl7Type = hl7TypeDisabled ? '' : (params.get('hl7Type') ?? '');
   const messages = useQuery({
-    queryKey: ['bronze', status, messageType, page],
-    queryFn: ({ signal }) => api.get<Page<BronzeSummary>>('/bronze/messages', { status, messageType, page, size: 15 }, signal),
+    queryKey: ['bronze', status, messageType, hl7Type, page],
+    queryFn: ({ signal }) =>
+      api.get<Page<BronzeSummary>>('/bronze/messages', { status, messageType, hl7Type, page, size: 15 }, signal),
     placeholderData: keepPreviousData,
   });
-  function set(key: string, value: string) {
+  /** Applies filter changes to the URL (empty = removed); any filter change goes back to page 1. */
+  function set(changes: Record<string, string>) {
     const next = new URLSearchParams(params);
-    if (value) next.set(key, value);
-    else next.delete(key);
-    if (key !== 'bronzePage') next.delete('bronzePage');
+    for (const [key, value] of Object.entries(changes)) {
+      if (value) next.set(key, value);
+      else next.delete(key);
+    }
+    if (!('bronzePage' in changes)) next.delete('bronzePage');
     setParams(next, { replace: true });
+  }
+  function setFormat(value: string) {
+    // leaving HL7 v2 clears the HL7 type, which would otherwise match nothing
+    set(value === 'HL7V2' ? { messageType: value } : { messageType: value, hl7Type: '' });
+  }
+  function setHl7Type(value: string) {
+    // picking an HL7 type implies the HL7 v2 format
+    set(value ? { hl7Type: value, messageType: 'HL7V2' } : { hl7Type: '' });
   }
   return (
     <section className="card">
       <div className="card-head">
         <h2>Bronze messages</h2>
         <div className="filters inline">
-          <select aria-label="Processing status" value={status} onChange={(e) => set('bronzeStatus', e.target.value)}>
+          <select aria-label="Processing status" value={status} onChange={(e) => set({ bronzeStatus: e.target.value })}>
             <option value="">Any status</option>
             {['PENDING', 'PROCESSING', 'PROCESSED', 'FAILED', 'QUARANTINED'].map((s) => (
               <option key={s}>{s}</option>
             ))}
           </select>
-          <select aria-label="Message type" value={messageType} onChange={(e) => set('messageType', e.target.value)}>
-            <option value="">Any type</option>
-            <option value="HL7V2">HL7 v2</option>
-            <option value="FHIR_JSON">FHIR JSON</option>
-            <option value="CLAIMS_CSV">Claims CSV</option>
+          <select aria-label="Payload format" value={messageType} onChange={(e) => setFormat(e.target.value)}>
+            <option value="">Any payload format</option>
+            {Object.entries(PAYLOAD_FORMATS).map(([value, label]) => (
+              <option key={value} value={value}>
+                {label}
+              </option>
+            ))}
+          </select>
+          <select
+            aria-label="HL7 message type"
+            value={hl7Type}
+            disabled={hl7TypeDisabled}
+            title={hl7TypeDisabled ? 'Only HL7 v2 messages have an HL7 message type' : undefined}
+            onChange={(e) => setHl7Type(e.target.value)}
+          >
+            <option value="">Any HL7 message type</option>
+            {Object.entries(HL7_TYPES).map(([value, label]) => (
+              <option key={value} value={value}>
+                {label}
+              </option>
+            ))}
           </select>
         </div>
       </div>
@@ -171,7 +213,7 @@ function BronzeCard() {
           ) : (
             <>
               <BronzeTable items={data.items} />
-              <Pager page={data} onPage={(p) => set('bronzePage', String(p))} />
+              <Pager page={data} onPage={(p) => set({ bronzePage: String(p) })} />
             </>
           )
         }
@@ -187,7 +229,8 @@ function BronzeTable({ items }: { items: BronzeSummary[] }) {
         <tr>
           <th>Message</th>
           <th>Source</th>
-          <th>Type</th>
+          <th>Format</th>
+          <th>HL7 type</th>
           <th>Status</th>
           <th className="num">Bytes</th>
           <th>Received</th>
@@ -200,7 +243,8 @@ function BronzeTable({ items }: { items: BronzeSummary[] }) {
               <Link to={`/lineage/bronze/${m.id}`}>#{m.id}</Link>
             </td>
             <td>{m.sourceSystem}</td>
-            <td>{m.messageType}</td>
+            <td>{PAYLOAD_FORMATS[m.messageType] ?? m.messageType}</td>
+            <td>{m.hl7MessageType ?? <span className="muted">—</span>}</td>
             <td>
               <Badge value={m.processingStatus} />
               {m.errorMessage && <div className="muted small wrap">{m.errorMessage}</div>}

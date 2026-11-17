@@ -65,7 +65,7 @@ that issues the same token shape. Never enable that client anywhere real.
 | | `PUT /validation/rules/{code}/toggle` → rules-engine or fhir-compliance, whichever evaluates the rule (409 for rules no service can toggle) | owner (steward) |
 | FHIR Viewer | `GET /fhir/resource-types` · `GET /fhir/resources?type=&masterPatientId=&compliant=&q=&page=&size=` · `GET /fhir/resources/{type}/{fhirId}` (JSON + validator notes + lineage) | DB |
 | | `POST /fhir/validate` (body forwarded verbatim) · `POST /fhir/convert/ccda` | fhir-compliance |
-| Data Lineage | `GET /lineage?fhirResourceId=` **or** `?masterPatientId=` · `GET /lineage/summary` · `GET /bronze/messages?status=&messageType=&sourceSystem=&page=&size=` · `GET /bronze/messages/{id}` | DB |
+| Data Lineage | `GET /lineage?fhirResourceId=` **or** `?masterPatientId=` · `GET /lineage/summary` · `GET /bronze/messages?status=&messageType=&hl7Type=&sourceSystem=&page=&size=` (`hl7Type` = MSH-9.1, e.g. `ORU`; each row has `hl7MessageType`, e.g. `ORU^R01`) · `GET /bronze/messages/{id}` | DB |
 
 What the read models add:
 

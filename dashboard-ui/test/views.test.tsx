@@ -341,6 +341,54 @@ describe('Data Lineage', () => {
     expect(await screen.findByText('Bronze messages')).toBeInTheDocument();
   });
 
+  it('lists Bronze messages with their payload format and HL7 message type', async () => {
+    renderApp('/lineage');
+    const card = (await screen.findByRole('heading', { name: 'Bronze messages' })).closest('section')!;
+    await waitFor(() => expect(within(card).getAllByRole('row').length).toBeGreaterThan(1));
+    const headers = within(card).getAllByRole('columnheader').map((h) => h.textContent);
+    expect(headers).toEqual(['Message', 'Source', 'Format', 'HL7 type', 'Status', 'Bytes', 'Received']);
+    const cells = (id: number) =>
+      within(within(card).getByRole('link', { name: `#${id}` }).closest('tr')!)
+        .getAllByRole('cell')
+        .map((c) => c.textContent);
+    expect(cells(1279).slice(2, 4)).toEqual(['HL7 v2', 'ADT^A08']);
+    expect(cells(1275).slice(2, 4)).toEqual(['Claims CSV', '—']);
+    expect(cells(1270).slice(2, 4)).toEqual(['HL7 v2', '—']); // quarantined: no usable MSH-9
+    expect(within(card).getByLabelText('Payload format')).toHaveDisplayValue('Any payload format');
+    expect(within(card).getByLabelText('HL7 message type')).toHaveDisplayValue('Any HL7 message type');
+  });
+
+  it('an HL7 message type implies HL7 v2, and is cleared and disabled for other formats', async () => {
+    renderApp('/lineage');
+    const format = await screen.findByLabelText('Payload format');
+    const hl7 = screen.getByLabelText('HL7 message type');
+    const lastQuery = () => calls('/bronze/messages').at(-1)!.query;
+
+    await userEvent.selectOptions(hl7, 'ORU');
+    await waitFor(() => expect(lastQuery().get('hl7Type')).toBe('ORU'));
+    expect(lastQuery().get('messageType')).toBe('HL7V2');
+    expect(format).toHaveDisplayValue('HL7 v2');
+    expect(hl7).toHaveDisplayValue('ORU (lab results)');
+
+    await userEvent.selectOptions(format, 'FHIR_JSON');
+    await waitFor(() => expect(lastQuery().get('messageType')).toBe('FHIR_JSON'));
+    expect(lastQuery().has('hl7Type')).toBe(false);
+    expect(hl7).toBeDisabled();
+    expect(hl7).toHaveDisplayValue('Any HL7 message type');
+
+    await userEvent.selectOptions(format, '');
+    expect(hl7).toBeEnabled();
+  });
+
+  it('reads the Bronze filters from the URL, ignoring an HL7 type next to a non-HL7 format', async () => {
+    renderApp('/lineage?bronzeStatus=PROCESSED&messageType=CLAIMS_CSV&hl7Type=ORU');
+    expect(await screen.findByLabelText('Payload format')).toHaveDisplayValue('Claims CSV');
+    await waitFor(() => expect(calls('/bronze/messages').length).toBeGreaterThan(0));
+    const query = calls('/bronze/messages').at(-1)!.query;
+    expect([query.get('status'), query.get('messageType'), query.has('hl7Type')]).toEqual(['PROCESSED', 'CLAIMS_CSV', false]);
+    expect(screen.getByLabelText('HL7 message type')).toBeDisabled();
+  });
+
   it('lists the Silver rows a Bronze message produced, by table', async () => {
     server.use(
       http.get(`${API}/bronze/messages/:id`, ({ request }) =>
@@ -362,6 +410,7 @@ describe('Data Lineage', () => {
   it('shows a Bronze message with HL7 segments on separate lines', async () => {
     renderApp('/lineage/bronze/1');
     expect(await screen.findByRole('heading', { name: 'Bronze message #1' })).toBeInTheDocument();
+    expect(screen.getByText(/HL7V2 ADT\^A01 from CITY_HOSPITAL/)).toBeInTheDocument();
     expect(displayPayload('HL7V2', 'MSH|a\rPID|b\r')).toBe('MSH|a\nPID|b\n');
     expect(displayPayload('FHIR_JSON', '{"a":1}')).toBe('{\n  "a": 1\n}');
   });

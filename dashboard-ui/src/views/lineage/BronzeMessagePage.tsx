@@ -33,7 +33,8 @@ export function BronzeMessagePage() {
             title={`Bronze message #${d.summary.id}`}
             subtitle={
               <>
-                {d.summary.messageType} from {d.summary.sourceSystem} · <Badge value={d.summary.processingStatus} /> · received{' '}
+                {d.summary.messageType}
+                {d.summary.hl7MessageType && ` ${d.summary.hl7MessageType}`} from {d.summary.sourceSystem} · <Badge value={d.summary.processingStatus} /> · received{' '}
                 {fmtDateTime(d.summary.receivedAt)}
               </>
             }

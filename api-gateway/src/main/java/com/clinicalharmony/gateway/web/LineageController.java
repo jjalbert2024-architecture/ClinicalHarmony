@@ -46,10 +46,11 @@ public class LineageController {
             @RequestParam(required = false)
             @Pattern(regexp = "PENDING|PROCESSING|PROCESSED|FAILED|QUARANTINED") String status,
             @RequestParam(required = false) @Pattern(regexp = "HL7V2|FHIR_JSON|CLAIMS_CSV") String messageType,
+            @RequestParam(required = false) @Pattern(regexp = "[A-Z][A-Z0-9]{2}") String hl7Type,
             @RequestParam(required = false) @Size(max = 100) String sourceSystem,
             @RequestParam(defaultValue = "0") @Min(0) int page,
             @RequestParam(defaultValue = "25") @Min(1) @Max(200) int size) {
-        return lineage.bronzeMessages(status, messageType, sourceSystem, page, size);
+        return lineage.bronzeMessages(status, messageType, hl7Type, sourceSystem, page, size);
     }
 
     @GetMapping("/bronze/messages/{id}")

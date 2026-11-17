@@ -177,6 +177,33 @@ services:
     networks:
       - clinicalharmony-net
 
+  # Phase 9b: clinicalharmony.bronze.ingested → silver.* → clinicalharmony.silver.patient.changed.
+  # No depends_on rules-engine-service on purpose: if it's down, Silver is still written and the
+  # patient stays PENDING_VALIDATION until the sweeper can validate it.
+  silver-transformer-service:
+    build:
+      context: ./silver-transformer-service
+      dockerfile: Dockerfile
+    container_name: clinicalharmony-silver-transformer-service
+    environment:
+      SPRING_PROFILES_ACTIVE: docker
+      DB_HOST: postgres
+      DB_PORT: 5432
+      DB_NAME: clinicalharmony
+      DB_USER: clinicalharmony
+      DB_PASSWORD: clinicalharmony
+      KAFKA_BOOTSTRAP_SERVERS: kafka:29092
+      RULES_ENGINE_BASE_URL: http://rules-engine-service:8083
+    depends_on:
+      postgres:
+        condition: service_healthy
+      kafka:
+        condition: service_healthy
+    ports:
+      - "8087:8087"
+    networks:
+      - clinicalharmony-net
+
   ontology-service:
     build:
       context: ./ontology-service

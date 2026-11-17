@@ -7,6 +7,9 @@ FACILITIES = [
     ("REG_SYSTEM", "CITY_HOSPITAL", ("ADT",)),
     ("EHR_NC", "NORTH_CLINIC", ("ADT", "ORU")),
     ("LAB_SYSTEM", "REGIONAL_LAB", ("ORU",)),
+    # Pharmacy orders (9b). The patient's MRN keeps its home facility as PID-3.4 assigning authority,
+    # so the Silver layer attaches the order to that facility's patient, not to a "pharmacy patient".
+    ("RX_SYSTEM", "CITY_PHARMACY", ("RDE",)),
 ]
 ADT_FACILITIES = [f for f in FACILITIES if "ADT" in f[2]]
 ORU_FACILITIES = [f for f in FACILITIES if "ORU" in f[2]]
@@ -37,9 +40,36 @@ DIAGNOSES = [
     ("F41.1", "Generalized anxiety disorder"),
 ]
 
-# RxNorm ingredients (docs/db-init/09) for AL1 allergies
+# RxNorm ingredients (docs/db-init/09) for AL1 allergies. Every allergen is also in MEDICATIONS, so a
+# pharmacy order can (deliberately) conflict with the allergy → MEDICATION_ALLERGY_CONFLICT in 9b.
 ALLERGENS = [("723", "Amoxicillin"), ("5640", "Ibuprofen"), ("6809", "Metformin")]
 REACTIONS = ["RASH", "HIVES", "NAUSEA", "SWELLING"]
+
+# RxNorm ingredients (docs/db-init/09) for RDE^O11 pharmacy orders:
+# rxcui → (display, give amount, units, administration instructions)
+MEDICATIONS = {
+    "6809": ("Metformin 500 MG Oral Tablet", "500", "mg", "Take 1 tablet by mouth twice daily with meals"),
+    "29046": ("Lisinopril 10 MG Oral Tablet", "10", "mg", "Take 1 tablet by mouth once daily"),
+    "17767": ("Amlodipine 5 MG Oral Tablet", "5", "mg", "Take 1 tablet by mouth once daily"),
+    "83367": ("Atorvastatin 20 MG Oral Tablet", "20", "mg", "Take 1 tablet by mouth at bedtime"),
+    "7646": ("Omeprazole 20 MG Delayed Release Oral Capsule", "20", "mg", "Take 1 capsule by mouth before breakfast"),
+    "5640": ("Ibuprofen 400 MG Oral Tablet", "400", "mg", "Take 1 tablet by mouth every 6 hours as needed for pain"),
+    "723": ("Amoxicillin 500 MG Oral Capsule", "500", "mg", "Take 1 capsule by mouth three times daily for 7 days"),
+    "161": ("Acetaminophen 500 MG Oral Tablet", "500", "mg", "Take 2 tablets by mouth every 6 hours as needed"),
+    "36437": ("Sertraline 50 MG Oral Tablet", "50", "mg", "Take 1 tablet by mouth once daily"),
+}
+
+# What a prescriber would typically order for each diagnosis (ICD-10 → RxNorm ingredients above)
+TREATMENTS = {
+    "E11.9": ["6809"],
+    "I10": ["29046", "17767"],
+    "E78.5": ["83367"],
+    "K21.9": ["7646"],
+    "N39.0": ["723"],
+    "J06.9": ["161"],
+    "M54.50": ["5640", "161"],
+    "F41.1": ["36437"],
+}
 
 # LOINC (docs/db-init/08): code, name, unit, low, high, decimals
 LABS = {

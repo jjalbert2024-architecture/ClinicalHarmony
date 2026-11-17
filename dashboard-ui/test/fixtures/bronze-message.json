@@ -9,7 +9,8 @@
     "payloadLength": 148,
     "errorMessage": null,
     "receivedAt": "2026-07-02T12:50:49.604104Z",
-    "processedAt": null
+    "processedAt": null,
+    "hl7MessageType": "ADT^A01"
   },
   "rawPayload": "MSH|^~\\&|REG_SYSTEM|CITY_HOSPITAL|CLINICALHARMONY|INGESTION|20260702101500||ADT^A01^ADT_A01|MSG00001|P|2.5\rPID|1||MRN1^^^X^MR||DOE^JANE||19800515|F\r",
   "silverRows": []

@@ -28,7 +28,8 @@ public class LineageQueries {
 
     public record BronzeSummary(long id, String sourceSystem, String messageType, String messageFormat,
                                 String processingStatus, String payloadChecksum, int payloadLength,
-                                String errorMessage, OffsetDateTime receivedAt, OffsetDateTime processedAt) {
+                                String errorMessage, OffsetDateTime receivedAt, OffsetDateTime processedAt,
+                                String hl7MessageType) {
     }
 
     public record LineageGraph(String target, long targetId, List<LineageRecord> records,
@@ -46,18 +47,26 @@ public class LineageQueries {
     }
 
     /** Silver tables that carry raw_message_id (constants — safe to interpolate). */
-    static final List<String> SILVER_TABLES = List.of("patients", "conditions", "observations", "medications");
+    static final List<String> SILVER_TABLES = List.of("patients", "conditions", "observations", "medications", "allergies");
 
     private static final String RECORD_COLUMNS = """
             l.id, l.transformation_step, l.source_schema, l.source_table, l.source_id, l.target_schema,
             l.target_table, l.target_id, l.transformed_at, l.transformation_details
             """;
 
+    /**
+     * MSH-9.1^MSH-9.2 (e.g. {@code ORU^R01}) read from the raw HL7 header — only when the payload starts with an MSH
+     * segment and only from that first line (a truncated header never borrows fields from the next segment); NULL for
+     * FHIR / claims rows and for HL7 without a usable MSH-9.
+     */
+    static final String HL7_TYPE_SQL = """
+            (CASE WHEN b.message_type = 'HL7V2' THEN NULLIF(rtrim(substring(b.raw_payload
+                  from '^MSH\\|(?:[^|\\r\\n]*\\|){7}([^|^\\r\\n]*\\^?[^|^\\r\\n]*)'), '^'), '') END)""";
+
     private static final String BRONZE_SUMMARY_COLUMNS = """
             b.id, b.source_system, b.message_type, b.message_format, b.processing_status, b.payload_checksum,
             length(b.raw_payload) AS payload_length, left(b.error_message, 300) AS error_message, b.received_at,
-            b.processed_at
-            """;
+            b.processed_at,""" + " " + HL7_TYPE_SQL + " AS hl7_message_type\n";
 
     private final NamedParameterJdbcTemplate jdbc;
     private final ObjectMapper objectMapper;
@@ -139,10 +148,13 @@ public class LineageQueries {
                 rs.getString("source_schema"), rs.getString("target_table"), rs.getLong("n"), Sql.ts(rs, "last")));
     }
 
-    public Page<BronzeSummary> bronzeMessages(String status, String messageType, String sourceSystem, int page, int size) {
+    /** {@code hl7Type} = the message code (MSH-9.1, e.g. ORU); it only ever matches HL7 v2 rows. */
+    public Page<BronzeSummary> bronzeMessages(String status, String messageType, String hl7Type, String sourceSystem,
+                                              int page, int size) {
         Sql.Where where = new Sql.Where()
                 .and(Sql.has(status), "b.processing_status = :status", "status", status)
                 .and(Sql.has(messageType), "b.message_type = :type", "type", messageType)
+                .and(Sql.has(hl7Type), "split_part(" + HL7_TYPE_SQL + ", '^', 1) = :hl7Type", "hl7Type", hl7Type)
                 .and(Sql.has(sourceSystem), "b.source_system = :source", "source", sourceSystem);
         Long total = jdbc.queryForObject("SELECT count(*) FROM bronze.raw_messages b" + where.sql(), where.params, Long.class);
         where.params.addValue("limit", size).addValue("offset", (long) page * size);
@@ -188,6 +200,6 @@ public class LineageQueries {
         return new BronzeSummary(rs.getLong("id"), rs.getString("source_system"), rs.getString("message_type"),
                 rs.getString("message_format"), rs.getString("processing_status"), rs.getString("payload_checksum"),
                 rs.getInt("payload_length"), rs.getString("error_message"), Sql.ts(rs, "received_at"),
-                Sql.ts(rs, "processed_at"));
+                Sql.ts(rs, "processed_at"), rs.getString("hl7_message_type"));
     }
 }

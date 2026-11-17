@@ -1,7 +1,8 @@
 #!/usr/bin/env bash
 # End-to-end smoke test for ingestion-service, ontology-service, rules-engine-service,
-# fhir-compliance-service, patient-index-service, api-gateway, dashboard-ui, and (Phase 9a) the
-# MLLP → Kafka → bronze-listener-service path driven by data-generator.
+# fhir-compliance-service, patient-index-service, api-gateway, dashboard-ui, (Phase 9a) the
+# MLLP → Kafka → bronze-listener-service path driven by data-generator, and (Phase 9b) the
+# bronze.ingested → silver-transformer-service → silver.patient.changed path.
 # Assumes the stack is already up: `docker-compose up -d` from the repo root.
 # Usage: ./scripts/smoke-test.sh
 set -uo pipefail
@@ -14,6 +15,7 @@ PMI_URL="${PMI_URL:-http://localhost:8085}"
 GATEWAY_URL="${GATEWAY_URL:-http://localhost:8080}"
 DASHBOARD_URL="${DASHBOARD_URL:-http://localhost:3000}"
 BRONZE_URL="${BRONZE_URL:-http://localhost:8086}"
+SILVER_URL="${SILVER_URL:-http://localhost:8087}"
 KAFBAT_URL="${KAFBAT_URL:-http://localhost:8090}"
 MLLP_HOST="${MLLP_HOST:-localhost}"
 MLLP_PORT="${MLLP_PORT:-8887}"
@@ -117,7 +119,7 @@ check_header() {
 }
 
 section "0. Health checks"
-for pair in "ingestion:$INGESTION_URL" "ontology:$ONTOLOGY_URL" "rules-engine:$RULES_URL" "fhir-compliance:$FHIR_COMPLIANCE_URL" "patient-index:$PMI_URL" "bronze-listener:$BRONZE_URL"; do
+for pair in "ingestion:$INGESTION_URL" "ontology:$ONTOLOGY_URL" "rules-engine:$RULES_URL" "fhir-compliance:$FHIR_COMPLIANCE_URL" "patient-index:$PMI_URL" "bronze-listener:$BRONZE_URL" "silver-transformer:$SILVER_URL"; do
   name="${pair%%:*}"; url="${pair#*:}"
   check_http "$name-service is up" GET "$url/actuator/health" 200
 done
@@ -307,8 +309,8 @@ check_sql "every Silver patient has exactly one master; PROVISIONAL masters are 
   "SELECT (SELECT count(DISTINCT silver_patient_id) FROM gold.patient_source_xref) = (SELECT count(*) FROM silver.patients) AND (SELECT coalesce(bool_and(source_patient_count = 1 AND match_confidence_score IS NULL), true) FROM gold.master_patients WHERE match_status = 'PROVISIONAL')" "t"
 check_sql "every Silver-built Gold resource has exactly one FHIR_MAP lineage row" \
   "SELECT (SELECT count(*) FROM gold.fhir_resources WHERE fhir_id LIKE 'silver-%') = (SELECT count(*) FROM gold.data_lineage WHERE transformation_step = 'FHIR_MAP' AND target_table = 'fhir_resources')" "t"
-check_sql "Silver-built lineage chains run SILVER → GOLD (seed rows have no Bronze link)" \
-  "SELECT DISTINCT (SELECT string_agg(s->>'stage', '>' ORDER BY o) FROM jsonb_array_elements(transformation_details->'steps') WITH ORDINALITY AS t(s, o)) FROM gold.data_lineage WHERE transformation_step = 'FHIR_MAP'" "SILVER>GOLD"
+check_sql "Silver-built lineage chains run SILVER → GOLD (seed rows), or BRONZE → SILVER → GOLD (rows from Kafka, 9b)" \
+  "SELECT bool_and(chain IN ('SILVER>GOLD', 'BRONZE>SILVER>GOLD')) AND bool_or(chain = 'SILVER>GOLD') FROM (SELECT (SELECT string_agg(s->>'stage', '>' ORDER BY o) FROM jsonb_array_elements(transformation_details->'steps') WITH ORDINALITY AS t(s, o)) AS chain FROM gold.data_lineage WHERE transformation_step = 'FHIR_MAP') x" "t"
 check_sql "GOLD steps carry 64-hex input and output hashes" \
   "SELECT bool_and(transformation_details->'steps'->-1->>'input_hash' ~ '^[0-9a-f]{64}$' AND transformation_details->'steps'->-1->>'output_hash' ~ '^[0-9a-f]{64}$') FROM gold.data_lineage WHERE transformation_step = 'FHIR_MAP'" "t"
 check_sql "Phase 5 /generate resources (section 8) also go through GoldWriter: API → GOLD lineage" \
@@ -576,6 +578,8 @@ check_json "  → all 5 services + the gateway's DB UP" "$TMP/last_response.json
 MARIA="$(psql_id "SELECT x.master_patient_id FROM gold.patient_source_xref x JOIN silver.patients p ON p.id = x.silver_patient_id WHERE p.source_patient_id = 'SEED-0001'")"
 check_http "patient search q=garcia" GET "$GW/patients?q=garcia&size=50" 200
 check_json "  → finds SEED-0001's master" "$TMP/last_response.json" "any(m['id'] == $MARIA for m in d['items'])" "True"
+check_http "patient search by MRN q=mrn100001 (any case)" GET "$GW/patients?q=mrn100001" 200
+check_json "  → exactly SEED-0001's master" "$TMP/last_response.json" "[m['id'] for m in d['items']]" "[$MARIA]"
 check_http "patient timeline" GET "$GW/patients/$MARIA/timeline" 200
 check_json "  → one event per Silver condition/observation/medication of every linked record" "$TMP/last_response.json" "d['eventCount']" \
   "$(psql_id "WITH l AS (SELECT silver_patient_id id FROM gold.patient_source_xref WHERE master_patient_id = $MARIA) SELECT (SELECT count(*) FROM silver.conditions WHERE patient_id IN (SELECT id FROM l)) + (SELECT count(*) FROM silver.observations WHERE patient_id IN (SELECT id FROM l)) + (SELECT count(*) FROM silver.medications WHERE patient_id IN (SELECT id FROM l))")"
@@ -756,6 +760,8 @@ done
 group_lag() { kexec kafka-consumer-groups --bootstrap-server localhost:29092 --describe --group "$1" \
   | awk -v t="$2" '$2==t && $6 ~ /^[0-9]+$/ {s+=$6} END {print s+0}'; }
 wait_lag_zero() { for _ in $(seq 1 60); do [[ "$(group_lag bronze-writer clinicalharmony.bronze.hl7v2.raw)" == "0" ]] && return 0; sleep 0.5; done; return 1; }
+# 9b: silver-transformer then carries every PENDING row on to PROCESSED (or FAILED)
+wait_silver_lag_zero() { for _ in $(seq 1 60); do [[ "$(group_lag silver-transformer clinicalharmony.bronze.ingested)" == "0" ]] && return 0; sleep 0.5; done; return 1; }
 in_list() { python3 -c "import json;print(','.join(\"'%s'\" % m['sha256'] for m in json.load(open('$1'))['messages']))"; }
 
 SEED="$(( (RANDOM << 15) | RANDOM ))"
@@ -770,9 +776,13 @@ SHAS="$(in_list "$MANIFEST")"
 wait_lag_zero; pass_if "bronze-writer caught up (consumer lag 0)" $? "lag $(group_lag bronze-writer clinicalharmony.bronze.hl7v2.raw)"
 check_sql "all 20 landed in bronze.raw_messages via MLLP_KAFKA" \
   "SELECT count(*) FROM bronze.raw_messages WHERE intake_channel = 'MLLP_KAFKA' AND payload_checksum IN ($SHAS)" "20"
-check_sql "  → 18 PENDING + 2 QUARANTINED, exactly as the manifest says" \
+for _ in $(seq 1 60); do
+  [[ "$(docker exec "$PG_CONTAINER" psql -U clinicalharmony -d clinicalharmony -Atc "SELECT count(*) FROM bronze.raw_messages WHERE payload_checksum IN ($SHAS) AND processing_status = 'PENDING'")" == "0" ]] && break
+  sleep 0.5
+done
+check_sql "  → 18 valid (PENDING in Bronze, then PROCESSED by silver-transformer in 9b) + 2 QUARANTINED, as the manifest says" \
   "SELECT string_agg(processing_status || '=' || n, ',' ORDER BY processing_status) FROM (SELECT processing_status, count(*) n FROM bronze.raw_messages WHERE payload_checksum IN ($SHAS) GROUP BY 1) x" \
-  "PENDING=18,QUARANTINED=2"
+  "PROCESSED=18,QUARANTINED=2"
 mismatch="$(python3 - "$MANIFEST" <<'PY'
 import json, subprocess, sys
 m = json.load(open(sys.argv[1]))["messages"]
@@ -780,7 +790,9 @@ rows = subprocess.run(["docker", "exec", "clinicalharmony-postgres", "psql", "-U
     "SELECT payload_checksum || ' ' || processing_status FROM bronze.raw_messages WHERE intake_channel='MLLP_KAFKA' AND payload_checksum IN (%s)"
     % ",".join("'%s'" % x["sha256"] for x in m)], capture_output=True, text=True).stdout.split()
 got = dict(zip(rows[::2], rows[1::2]))
-print(sum(1 for x in m if got.get(x["sha256"]) != x["expectedStatus"]))
+# expectedStatus = the Bronze verdict at intake; since 9b a PENDING row moves on to PROCESSED
+final = {"PENDING": "PROCESSED"}
+print(sum(1 for x in m if got.get(x["sha256"]) != final.get(x["expectedStatus"], x["expectedStatus"])))
 PY
 )"
 [[ "$mismatch" == "0" ]]; pass_if "  → every message has the status its manifest entry expects" $? "$mismatch mismatches"
@@ -789,12 +801,12 @@ check_sql "  → each row carries its correlation id + Kafka topic/partition/off
 check_sql "  → quarantined rows keep the parse error for the data steward" \
   "SELECT count(*) FROM bronze.raw_messages WHERE payload_checksum IN ($SHAS) AND processing_status = 'QUARANTINED' AND length(error_message) > 0" "2"
 check_sql "  → valid rows are tagged with their MSH-4 sending facility" \
-  "SELECT count(*) FROM bronze.raw_messages WHERE payload_checksum IN ($SHAS) AND processing_status = 'PENDING' AND source_system IN ('CITY_HOSPITAL','NORTH_CLINIC','REGIONAL_LAB')" "18"
+  "SELECT count(*) FROM bronze.raw_messages WHERE payload_checksum IN ($SHAS) AND processing_status <> 'QUARANTINED' AND source_system IN ('CITY_HOSPITAL','NORTH_CLINIC','REGIONAL_LAB','CITY_PHARMACY')" "18"
 for _ in $(seq 1 30); do
   [[ "$(docker exec "$PG_CONTAINER" psql -U clinicalharmony -d clinicalharmony -Atc "SELECT count(*) FROM bronze.outbox_events o JOIN bronze.raw_messages b ON b.id = o.aggregate_id WHERE b.payload_checksum IN ($SHAS) AND o.published_at IS NOT NULL")" == "18" ]] && break
   sleep 0.5
 done
-check_sql "outbox: one bronze.ingested event per PENDING row, relayed to Kafka" \
+check_sql "outbox: one bronze.ingested event per valid row, relayed to Kafka" \
   "SELECT count(*) || '/' || count(published_at) FROM bronze.outbox_events o JOIN bronze.raw_messages b ON b.id = o.aggregate_id WHERE b.payload_checksum IN ($SHAS)" "18/18"
 check_sql "  → events carry the correlation id and the hl7v2.raw event id as causation id" \
   "SELECT count(*) FROM bronze.outbox_events o JOIN bronze.raw_messages b ON b.id = o.aggregate_id WHERE b.payload_checksum IN ($SHAS) AND o.headers->>'correlation-id' = b.correlation_id AND length(o.headers->>'causation-id') = 36 AND (o.payload->>'rawMessageId')::bigint = b.id" "18"
@@ -839,6 +851,87 @@ code="$(curl -s -o "$TMP/kafbat.json" -w "%{http_code}" "$KAFBAT_URL/api/cluster
 pass_if "Kafbat UI on $KAFBAT_URL sees cluster clinicalharmony online" $? "HTTP $code"
 code="$(curl -s -o "$TMP/kafbat_cg.json" -w "%{http_code}" "$KAFBAT_URL/api/clusters/clinicalharmony/consumer-groups/bronze-writer")"
 [[ "$code" == "200" ]] && grep -q '"groupId":"bronze-writer"' "$TMP/kafbat_cg.json"; pass_if "  → and the bronze-writer consumer group" $? "HTTP $code"
+
+section "19. Silver over Kafka — bronze.ingested → silver-transformer → silver.* (Phase 9b)"
+# Needs migration 24 and silver-transformer-service. Reuses section 18's generated seed ($SHAS), then
+# sends a hand-made allergy + conflicting order pair and an unmappable message over MLLP.
+for t in clinicalharmony.bronze.ingested.dlt clinicalharmony.silver.patient.changed; do
+  parts="$(kexec kafka-topics --bootstrap-server localhost:29092 --describe --topic "$t" | grep -c 'Partition: ')"
+  [[ "$parts" == "3" ]]; pass_if "topic $t exists with 3 partitions" $? "$parts partitions"
+done
+wait_silver_lag_zero; pass_if "silver-transformer caught up (consumer lag 0)" $? "lag $(group_lag silver-transformer clinicalharmony.bronze.ingested)"
+check_sql "every generated ORU^R01 left its observations in Silver, linked to its Bronze row" \
+  "SELECT bool_and(EXISTS (SELECT 1 FROM silver.observations o WHERE o.raw_message_id = b.id)) FROM bronze.raw_messages b WHERE b.payload_checksum IN ($SHAS) AND b.raw_payload LIKE '%|ORU^R01^%' AND b.processing_status = 'PROCESSED'" "t"
+check_sql "every generated RDE^O11 left its medication order in Silver" \
+  "SELECT coalesce(bool_and(EXISTS (SELECT 1 FROM silver.medications m WHERE m.raw_message_id = b.id)), true) FROM bronze.raw_messages b WHERE b.payload_checksum IN ($SHAS) AND b.raw_payload LIKE '%|RDE^O11^%'" "t"
+check_sql "results and orders attach to the HOME facility's patient (PID-3.4), not the lab's or pharmacy's" \
+  "SELECT count(*) FROM silver.patients WHERE source_system IN ('REGIONAL_LAB', 'CITY_PHARMACY')" "0"
+check_sql "silver outbox: one silver.patient.changed event per PROCESSED row, carrying its correlation id" \
+  "SELECT count(*) FROM silver.outbox_events e JOIN bronze.raw_messages b ON b.id = (e.payload->>'rawMessageId')::bigint WHERE b.payload_checksum IN ($SHAS) AND e.headers->>'correlation-id' = b.correlation_id" "18"
+for _ in $(seq 1 30); do
+  [[ "$(docker exec "$PG_CONTAINER" psql -U clinicalharmony -d clinicalharmony -Atc "SELECT count(*) FROM silver.outbox_events WHERE published_at IS NULL")" == "0" ]] && break
+  sleep 0.5
+done
+check_sql "  → all relayed to Kafka" "SELECT count(*) FROM silver.outbox_events WHERE published_at IS NULL" "0"
+check_sql "  → the re-sent duplicates in section 18 produced no second Silver event" \
+  "SELECT count(*) = count(DISTINCT payload->>'rawMessageId') FROM silver.outbox_events" "t"
+
+# A planted MEDICATION_ALLERGY_CONFLICT: admit with an amoxicillin allergy, then an amoxicillin order.
+SMRN="SMK$SEED"
+mllp_send() {  # mllp_send CONTROL_ID MESSAGE → prints the MSA-1 ack code
+  python3 - "$MLLP_HOST" "$MLLP_PORT" "$2" <<'PY'
+import socket, sys
+host, port, msg = sys.argv[1], int(sys.argv[2]), sys.argv[3].replace("\\r", "\r")
+s = socket.create_connection((host, port), timeout=15)
+s.sendall(b"\x0b" + msg.encode() + b"\x1c\x0d")
+buf = b""
+while b"\x1c\x0d" not in buf:
+    buf += s.recv(4096)
+print(buf.decode().split("MSA|")[1].split("|")[0])
+PY
+}
+PIDSEG="PID|1||$SMRN^^^SMOKE_HOSPITAL^MR||SMOKE^ALLERGY^T||19800101|F|||1 TEST ST^^SPRINGFIELD^IL^62701||5550000000"
+a1="$(mllp_send "SMKA-$SEED" "MSH|^~\\&|SMOKE|SMOKE_HOSPITAL|CH|ING|20261117080000||ADT^A01^ADT_A01|SMKA-$SEED|P|2.5\r$PIDSEG\rDG1|1||N39.0^Urinary tract infection^I10||20261117080000|A\rAL1|1|DA|723^Amoxicillin^RXNORM|SV|HIVES\r")"
+a2="$(mllp_send "SMKR-$SEED" "MSH|^~\\&|SMOKE_RX|SMOKE_PHARMACY|CH|ING|20261117081000||RDE^O11^RDE_O11|SMKR-$SEED|P|2.5\r$PIDSEG\rORC|NW|RX1|PH1||||||20261117081000\rRXE|^^^20261117081000^^R|723^Amoxicillin 500 MG Oral Capsule^RXNORM|500||mg^mg^UCUM\rRXR|PO^Oral^HL70162\r")"
+a3="$(mllp_send "SMKF-$SEED" "MSH|^~\\&|SMOKE|SMOKE_HOSPITAL|CH|ING|20261117082000||ADT^A08^ADT_A01|SMKF-$SEED|P|2.5\rPID|1||SMKF$SEED^^^SMOKE_HOSPITAL^MR||NODOB^PATIENT||||||\r")"
+[[ "$a1$a2$a3" == "AAAAAA" ]]; pass_if "allergy admit, conflicting order and an unmappable ADT all ACKed AA over MLLP" $? "$a1 $a2 $a3"
+wait_lag_zero; wait_silver_lag_zero
+SPID=""
+for _ in $(seq 1 60); do
+  SPID="$(docker exec "$PG_CONTAINER" psql -U clinicalharmony -d clinicalharmony -Atc "SELECT id FROM silver.patients WHERE source_system = 'SMOKE_HOSPITAL' AND source_patient_id = '$SMRN' AND validation_status = 'VALIDATED' AND EXISTS (SELECT 1 FROM silver.medications m WHERE m.patient_id = silver.patients.id)")"
+  [[ -n "$SPID" ]] && break
+  sleep 0.5
+done
+[[ -n "$SPID" ]]; pass_if "one Silver patient (SMOKE_HOSPITAL|$SMRN) with the allergy and the order, VALIDATED" $? "not found / not validated"
+check_sql "  → silver.allergies holds AL1 (RxNorm 723, drug allergy, severe, hives)" \
+  "SELECT code_system || ' ' || code || ' ' || allergy_type || ' ' || severity || ' ' || reaction FROM silver.allergies WHERE patient_id = ${SPID:-0}" "RXNORM 723 DA SV HIVES"
+check_sql "  → rules-engine flagged MEDICATION_ALLERGY_CONFLICT against the Silver medication id" \
+  "SELECT count(*) FROM silver.validation_reports r JOIN silver.medications m ON m.id = r.entity_id WHERE r.patient_id = ${SPID:-0} AND r.rule_code = 'MEDICATION_ALLERGY_CONFLICT' AND r.entity_type = 'MEDICATION' AND NOT r.is_resolved" "1"
+check_sql "  → and ontology-service checked the real codes (no CODE-* findings for valid N39.0 / 723)" \
+  "SELECT count(*) FROM silver.validation_reports WHERE patient_id = ${SPID:-0} AND rule_code LIKE 'CODE-%' AND NOT is_resolved" "0"
+check_sql "  → re-validation on the 2nd message retired the 1st run's findings (only one open per problem)" \
+  "SELECT count(*) FILTER (WHERE NOT is_resolved) = count(DISTINCT (rule_code, entity_type, entity_id)) FILTER (WHERE NOT is_resolved) FROM silver.validation_reports WHERE patient_id = ${SPID:-0}" "t"
+FAILED_ID="$(docker exec "$PG_CONTAINER" psql -U clinicalharmony -d clinicalharmony -Atc "SELECT id FROM bronze.raw_messages WHERE raw_payload LIKE '%|SMKF-$SEED|%'")"
+for _ in $(seq 1 30); do
+  [[ "$(docker exec "$PG_CONTAINER" psql -U clinicalharmony -d clinicalharmony -Atc "SELECT processing_status FROM bronze.raw_messages WHERE id = ${FAILED_ID:-0}")" == "FAILED" ]] && break
+  sleep 0.5
+done
+check_sql "the ADT without a date of birth → Bronze FAILED with the reason, nothing in Silver" \
+  "SELECT processing_status || ' | ' || error_message || ' | ' || (SELECT count(*) FROM silver.patients WHERE source_patient_id = 'SMKF$SEED') FROM bronze.raw_messages WHERE id = ${FAILED_ID:-0}" \
+  "FAILED | PID-7 (date of birth) is empty | 0"
+
+TOKEN="$(user_token dana)"
+check_http "gateway Validation Report lists the conflict" GET "$GW/validation/findings?ruleCode=MEDICATION_ALLERGY_CONFLICT&patientId=${SPID:-0}&resolved=false" 200
+check_json "  → one ERROR finding" "$TMP/last_response.json" "(d['total'], d['items'][0]['severity'])" "(1, 'ERROR')"
+check_http "gateway Data Lineage → Bronze shows the FAILED message and why" GET "$GW/bronze/messages/${FAILED_ID:-0}" 200
+check_json "  → status and mapping error" "$TMP/last_response.json" "(d['summary']['processingStatus'], 'PID-7' in (d['summary']['errorMessage'] or ''))" "('FAILED', True)"
+check_http "gateway Bronze list filtered to HL7 type RDE (pharmacy orders)" GET "$GW/bronze/messages?hl7Type=RDE&size=200" 200
+check_json "  → only HL7 v2 RDE rows, as many as Bronze has" "$TMP/last_response.json" \
+  "(d['total'] > 0, all(m['messageType'] == 'HL7V2' and m['hl7MessageType'].startswith('RDE^') for m in d['items']), d['total'])" \
+  "(True, True, $(psql_id "SELECT count(*) FROM bronze.raw_messages WHERE message_type = 'HL7V2' AND raw_payload ~ '^MSH\|([^|\r\n]*\|){7}RDE(\^|\|)'"))"
+TOKEN=""
+code="$(curl -s -o "$TMP/kafbat_sg.json" -w "%{http_code}" "$KAFBAT_URL/api/clusters/clinicalharmony/consumer-groups/silver-transformer")"
+[[ "$code" == "200" ]] && grep -q '"groupId":"silver-transformer"' "$TMP/kafbat_sg.json"; pass_if "Kafbat UI sees the silver-transformer consumer group" $? "HTTP $code"
 
 echo
 echo "=== Summary: $PASS passed, $FAIL failed ==="

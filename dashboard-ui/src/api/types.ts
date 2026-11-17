@@ -462,6 +462,8 @@ export interface BronzeSummary {
   errorMessage: string | null;
   receivedAt: string;
   processedAt: string | null;
+  /** MSH-9.1^9.2 from the raw header (e.g. "ORU^R01"); null for FHIR / claims and HL7 without a usable MSH-9. */
+  hl7MessageType: string | null;
 }
 
 export interface LineageGraph {

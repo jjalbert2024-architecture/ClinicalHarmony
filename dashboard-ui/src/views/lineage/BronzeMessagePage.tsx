@@ -33,7 +33,8 @@ export function BronzeMessagePage() {
             title={`Bronze message #${d.summary.id}`}
             subtitle={
               <>
-                {d.summary.messageType} from {d.summary.sourceSystem} · <Badge value={d.summary.processingStatus} /> · received{' '}
+                {d.summary.messageType}
+                {d.summary.hl7MessageType && ` ${d.summary.hl7MessageType}`} from {d.summary.sourceSystem} · <Badge value={d.summary.processingStatus} /> · received{' '}
                 {fmtDateTime(d.summary.receivedAt)}
               </>
             }
@@ -67,12 +68,19 @@ export function BronzeMessagePage() {
             <section className="card">
               <h2>Silver records from this message</h2>
               {d.silverRows.length === 0 ? (
-                <Empty>None — no Silver parser has consumed this message yet.</Empty>
+                <Empty>
+                  None.{' '}
+                  {d.summary.processingStatus === 'PENDING'
+                    ? 'Waiting for the silver transformer (REST-intake messages stay here until Phase 9d moves REST onto Kafka).'
+                    : d.summary.processingStatus === 'PROCESSED'
+                      ? 'This message added nothing new: everything in it was already in Silver.'
+                      : 'Quarantined and failed messages never reach Silver; the reason is shown above.'}
+                </Empty>
               ) : (
                 <ul className="plain">
                   {d.silverRows.map((r) => (
                     <li key={`${r.table}-${r.id}`}>
-                      silver.{r.table} #{r.id}
+                      {r.table} #{r.id}
                     </li>
                   ))}
                 </ul>

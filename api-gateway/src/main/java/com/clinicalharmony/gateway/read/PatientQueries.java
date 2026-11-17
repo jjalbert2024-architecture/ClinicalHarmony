@@ -75,12 +75,21 @@ public class PatientQueries {
     }
 
     public Page<MasterSummary> search(String q, LocalDate dob, String status, boolean includeMerged, int page, int size) {
+        // "Name or MRN": part of the name, or EXACTLY (ignoring case) the MRN / source patient id of any Silver
+        // record linked to the master — exact so a short number doesn't match half the index.
         Sql.Where where = new Sql.Where()
-                .and(Sql.has(q), "((m.first_name || ' ' || m.last_name) ILIKE :q OR m.last_name ILIKE :q)",
+                .and(Sql.has(q), """
+                        ((m.first_name || ' ' || m.last_name) ILIKE :q OR m.last_name ILIKE :q
+                         OR EXISTS (SELECT 1 FROM gold.patient_source_xref x JOIN silver.patients p ON p.id = x.silver_patient_id
+                                     WHERE x.master_patient_id = m.id
+                                       AND (upper(p.mrn) = upper(:id) OR upper(p.source_patient_id) = upper(:id))))""",
                         "q", Sql.has(q) ? Sql.contains(q.trim()) : null)
                 .and(dob != null, "m.date_of_birth = :dob", "dob", dob)
                 .and(Sql.has(status), "m.match_status = :status", "status", status)
                 .and(!includeMerged, "m.is_active", null, null);
+        if (Sql.has(q)) {
+            where.params.addValue("id", q.trim());
+        }
         Long total = jdbc.queryForObject("SELECT count(*) FROM gold.master_patients m" + where.sql(), where.params, Long.class);
         where.params.addValue("limit", size).addValue("offset", (long) page * size);
         List<MasterSummary> items = jdbc.query("SELECT " + MASTER_COLUMNS + " FROM gold.master_patients m" + where.sql()

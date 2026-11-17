@@ -27,6 +27,9 @@ use a private window so no Keycloak session is left over. The users are DEV-ONLY
 | 16 | **FHIR Viewer** → **Patient** | `silver-patient-8, -9, -10 … -80 … -100` in number order. Click **Resource**: ▼, reversed. Click **Updated**: newest first. Each click changes the URL (`sort`, `dir`) |
 | 17 | Open any FHIR resource → **Download .json** (next to Copy JSON) | Saves `<Type>-<fhirId>.json`, the same JSON as on screen |
 | 18 | **Data Lineage** → "Transformations recorded" | Pipeline order: FHIR_MAP, PMI_PROVISIONAL, PMI_MATCH, PMI_MERGE, PMI_UNMERGE, then SEED_LOAD, API_GENERATE |
+| 19 | **Patient Timeline** → type an MRN, e.g. `MRN100001` (any case) → **Search** | Exactly Maria Garcia's master. A part of an MRN (`MRN1000`) finds nothing |
+| 20 | **Data Lineage** → Bronze messages | Columns **Format** (HL7 v2 / FHIR JSON / Claims CSV) and **HL7 type** (e.g. `ORU^R01`, `—` when none). Filters "Any payload format" and "Any HL7 message type" |
+| 21 | Pick HL7 message type **RDE (pharmacy order)** | Format switches to **HL7 v2**, only `RDE^O11` rows remain, the URL gains `messageType=HL7V2&hl7Type=RDE`. Pick format **FHIR JSON**: the HL7 type is cleared and greyed out |
 
 **Optional degraded check:** run `docker stop clinicalharmony-patient-index-service`. Within 30 s
 the header shows "Degraded (1)" and a banner names the service. PMI buttons say "patient-index-service

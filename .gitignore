@@ -22,6 +22,7 @@ id_file
 # --- Node / React (dashboard-ui) ---
 node_modules/
 dist/
+*.tsbuildinfo
 .env
 .env.local
 npm-debug.log*

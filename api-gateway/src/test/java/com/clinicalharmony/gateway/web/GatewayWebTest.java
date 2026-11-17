@@ -46,6 +46,7 @@ import static org.mockito.ArgumentMatchers.isNull;
 import static org.mockito.Mockito.never;
 import static org.mockito.Mockito.verify;
 import static org.mockito.Mockito.verifyNoInteractions;
+import static org.mockito.Mockito.verifyNoMoreInteractions;
 import static org.mockito.Mockito.when;
 import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.get;
 import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.options;
@@ -311,6 +312,20 @@ class GatewayWebTest {
                 .andExpect(status().isNotFound())
                 .andExpect(jsonPath("$.type").value("urn:clinicalharmony:problem:not-found"))
                 .andExpect(jsonPath("$.correlationId").exists());
+    }
+
+    @Test
+    void bronzeListPassesTheHl7TypeFilterAndRejectsMalformedOnes() throws Exception {
+        when(lineage.bronzeMessages(any(), any(), any(), any(), anyInt(), anyInt())).thenReturn(Page.of(List.of(), 0, 15, 0));
+        mvc.perform(get("/api/v1/bronze/messages?messageType=HL7V2&hl7Type=ORU&size=15")
+                        .header(HttpHeaders.AUTHORIZATION, bearer(TestJwts.viewer())))
+                .andExpect(status().isOk());
+        verify(lineage).bronzeMessages(null, "HL7V2", "ORU", null, 0, 15);
+        for (String bad : List.of("oru", "ORU%5ER01", "ORUX", "'--")) {
+            mvc.perform(get("/api/v1/bronze/messages?hl7Type=" + bad).header(HttpHeaders.AUTHORIZATION, bearer(TestJwts.viewer())))
+                    .andExpect(status().isBadRequest());
+        }
+        verifyNoMoreInteractions(lineage);
     }
 
     @Test

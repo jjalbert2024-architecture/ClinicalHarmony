@@ -194,7 +194,7 @@ api-gateway  →  dashboard-ui (React, 5 views)
 | keycloak | 8180 | realm `clinicalharmony` (Phase 5b slice 4); container port 8080 |
 | dashboard-ui | 3000 | implemented (Phase 8); nginx, static SPA |
 | bronze-listener-service | 8086 | implemented (Phase 9a, PR #15); health/metrics only |
-| silver-transformer-service | 8087 | built, in review (Phase 9b); health/metrics only |
+| silver-transformer-service | 8087 | implemented (Phase 9b, PR #17); health/metrics only |
 | kafka | 19092 | KRaft, no Zookeeper (Phase 9a); containers use `kafka:29092` |
 | kafbat-ui | 8090 | Kafka console, read-only (Phase 9a); container port 8080 |
 
@@ -252,7 +252,7 @@ Port 8086, package `com.clinicalharmony.bronze`, consumer group `bronze-writer` 
   `@ServiceConnection` without `@Container`; a background tail consumer must be started in
   `@BeforeEach`, NOT `@BeforeAll` — the containers aren't up before the context).
 
-### silver-transformer-service (Phase 9b — built, in review)
+### silver-transformer-service (Phase 9b — done, merged as PR #17)
 
 Port 8087, package `com.clinicalharmony.silver`, consumer group `silver-transformer` on
 `clinicalharmony.bronze.ingested` (`ack-mode: record`, `concurrency: 3`). No business REST API.
@@ -761,13 +761,19 @@ Phases are meant to be fully complete before the next starts. Current state as o
     Verified live: 100 → 90 PENDING + 10 QUARANTINED, no duplicates after `docker restart` and `docker kill`
     mid-run, same-seed resend → 100 duplicates skipped, Kafka stopped → AE then AA once back, rows in the
     dashboard's Data Lineage → Bronze; smoke 263/263 twice.
-  - **9b** (Built, in review — branch `phase-9b-silver-transformer`): silver-transformer-service, see its
+  - **9b** (done, merged as PR #17 on 2026-11-17, branch `phase-9b-silver-transformer`): silver-transformer-service, see its
     section above. Migration 24, generator RDE^O11, smoke 297/297 (twice), Postman
     `silver-transformer-service/postman/phase9b-silver-over-kafka` (6 items). Patient Timeline still lists
     Gold masters only, so generated patients appear there after `POST /api/fhir/build` until 9c.
-  - **9c** Gold: consumer `gold-builder` INSIDE fhir-compliance-service (GoldWriter stays the only Gold
+  - **9c** (next; scoping 2026-11-17) Gold: consumer `gold-builder` INSIDE fhir-compliance-service (GoldWriter stays the only Gold
     writer) → US Core build + validator → Gold + lineage BRONZE→SILVER→GOLD →
     `clinicalharmony.gold.patient.changed` → `pmi-matcher` inside patient-index-service (batched runs).
+    **9c decisions** (settled 2026-11-17, all recommended options): gold-builder also builds US Core
+    **AllergyIntolerance** from `silver.allergies`; the generator registers a small share (~10%) of patients at
+    BOTH CITY_HOSPITAL and NORTH_CLINIC (different MRNs, some identical → auto-merge, some fuzzy → review queue);
+    `pmi-matcher` **debounces** gold.patient.changed events — one run 5 s after the last event, at most every 30 s
+    in a burst; the Data Lineage layer browser (Bronze/Silver/Gold cards as tabs + linked detail pages) is its
+    OWN branch after 9c. Kafka deps = Boot-managed spring-kafka 3.3.16 / kafka-clients 3.9.2, already in ~/.m2.
   - **9d** Full generator (FHIR / claims / C-CDA, cross-feed duplicates, defects, `--seed`/`--reset`/`--trickle`).
   - **9e** Observability: logs to Datadog or Splunk (undecided) + dashboards/alerts.
   - **Dashboard ordering fixes** (done, merged as PR #16 on 2026-11-17, branch `pmi-review-recent-decisions`):

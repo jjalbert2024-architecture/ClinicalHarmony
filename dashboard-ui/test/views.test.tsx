@@ -341,6 +341,24 @@ describe('Data Lineage', () => {
     expect(await screen.findByText('Bronze messages')).toBeInTheDocument();
   });
 
+  it('lists the Silver rows a Bronze message produced, by table', async () => {
+    server.use(
+      http.get(`${API}/bronze/messages/:id`, ({ request }) =>
+        reply(request, {
+          ...fixtures.bronzeMessage,
+          silverRows: [
+            { table: 'silver.medications', id: 25 },
+            { table: 'silver.allergies', id: 7 },
+          ],
+        }),
+      ),
+    );
+    renderApp(`/lineage/bronze/${fixtures.bronzeMessage.summary.id}`);
+    expect(await screen.findByText('silver.medications #25')).toBeInTheDocument();
+    expect(screen.getByText('silver.allergies #7')).toBeInTheDocument();
+    expect(screen.queryByText(/silver\.silver\./)).not.toBeInTheDocument();
+  });
+
   it('shows a Bronze message with HL7 segments on separate lines', async () => {
     renderApp('/lineage/bronze/1');
     expect(await screen.findByRole('heading', { name: 'Bronze message #1' })).toBeInTheDocument();

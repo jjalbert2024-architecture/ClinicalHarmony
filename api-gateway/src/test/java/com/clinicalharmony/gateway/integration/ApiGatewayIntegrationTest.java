@@ -170,6 +170,18 @@ class ApiGatewayIntegrationTest {
     // ---- read models over real SQL ---------------------------------------------------------------
 
     @Test
+    void patientSearchFindsAMasterByAnyLinkedRecordsMrnOrSourceId() throws Exception {
+        // "Name or MRN": SEED-0001's MRN, any case → Maria's master, and only her
+        JsonNode byMrn = getJson("/api/v1/patients?q=mrn100001");
+        assertThat(byMrn.at("/total").asInt()).isEqualTo(1);
+        assertThat(byMrn.at("/items/0/id").asLong()).isEqualTo(maria);
+        // PMI-0001 (claims, no MRN) is her SECOND linked record: its source id finds the same master
+        assertThat(getJson("/api/v1/patients?q=PMI-0001").at("/items/0/id").asLong()).isEqualTo(maria);
+        // exact, not partial: a fragment of an MRN matches nothing
+        assertThat(getJson("/api/v1/patients?q=MRN1000").at("/total").asInt()).isZero();
+    }
+
+    @Test
     void patientTimelineJoinsEverySourceTerminologyAndGold() throws Exception {
         JsonNode search = getJson("/api/v1/patients?q=garc"); // migration 21 seeds more Garcias
         assertThat(search.at("/total").asInt()).isEqualTo(search.at("/items").size()).isGreaterThanOrEqualTo(1);
@@ -290,6 +302,7 @@ class ApiGatewayIntegrationTest {
 
         JsonNode bronze = getJson("/api/v1/bronze/messages/" + bronzeId);
         assertThat(bronze.at("/rawPayload").asText()).startsWith("MSH|");
+        assertThat(bronze.at("/silverRows").findValuesAsText("table")).contains("silver.conditions");
         assertThat(bronze.at("/silverRows/0/table").asText()).isEqualTo("silver.conditions");
 
         JsonNode summary = getJson("/api/v1/summary");

@@ -3,7 +3,7 @@
 **Phase 9** — Python generator of synthetic hospital data, used to feed the pipeline the way real
 source systems would. Standard library only (Python 3.9+): runs on the host's `python3`, nothing to install.
 
-## v1 (Phase 9a): seeded HL7 v2 over MLLP
+## v1 (Phase 9a, + pharmacy orders in 9b): seeded HL7 v2 over MLLP
 
 ```bash
 python3 data-generator/generate.py                     # 100 messages, seed 42, 10% malformed → MLLP localhost:8887
@@ -27,9 +27,14 @@ they're ACKed and skipped (a quick way to show "no duplicates").
 - ~`count / 3` synthetic patients at `CITY_HOSPITAL` (ADT `REG_SYSTEM`) or `NORTH_CLINIC` (`EHR_NC`);
   names, addresses and MRNs are invented.
 - Each patient's first message is an **ADT^A01** (hospital admit) or **ADT^A04** (clinic registration)
-  with PID, PV1, DG1 diagnoses and sometimes an AL1 allergy; later messages are **ORU^R01** lab
-  results (65%, from `REGIONAL_LAB` or the clinic: lipid, CBC, metabolic or HbA1c panels, values
-  sometimes out of range with H/L flags) or **ADT^A08** updates.
+  with PID, PV1, DG1 diagnoses and sometimes (30%) an AL1 drug allergy; later messages are **ORU^R01** lab
+  results (55%, from `REGIONAL_LAB` or the clinic: lipid, CBC, metabolic or HbA1c panels, values
+  sometimes out of range with H/L flags), **RDE^O11** pharmacy orders (20%, since 9b) or **ADT^A08** updates.
+- **RDE^O11** (9b) comes from `CITY_PHARMACY` (`RX_SYSTEM`): ORC (new order, ORC-9 time, ordering
+  provider) + RXE (RxNorm give code, dose, instructions) + RXR. The drug treats one of the patient's
+  diagnoses — or, for half the orders of an allergic patient, it **is** the allergen: a deliberate
+  `MEDICATION_ALLERGY_CONFLICT` for the Silver validation to catch. PID-3.4 keeps the home facility, so
+  the order lands on that facility's Silver patient.
 - Codes come from the terminology subsets seeded in `docs/db-init` (ICD-10-CM, LOINC, RxNorm), so the
   9b Silver layer can validate them against ontology-service.
 - Exactly `round(count × malformed-rate)` messages are **malformed**, cycling through five defects
@@ -40,10 +45,11 @@ they're ACKed and skipped (a quick way to show "no duplicates").
 ## Tests
 
 ```bash
-cd data-generator && python3 -m unittest discover -s tests -t .   # 13 tests
+cd data-generator && python3 -m unittest discover -s tests -t .   # 15 tests
 ```
 
-Determinism, exact malformed count and defect coverage, HL7 structure of every valid message, and the
+Determinism, exact malformed count and defect coverage, HL7 structure of every valid message, pharmacy
+orders (RxNorm, home-facility MRN, ORC-9 / ORC-12 positions, at least one planted allergy conflict), and the
 MLLP client against a local fake server (framing, many messages per connection, retry on `AE`,
 reconnect after a dropped connection, giving up).
 

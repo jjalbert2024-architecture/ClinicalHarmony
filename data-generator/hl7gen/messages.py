@@ -152,6 +152,32 @@ def build_oru(rng: random.Random, p: Patient, when: datetime, control_id: str) -
                             SEGMENT_END.join(segs) + SEGMENT_END)
 
 
+def build_rde(rng: random.Random, p: Patient, when: datetime, control_id: str) -> GeneratedMessage:
+    """RDE^O11 pharmacy order: ORC (new order) + RXE (RxNorm give code, dose, instructions) + RXR.
+
+    For a patient with a drug allergy, half the orders are for that very drug — a deliberate
+    MEDICATION_ALLERGY_CONFLICT for the Silver validation to catch."""
+    app, facility, _ = next(f for f in catalog.FACILITIES if "RDE" in f[2])
+    if p.allergy and p.allergy[0] in catalog.MEDICATIONS and rng.random() < 0.5:
+        rxcui = p.allergy[0]
+    else:
+        options = [rx for code, _ in p.diagnoses for rx in catalog.TREATMENTS.get(code, [])]
+        rxcui = rng.choice(options or sorted(catalog.MEDICATIONS))
+    name, amount, unit, instructions = catalog.MEDICATIONS[rxcui]
+    doc = rng.choice(catalog.DOCTORS)
+    order = rng.randrange(100000, 999999)
+    segs = [
+        msh(app, facility, when, "RDE^O11", "RDE_O11", control_id),
+        pid(p),
+        "ORC|NW|RX%d|PH%d||||||%s|||%s^%s^%s" % (order, order, ts(when), doc[0], doc[1], doc[2]),
+        "RXE|^^^%s^^R|%s^%s^RXNORM|%s||%s^%s^UCUM||^%s|||30|TAB" % (
+            ts(when), rxcui, name, amount, unit, unit, instructions),
+        "RXR|PO^Oral^HL70162",
+    ]
+    return GeneratedMessage(0, "valid", None, "RDE^O11", facility, control_id, p.mrn,
+                            SEGMENT_END.join(segs) + SEGMENT_END)
+
+
 def corrupt(rng: random.Random, msg: GeneratedMessage, defect: str) -> GeneratedMessage:
     """Turn a valid message into one Bronze must QUARANTINE (still sent, still kept)."""
     segments = msg.payload.rstrip(SEGMENT_END).split(SEGMENT_END)
@@ -206,8 +232,10 @@ def generate(count: int = 100, seed: int = 42, malformed_rate: float = 0.10) -> 
             p.admitted = True
         else:
             r = rng.random()
-            if r < 0.65:
+            if r < 0.55:
                 msg = build_oru(rng, p, when, control_id)
+            elif r < 0.75:
+                msg = build_rde(rng, p, when, control_id)
             else:
                 if rng.random() < 0.5:
                     p.phone = "555%07d" % rng.randrange(0, 9999999)

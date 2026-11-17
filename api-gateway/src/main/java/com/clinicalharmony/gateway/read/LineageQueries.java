@@ -46,7 +46,7 @@ public class LineageQueries {
     }
 
     /** Silver tables that carry raw_message_id (constants — safe to interpolate). */
-    static final List<String> SILVER_TABLES = List.of("patients", "conditions", "observations", "medications");
+    static final List<String> SILVER_TABLES = List.of("patients", "conditions", "observations", "medications", "allergies");
 
     private static final String RECORD_COLUMNS = """
             l.id, l.transformation_step, l.source_schema, l.source_table, l.source_id, l.target_schema,

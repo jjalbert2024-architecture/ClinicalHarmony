@@ -1,0 +1,99 @@
+server:
+  port: 8087
+
+spring:
+  application:
+    name: silver-transformer-service
+  profiles:
+    active: ${SPRING_PROFILES_ACTIVE:local}
+  kafka:
+    consumer:
+      group-id: silver-transformer
+      auto-offset-reset: earliest
+      enable-auto-commit: false
+      key-deserializer: org.apache.kafka.common.serialization.StringDeserializer
+      value-deserializer: org.apache.kafka.common.serialization.StringDeserializer
+      max-poll-records: 50
+    producer:
+      # Used by the outbox relay and the dead-letter publisher.
+      acks: all
+      key-serializer: org.apache.kafka.common.serialization.StringSerializer
+      value-serializer: org.apache.kafka.common.serialization.StringSerializer
+      properties:
+        enable.idempotence: true
+        max.block.ms: 5000
+        request.timeout.ms: 5000
+        delivery.timeout.ms: 9000
+    listener:
+      # Offset committed after EACH record, i.e. only after its Silver transaction has committed.
+      ack-mode: record
+      # One consumer thread per partition of clinicalharmony.bronze.ingested.
+      concurrency: 3
+
+silver:
+  partitions: 3
+  retry:
+    # Technical failures (DB down…): 3 retries with exponential backoff, then <topic>.dlt.
+    max-retries: 3
+    initial-interval: 1s
+    multiplier: 2.0
+  outbox:
+    poll-interval: 500ms
+    batch-size: 100
+    send-timeout: 10s
+  validation:
+    # Patients left PENDING_VALIDATION (rules-engine or ontology was down) are re-validated by a sweeper.
+    sweep-interval: 30s
+    # Only sweep patients whose validation was requested at least this long ago (the listener validates
+    # right after its commit; this keeps the sweeper from racing it).
+    min-age: 10s
+    batch-size: 50
+  rules-engine:
+    base-url: http://localhost:8083
+    connect-timeout: 2s
+    read-timeout: 10s
+
+management:
+  endpoints:
+    web:
+      exposure:
+        include: health,info,metrics
+
+# One JSON object per log line (Logstash layout): MDC + SLF4J key/values become top-level fields.
+logging:
+  structured:
+    format:
+      console: logstash
+    json:
+      add:
+        service: ${spring.application.name}
+
+---
+# Local profile: `mvn spring-boot:run` on the host against the compose containers' published ports.
+spring:
+  config:
+    activate:
+      on-profile: local
+  datasource:
+    url: jdbc:postgresql://localhost:5432/clinicalharmony
+    username: clinicalharmony
+    password: clinicalharmony
+  kafka:
+    bootstrap-servers: localhost:19092
+
+---
+# Docker profile: SPRING_PROFILES_ACTIVE=docker in docker-compose.yml.
+spring:
+  config:
+    activate:
+      on-profile: docker
+  datasource:
+    url: jdbc:postgresql://${DB_HOST:postgres}:${DB_PORT:5432}/${DB_NAME:clinicalharmony}
+    username: ${DB_USER:clinicalharmony}
+    password: ${DB_PASSWORD:clinicalharmony}
+  kafka:
+    bootstrap-servers: ${KAFKA_BOOTSTRAP_SERVERS:kafka:29092}
+
+silver:
+  rules-engine:
+    base-url: ${RULES_ENGINE_BASE_URL:http://rules-engine-service:8083}

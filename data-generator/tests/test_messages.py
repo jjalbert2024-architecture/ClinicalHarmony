@@ -39,8 +39,38 @@ class GenerateTest(unittest.TestCase):
             self.assertEqual(pid[3].split("^")[0], m.patient_mrn)
             if m.message_type == "ORU^R01":
                 self.assertTrue(any(s.startswith("OBX|") for s in segs))
+            elif m.message_type == "RDE^O11":
+                self.assertTrue(any(s.startswith("RXE|") for s in segs))
             else:
                 self.assertTrue(any(s.startswith("DG1|") for s in segs))
+
+    def test_pharmacy_orders_use_rxnorm_and_the_home_facility_mrn(self):
+        msgs = [m for m in generate(300, 5, 0.0) if m.message_type == "RDE^O11"]
+        self.assertGreater(len(msgs), 20)
+        for m in msgs:
+            segs = m.payload.rstrip("\r").split("\r")
+            self.assertEqual([s.split("|")[0] for s in segs], ["MSH", "PID", "ORC", "RXE", "RXR"])
+            self.assertEqual(m.source_system, "CITY_PHARMACY")
+            pid3 = segs[1].split("|")[3].split("^")
+            self.assertIn(pid3[3], ("CITY_HOSPITAL", "NORTH_CLINIC"))  # assigning authority = home facility
+            give = segs[3].split("|")[2].split("^")
+            self.assertIn(give[0], catalog.MEDICATIONS)
+            self.assertEqual(give[2], "RXNORM")
+            orc = segs[2].split("|")
+            self.assertEqual(orc[1], "NW")                       # ORC-1 order control
+            self.assertEqual(orc[9], m.payload.split("|")[6])    # ORC-9 transaction time = MSH-7
+            self.assertEqual(len(orc[12].split("^")), 3)         # ORC-12 ordering provider
+
+    def test_some_orders_conflict_with_the_patients_allergy(self):
+        msgs = generate(300, 5, 0.0)
+        allergy_of = {}
+        for m in msgs:
+            for seg in m.payload.split("\r"):
+                if seg.startswith("AL1|"):
+                    allergy_of[m.patient_mrn] = seg.split("|")[3].split("^")[0]
+        conflicts = [m for m in msgs if m.message_type == "RDE^O11"
+                     and allergy_of.get(m.patient_mrn) == m.payload.split("RXE|")[1].split("|")[1].split("^")[0]]
+        self.assertGreater(len(conflicts), 0)
 
     def test_first_message_per_patient_is_an_admit_or_registration(self):
         seen = set()

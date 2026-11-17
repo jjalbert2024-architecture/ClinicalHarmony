@@ -54,7 +54,7 @@ that issues the same token shape. Never enable that client anywhere real.
 | View | Endpoint | Source |
 |---|---|---|
 | Shell | `GET /config` (public) · `GET /me` · `GET /summary` (counts per layer) · `GET /services/health` | config · token · DB · each service's `/actuator/health` |
-| Patient Timeline | `GET /patients?q=&dob=&status=&includeMerged=&page=&size=` | DB |
+| Patient Timeline | `GET /patients?q=&dob=&status=&includeMerged=&page=&size=` (`q` = part of the name, or an exact MRN / source patient id of any linked record) | DB |
 | | `GET /patients/{masterId}` (source records with MRNs, merge history, FHIR counts, pending reviews) | DB |
 | | `GET /patients/{masterId}/timeline?from=&to=&types=CONDITION,OBSERVATION,MEDICATION` | DB |
 | | `GET /pmi/candidates?status=&limit=` · `GET /pmi/candidates/{id}` · `GET /pmi/runs` | patient-index |

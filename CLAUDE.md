@@ -486,7 +486,7 @@ Patient Master Index on port 8085. Package `com.clinicalharmony.patientindex`.
   write `pmi.match_exclusions`, which runs honor forever.
 - **Security**: GETs any valid token, POSTs `clinicalharmony/pipeline.write`, health public; same
   issuer/audience as fhir-compliance-service.
-- **Tests (55)**: unit (matcher seed scenarios at exact scores, blocking, run/review services),
+- **Tests (56)**: unit (matcher seed scenarios at exact scores, blocking, run/review services),
   `GoldWriterClientTest` against a JDK `HttpServer` stub (`client/StubHttpServer`, no WireMock),
   `@WebMvcTest` with the real security chain, and `PatientIndexIntegrationTest` (Testcontainers +
   self-signed JWTs + `FakeGoldWriter` that applies decisions with SQL). The real GoldWriter side is
@@ -529,7 +529,7 @@ needs read models no service exposes, not routing). User decisions at Phase 7 sc
 - **Gotcha**: local `mvn package` fails offline (maven-jar-plugin 3.4.2's plexus-archiver etc. aren't in
   ~/.m2) — Docker builds download them in-container; locally run from `target/classes` +
   `dependency:build-classpath` if needed.
-- **Tests (42)**: `DownstreamClientTest` (JDK `HttpServer` stub with delays: token, correlation id,
+- **Tests (45)**: `DownstreamClientTest` (JDK `HttpServer` stub with delays: token, correlation id,
   401 retry, 4xx/5xx/timeout/down/Keycloak-down), `@WebMvcTest` `GatewayWebTest` with the real security
   chain (`@EnableConfigurationProperties(GatewayProperties)` + `@Import` security/CORS/`TestJwts`), and
   `ApiGatewayIntegrationTest` (Testcontainers, datasource = the read-only role, stubbed services,
@@ -566,7 +566,7 @@ scoping (all recommended):
   React StrictMode double-runs effects so the `/callback` exchange is memoized per attempt
   (`startBoot` in `main.tsx`); the Vite dev server needs port 3000 (the only registered redirect
   URI), so stop the compose container first.
-- **Tests (56, Vitest + jsdom + Testing Library + MSW)**: the MSW gateway stub serves REAL responses
+- **Tests (61, Vitest + jsdom + Testing Library + MSW)**: the MSW gateway stub serves REAL responses
   captured from the live gateway (`test/fixtures/`), and any unhandled request fails the test.
   No Playwright (2 GB image); instead smoke section 17 + `dashboard-ui/CHECKLIST.md` (12-step manual
   click-through, replaces a Postman collection for this phase).
@@ -643,7 +643,7 @@ schema **`pmi`** (`match_runs`, `match_candidates` with a partial unique index o
   image `confluentinc/cp-kafka:7.6.1` (KRaft) — no new image. ingestion-service's publisher test uses
   it without Spring; bronze-listener-service's integration test via `@ServiceConnection`.
 - **UI tests** (dashboard-ui, `test/*.test.ts(x)`): Vitest + jsdom + Testing Library against an MSW gateway stub serving real captured `/api/v1` responses; run in `node:24-alpine` via `docker run` (no host Node).
-- **Black-box smoke test** (`scripts/smoke-test.sh`): once the stack is up (`docker-compose up -d`), this hits all four implemented services' REST endpoints over HTTP and asserts on real responses — accept/quarantine outcomes, ontology validation results, all 7 rule-engine evaluations and live rule-toggle behavior, US Core structural validation (including a `requiredAnyOf` choice-type check), and FHIR generation round-tripped back through validation to cross-check the generator against the validator. Fixture payloads live in `scripts/fixtures/`. This replaces the earlier "verified manually" note — it's now a repeatable, scriptable check (263 assertions as of Phase 9a — section 18 runs the generator with a random seed over MLLP and checks Bronze/outbox/idempotency/Kafbat; it fetches a Bearer token from the compose Keycloak for fhir-compliance-service and patient-index-service calls; section 15 = PMI, which inserts fresh random synthetic patients each run so it stays rerunnable; section 16 = api-gateway, with real dana/vic user tokens from the dev direct-grant client; section 17 = dashboard-ui's nginx: SPA fallback, caching, CSP/headers, runtime config, Keycloak accepting the dashboard's PKCE request and refusing it without PKCE or with a foreign redirect, CORS). Gold-layer checks with no HTTP surface yet (lineage, masters) use `check_sql` via `docker exec` into `clinicalharmony-postgres`.
+- **Black-box smoke test** (`scripts/smoke-test.sh`): once the stack is up (`docker-compose up -d`), this hits all four implemented services' REST endpoints over HTTP and asserts on real responses — accept/quarantine outcomes, ontology validation results, all 7 rule-engine evaluations and live rule-toggle behavior, US Core structural validation (including a `requiredAnyOf` choice-type check), and FHIR generation round-tripped back through validation to cross-check the generator against the validator. Fixture payloads live in `scripts/fixtures/`. This replaces the earlier "verified manually" note — it's now a repeatable, scriptable check (271 assertions as of the dashboard ordering fixes — section 18 runs the generator with a random seed over MLLP and checks Bronze/outbox/idempotency/Kafbat; it fetches a Bearer token from the compose Keycloak for fhir-compliance-service and patient-index-service calls; section 15 = PMI, which inserts fresh random synthetic patients each run so it stays rerunnable; section 16 = api-gateway, with real dana/vic user tokens from the dev direct-grant client; section 17 = dashboard-ui's nginx: SPA fallback, caching, CSP/headers, runtime config, Keycloak accepting the dashboard's PKCE request and refusing it without PKCE or with a foreign redirect, CORS). Gold-layer checks with no HTTP surface yet (lineage, masters) use `check_sql` via `docker exec` into `clinicalharmony-postgres`.
 
 ## Local Docker environment
 
@@ -705,12 +705,17 @@ Phases are meant to be fully complete before the next starts. Current state as o
     `clinicalharmony.gold.patient.changed` → `pmi-matcher` inside patient-index-service (batched runs).
   - **9d** Full generator (FHIR / claims / C-CDA, cross-feed duplicates, defects, `--seed`/`--reset`/`--trickle`).
   - **9e** Observability: logs to Datadog or Splunk (undecided) + dashboards/alerts.
-  - **Next, before 9b** (agreed 2026-11-16 during the 9a manual test, own branch e.g.
-    `pmi-review-recent-decisions`): dashboard ordering fixes — PMI Review decided candidates newest first
-    (`MatchCandidateRepository` sorts every status `score DESC, id`) + a "Recently decided" card (+ optional
-    clickable run counts); FHIR Viewer list sorted by number, not text (`FhirQueries` `ORDER BY fhir_id`);
-    Data Lineage "Transformations recorded" in pipeline order, not alphabetical (`LineageQueries`); FHIR
-    resource page "Download .json" next to "Copy JSON".
+  - **Dashboard ordering fixes** (Built, in review — branch `pmi-review-recent-decisions`, before 9b):
+    patient-index `MatchCandidateRepository.list(status, runId, limit)`: PENDING `score DESC, id`, every
+    other view `COALESCE(reviewed_at, created_at) DESC, id DESC`; pseudo-statuses `DECIDED` (ACCEPTED +
+    REJECTED) and `QUEUED` (all but AUTO_MERGED) + optional `runId`, passed through by the gateway's
+    `/api/v1/pmi/candidates`. Gateway `FhirQueries`: natural `fhir_id` order (text prefix, then trailing
+    number as numeric) + whitelisted `sort=resource|master|compliance|updated` & `dir=asc|desc`;
+    `LineageQueries.summary()` CASE-ranked pipeline order (FHIR_MAP, PMI_PROVISIONAL, PMI_MATCH, PMI_MERGE,
+    PMI_UNMERGE, SEED_LOAD, API_GENERATE; unknown steps last — add 9b/9c steps to the CASE). UI: "Recently
+    decided" card (`status=DECIDED&limit=10`), run counts link to `/pmi?status=AUTO_MERGED|QUEUED&run=<id>`
+    (chip clears it), sortable FHIR headers (`aria-sort`), `JsonView downloadName` → Blob download
+    (`application/fhir+json`). Tests: PMI 56, gateway 45, UI 61; smoke 271 (8 new in section 16).
   - Open for 9b: the generator has no RXE/RXO yet; decide AL1 → new `silver.allergies`.
 - **Phase 10**: Polish, final Docker test, interview demo script, the draw.io diagrams listed in the
   README's "Design diagrams (to draw)" section.

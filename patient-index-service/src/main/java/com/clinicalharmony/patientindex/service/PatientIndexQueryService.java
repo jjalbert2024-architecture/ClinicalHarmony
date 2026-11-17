@@ -55,8 +55,8 @@ public class PatientIndexQueryService {
                 reads.findPatient(c.silverPatientBId()).orElse(null));
     }
 
-    public List<MatchCandidate> candidates(String status, int limit) {
-        return candidates.list(status, limit);
+    public List<MatchCandidate> candidates(String status, Long runId, int limit) {
+        return candidates.list(status, runId, limit);
     }
 
     public MatchRun run(long runId) {

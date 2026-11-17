@@ -95,14 +95,39 @@ export function Bar({ value, max, tone = 'good', label }: { value: number; max: 
   );
 }
 
-export function JsonView({ value }: { value: unknown }) {
+/** Pretty-printed JSON with Copy and, when {@code downloadName} is given, Download buttons. */
+export function JsonView({ value, downloadName, mimeType = 'application/json' }: { value: unknown; downloadName?: string; mimeType?: string }) {
   const text = JSON.stringify(value, null, 2);
   return (
     <div className="json">
-      <button className="btn btn-small json-copy" onClick={() => void navigator.clipboard?.writeText(text)}>
-        Copy JSON
-      </button>
+      <div className="json-actions">
+        <button className="btn btn-small" onClick={() => void navigator.clipboard?.writeText(text)}>
+          Copy JSON
+        </button>
+        {downloadName && (
+          <button className="btn btn-small" onClick={() => downloadText(text, downloadName, mimeType)}>
+            Download .json
+          </button>
+        )}
+      </div>
       <pre>{text}</pre>
     </div>
   );
+}
+
+/** Saves text as a file in the browser (Blob + temporary object URL; nothing leaves the page). */
+export function downloadText(text: string, fileName: string, mimeType: string) {
+  const url = URL.createObjectURL(new Blob([text], { type: mimeType }));
+  const a = document.createElement('a');
+  a.href = url;
+  a.download = fileName;
+  document.body.appendChild(a);
+  a.click();
+  a.remove();
+  URL.revokeObjectURL(url);
+}
+
+/** A file-system-safe name: anything but letters, digits, dot, dash, underscore becomes "_". */
+export function safeFileName(name: string): string {
+  return name.replace(/[^A-Za-z0-9._-]+/g, '_').slice(0, 150);
 }

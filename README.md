@@ -116,6 +116,7 @@ hand-verified in Postman — before the next one starts.
 | **8** | `dashboard-ui` | React: Patient Timeline (with the PMI review queue), Ontology Coverage, Validation Report (with the rule catalog), FHIR Viewer (with validate / C-CDA tools), Data Lineage (back to the raw Bronze message). Signs users in with Keycloak Auth Code + PKCE; viewers see everything, data stewards also run matching, accept / reject / unmerge, and toggle rules, each behind a confirmation | ✅ Done (PR #14) |
 | **9** | Event-driven pipeline + `data-generator` | Rebuild the Bronze → Silver → Gold flow on Kafka, **one layer at a time** (9a–9e below), fed by a Python generator of synthetic hospital data. Each sub-phase is its own branch and PR | 🔄 In progress |
 | **9a** | Bronze over Kafka | `data-generator` v1 sends 100 seeded HL7 v2 messages over **MLLP**; ingestion-service publishes them to Kafka; a new **bronze listener** stores them in `bronze.raw_messages` and announces each one. **Kafbat UI** is added to Compose to watch topics, messages and consumer lag. Details in [Phase 9 design](#phase-9-design-one-layer-at-a-time). FHIR and claims REST intake unchanged for now | ✅ Done (PR #15) |
+| — | Dashboard ordering fixes | PMI Review: decided candidates newest first (the queue stays highest score first), a "Recently decided" card (who · when · note), and a run's Auto-merged / To review counts link to that run's candidates. FHIR Viewer: ids sorted by number (`-8 < -80 < -100`) with clickable column headers, and **Download .json** next to Copy JSON. Data Lineage: transformations in pipeline order | 🔍 Built, in review |
 | **9b** | Silver transformation | A new **silver transformer** turns each Bronze HL7 message into `silver.*` rows linked to the raw message, runs ontology + rules validation, and announces each changed patient. Closes the "no Bronze → Silver parser" gap. Details in [Phase 9 design](#phase-9-design-one-layer-at-a-time) | ⏳ Planned |
 | **9c** | Gold over Kafka | A consumer in fhir-compliance-service builds and validates US Core FHIR for each changed patient and writes Gold through **GoldWriter**; lineage now starts at the raw HL7 message; a consumer in patient-index-service runs matching. Details in [Phase 9 design](#phase-9-design-one-layer-at-a-time) | ⏳ Planned |
 | **9d** | Full generator | All feeds: FHIR JSON, claims CSV and C-CDA alongside HL7; ~20% of patients in more than one feed (typos, nicknames, swapped dates) for the PMI; ~10–15% defects for validation; `--seed` for repeatable demos, `--reset`, and a `--trickle` mode that looks like a live feed. REST intake paths move onto Kafka too | ⏳ Planned |
@@ -253,7 +254,7 @@ docker-compose down -v
 ./scripts/smoke-test.sh
 ```
 
-This runs 263 black-box assertions against the live services: intake accept and quarantine, code
+This runs 271 black-box assertions against the live services: intake accept and quarantine, code
 validation, every clinical rule and live rule toggling, US Core validation, Silver → FHIR builds,
 C-CDA conversion, GoldWriter master patients and lineage, the CMS-0057 read/search API, SMART
 auth (it gets real tokens from Keycloak, then checks discovery, 401/403 and scope enforcement), and

@@ -39,6 +39,7 @@ import java.util.Set;
 import static org.hamcrest.Matchers.containsString;
 import static org.hamcrest.Matchers.startsWith;
 import static org.mockito.ArgumentMatchers.any;
+import static org.mockito.ArgumentMatchers.anyBoolean;
 import static org.mockito.ArgumentMatchers.anyInt;
 import static org.mockito.ArgumentMatchers.eq;
 import static org.mockito.ArgumentMatchers.isNull;
@@ -324,13 +325,40 @@ class GatewayWebTest {
 
     @Test
     void pagingDefaultsArePassedToTheReadModel() throws Exception {
-        when(fhir.search(any(), any(), any(), any(), anyInt(), anyInt())).thenReturn(Page.of(List.of(), 0, 25, 0));
+        when(fhir.search(any(), any(), any(), any(), any(), anyBoolean(), anyInt(), anyInt())).thenReturn(Page.of(List.of(), 0, 25, 0));
         mvc.perform(get("/api/v1/fhir/resources?type=Patient&compliant=false")
                         .header(HttpHeaders.AUTHORIZATION, bearer(TestJwts.viewer())))
                 .andExpect(status().isOk())
                 .andExpect(jsonPath("$.size").value(25))
                 .andExpect(jsonPath("$.totalPages").value(0));
-        verify(fhir).search("Patient", null, false, null, 0, 25);
+        verify(fhir).search("Patient", null, false, null, "resource", false, 0, 25);
+    }
+
+    @Test
+    void fhirSortIsWhitelisted() throws Exception {
+        when(fhir.search(any(), any(), any(), any(), any(), anyBoolean(), anyInt(), anyInt()))
+                .thenReturn(Page.of(List.of(), 0, 25, 0));
+        mvc.perform(get("/api/v1/fhir/resources?sort=updated&dir=desc")
+                        .header(HttpHeaders.AUTHORIZATION, bearer(TestJwts.viewer())))
+                .andExpect(status().isOk());
+        verify(fhir).search(null, null, null, null, "updated", true, 0, 25);
+        mvc.perform(get("/api/v1/fhir/resources?sort=fhir_id;drop").header(HttpHeaders.AUTHORIZATION, bearer(TestJwts.viewer())))
+                .andExpect(status().isBadRequest());
+        mvc.perform(get("/api/v1/fhir/resources?dir=sideways").header(HttpHeaders.AUTHORIZATION, bearer(TestJwts.viewer())))
+                .andExpect(status().isBadRequest());
+    }
+
+    @Test
+    void pmiCandidatesForwardDecidedAndRunFilter() throws Exception {
+        when(downstream.get(eq(Downstream.PATIENT_INDEX), eq("/api/pmi/candidates?status={status}&runId={runId}&limit={limit}"),
+                any(), any(), any())).thenReturn(ResponseEntity.ok(new com.fasterxml.jackson.databind.ObjectMapper().readTree("[]")));
+        mvc.perform(get("/api/v1/pmi/candidates?status=DECIDED&runId=3&limit=10")
+                        .header(HttpHeaders.AUTHORIZATION, bearer(TestJwts.viewer())))
+                .andExpect(status().isOk());
+        verify(downstream).get(Downstream.PATIENT_INDEX, "/api/pmi/candidates?status={status}&runId={runId}&limit={limit}",
+                "DECIDED", 3L, 10);
+        mvc.perform(get("/api/v1/pmi/candidates?runId=0").header(HttpHeaders.AUTHORIZATION, bearer(TestJwts.viewer())))
+                .andExpect(status().isBadRequest());
     }
 
     // ---- CORS ----------------------------------------------------------------------------------

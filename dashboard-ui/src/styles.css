@@ -509,6 +509,30 @@ label.block {
   font-size: 12px;
   white-space: nowrap;
 }
+.th-sort {
+  background: none;
+  border: 0;
+  padding: 0;
+  font: inherit;
+  color: inherit;
+  cursor: pointer;
+}
+.th-sort:hover,
+.th-sort.active {
+  color: var(--text);
+}
+.decision-list {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+}
+.decision-list li {
+  padding: 7px 0;
+  border-bottom: 1px solid var(--border);
+}
+.decision-list li:last-child {
+  border-bottom: 0;
+}
 .table .num {
   text-align: right;
   font-variant-numeric: tabular-nums;
@@ -697,10 +721,12 @@ ul.plain li {
 .json {
   position: relative;
 }
-.json-copy {
+.json-actions {
   position: absolute;
   top: 8px;
   right: 8px;
+  display: flex;
+  gap: 6px;
 }
 pre,
 .payload {

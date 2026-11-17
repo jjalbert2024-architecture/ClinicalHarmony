@@ -142,12 +142,23 @@ class PatientIndexControllerTest {
 
     @Test
     void candidateListDefaultsToPendingAndAcceptsAll() throws Exception {
-        when(queries.candidates("PENDING", 100)).thenReturn(List.of());
-        when(queries.candidates(null, 100)).thenReturn(List.of());
+        when(queries.candidates("PENDING", null, 100)).thenReturn(List.of());
+        when(queries.candidates(null, null, 100)).thenReturn(List.of());
 
         mockMvc.perform(get("/api/pmi/candidates").with(READER)).andExpect(status().isOk());
         mockMvc.perform(get("/api/pmi/candidates?status=ALL").with(READER)).andExpect(status().isOk());
-        verify(queries).candidates("PENDING", 100);
-        verify(queries).candidates(null, 100);
+        verify(queries).candidates("PENDING", null, 100);
+        verify(queries).candidates(null, null, 100);
+    }
+
+    @Test
+    void candidateListAcceptsDecidedAndRunFilter() throws Exception {
+        when(queries.candidates("DECIDED", 4L, 10)).thenReturn(List.of());
+
+        mockMvc.perform(get("/api/pmi/candidates?status=DECIDED&runId=4&limit=10").with(READER))
+                .andExpect(status().isOk());
+        verify(queries).candidates("DECIDED", 4L, 10);
+        mockMvc.perform(get("/api/pmi/candidates?status=BOGUS").with(READER)).andExpect(status().isBadRequest());
+        mockMvc.perform(get("/api/pmi/candidates?runId=0").with(READER)).andExpect(status().isBadRequest());
     }
 }

@@ -239,6 +239,38 @@ class ApiGatewayIntegrationTest {
     }
 
     @Test
+    void fhirListSortsIdsNumericallyAndLineageSummaryFollowsThePipeline() throws Exception {
+        JdbcTemplate admin = new JdbcTemplate(new DriverManagerDataSource(POSTGRES.getJdbcUrl(), "clinicalharmony",
+                "clinicalharmony"));
+        for (String n : List.of("100", "8", "80", "9")) {
+            admin.update("""
+                    INSERT INTO gold.fhir_resources (resource_type, fhir_id, resource_json, is_us_core_compliant)
+                    VALUES ('Observation', 'natsort-obs-' || ?, '{"resourceType":"Observation"}', true)
+                    ON CONFLICT DO NOTHING""", n);
+        }
+        JsonNode asc = getJson("/api/v1/fhir/resources?q=natsort-obs-");
+        assertThat(asc.get("items").findValuesAsText("fhirId"))
+                .containsExactly("natsort-obs-8", "natsort-obs-9", "natsort-obs-80", "natsort-obs-100");
+        JsonNode desc = getJson("/api/v1/fhir/resources?q=natsort-obs-&sort=resource&dir=desc");
+        assertThat(desc.get("items").findValuesAsText("fhirId"))
+                .containsExactly("natsort-obs-100", "natsort-obs-80", "natsort-obs-9", "natsort-obs-8");
+        assertThat(getJson("/api/v1/fhir/resources?sort=updated&dir=desc").at("/total").asInt()).isPositive();
+        assertThat(getJson("/api/v1/fhir/resources?sort=master").at("/total").asInt()).isPositive();
+        assertThat(getJson("/api/v1/fhir/resources?sort=compliance&dir=desc").at("/total").asInt()).isPositive();
+
+        long obs = admin.queryForObject("SELECT id FROM gold.fhir_resources WHERE fhir_id = 'natsort-obs-8'", Long.class);
+        for (String step : List.of("SEED_LOAD", "PMI_MERGE", "API_GENERATE", "PMI_PROVISIONAL")) {
+            admin.update("""
+                    INSERT INTO gold.data_lineage (source_schema, source_table, target_schema, target_table, target_id,
+                                                   transformation_step, transformation_details)
+                    VALUES ('test', 'natsort', 'gold', 'fhir_resources', ?, ?, '{}') ON CONFLICT DO NOTHING""", obs, step);
+        }
+        JsonNode summary = getJson("/api/v1/lineage/summary");
+        assertThat(summary.findValuesAsText("step"))
+                .containsSubsequence("FHIR_MAP", "PMI_PROVISIONAL", "PMI_MERGE", "SEED_LOAD", "API_GENERATE");
+    }
+
+    @Test
     void fhirViewerAndLineageReachBackToBronze() throws Exception {
         JsonNode resources = getJson("/api/v1/fhir/resources?type=Condition&masterPatientId=" + maria);
         assertThat(resources.at("/total").asInt()).isEqualTo(1);

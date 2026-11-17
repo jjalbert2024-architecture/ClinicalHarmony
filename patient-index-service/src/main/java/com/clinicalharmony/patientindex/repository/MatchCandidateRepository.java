@@ -6,6 +6,7 @@ import org.springframework.stereotype.Repository;
 
 import java.math.BigDecimal;
 import java.time.OffsetDateTime;
+import java.util.ArrayList;
 import java.util.List;
 import java.util.Optional;
 
@@ -65,12 +66,44 @@ public class MatchCandidateRepository {
                 .stream().findFirst();
     }
 
-    public List<MatchCandidate> list(String status, int limit) {
-        if (status == null) {
-            return jdbc.query("SELECT " + COLUMNS + " FROM pmi.match_candidates ORDER BY id DESC LIMIT ?", ROW, limit);
+    /** Pseudo-status: the human decisions (ACCEPTED + REJECTED), newest first. */
+    public static final String DECIDED = "DECIDED";
+    /** Pseudo-status: everything a run sent to the human queue (all but AUTO_MERGED), decided or not. */
+    public static final String QUEUED = "QUEUED";
+
+    /**
+     * Candidates filtered by status ({@code null} = all, {@link #DECIDED} = ACCEPTED + REJECTED,
+     * {@link #QUEUED} = all but AUTO_MERGED) and optionally by
+     * the run that created them. PENDING is a work queue, so highest score first; every other view is history,
+     * so newest decision first ({@code reviewed_at}, or {@code created_at} for AUTO_MERGED, which is decided
+     * at creation), ties broken by newest id.
+     */
+    public List<MatchCandidate> list(String status, Long runId, int limit) {
+        List<Object> args = new ArrayList<>();
+        List<String> where = new ArrayList<>();
+        if (DECIDED.equals(status)) {
+            where.add("status IN ('ACCEPTED', 'REJECTED')");
+        } else if (QUEUED.equals(status)) {
+            where.add("status <> 'AUTO_MERGED'");
+        } else if (status != null) {
+            where.add("status = ?");
+            args.add(status);
         }
-        return jdbc.query("SELECT " + COLUMNS + " FROM pmi.match_candidates WHERE status = ? ORDER BY score DESC, id LIMIT ?",
-                ROW, status, limit);
+        if (runId != null) {
+            where.add("run_id = ?");
+            args.add(runId);
+        }
+        String order = MatchCandidate.PENDING.equals(status)
+                ? "score DESC, id"
+                : "COALESCE(reviewed_at, created_at) DESC, id DESC";
+        args.add(limit);
+        return jdbc.query("SELECT " + COLUMNS + " FROM pmi.match_candidates"
+                + (where.isEmpty() ? "" : " WHERE " + String.join(" AND ", where))
+                + " ORDER BY " + order + " LIMIT ?", ROW, args.toArray());
+    }
+
+    public List<MatchCandidate> list(String status, int limit) {
+        return list(status, null, limit);
     }
 
     public List<MatchCandidate> pending() {

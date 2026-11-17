@@ -52,9 +52,11 @@ public class FhirController {
             @RequestParam(required = false) Long masterPatientId,
             @RequestParam(required = false) Boolean compliant,
             @RequestParam(required = false) @Size(max = 100) String q,
+            @RequestParam(defaultValue = "resource") @Pattern(regexp = FhirQueries.SORTS) String sort,
+            @RequestParam(defaultValue = "asc") @Pattern(regexp = "asc|desc") String dir,
             @RequestParam(defaultValue = "0") @Min(0) int page,
             @RequestParam(defaultValue = "25") @Min(1) @Max(200) int size) {
-        return fhir.search(type, masterPatientId, compliant, q, page, size);
+        return fhir.search(type, masterPatientId, compliant, q, sort, "desc".equals(dir), page, size);
     }
 
     @GetMapping("/resources/{type}/{fhirId}")

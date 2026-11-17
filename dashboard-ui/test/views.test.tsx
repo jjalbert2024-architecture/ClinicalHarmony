@@ -1,7 +1,7 @@
 import { screen, waitFor, within } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
 import { http } from 'msw';
-import { describe, expect, it } from 'vitest';
+import { describe, expect, it, vi } from 'vitest';
 import { displayPayload } from '../src/views/lineage/BronzeMessagePage';
 import { API, calls, fixtures, meVic, problem, reply, server } from './gateway';
 import { renderApp } from './render';
@@ -149,6 +149,32 @@ describe('PMI review', () => {
     expect(run).toBeDisabled();
   });
 
+  it('lists the last 10 decisions with who, when and note', async () => {
+    renderApp('/pmi');
+    const list = await screen.findByRole('list', { name: 'Recently decided' });
+    const items = within(list).getAllByRole('listitem');
+    expect(items).toHaveLength(fixtures.pmiDecided.length);
+    const newest = fixtures.pmiDecided[0]!;
+    expect(items[0]).toHaveTextContent(`#${newest.id}`);
+    expect(items[0]).toHaveTextContent(newest.reviewedBy!);
+    expect(items[0]).toHaveTextContent(newest.reviewNote!);
+    const decided = calls('/pmi/candidates').find((r) => r.query.get('status') === 'DECIDED');
+    expect(decided?.query.get('limit')).toBe('10');
+  });
+
+  it("opens a run's review candidates from its count and clears the run filter", async () => {
+    const run = fixtures.pmiRuns.find((r) => r.queuedForReview > 0)!;
+    renderApp('/pmi');
+    await userEvent.click(await screen.findByRole('link', { name: `Review candidates of run #${run.id}` }));
+    expect(await screen.findByRole('button', { name: `run #${run.id} ×` })).toBeInTheDocument();
+    await waitFor(() =>
+      expect(calls('/pmi/candidates').some((r) => r.query.get('status') === 'QUEUED' && r.query.get('runId') === String(run.id))).toBe(true),
+    );
+    expect(screen.getByText('Newest decision first.')).toBeInTheDocument();
+    await userEvent.click(screen.getByRole('button', { name: `run #${run.id} ×` }));
+    await waitFor(() => expect(screen.queryByRole('button', { name: `run #${run.id} ×` })).not.toBeInTheDocument());
+  });
+
   it('shows a candidate side by side and requires a note to reject', async () => {
     const pending = { ...fixtures.pmiCandidate, candidate: { ...fixtures.pmiCandidate.candidate, status: 'PENDING', reviewedBy: null } };
     server.use(
@@ -239,6 +265,40 @@ describe('FHIR Viewer', () => {
     expect(screen.getByRole('button', { name: 'Copy JSON' })).toBeInTheDocument();
   });
 
+  it('downloads the resource as a .json file', async () => {
+    const blobs: Blob[] = [];
+    const create = vi.fn((b: Blob) => {
+      blobs.push(b);
+      return 'blob:test';
+    });
+    const revoke = vi.fn();
+    Object.assign(URL, { createObjectURL: create, revokeObjectURL: revoke });
+    let downloaded = '';
+    const click = vi.spyOn(HTMLAnchorElement.prototype, 'click').mockImplementation(function (this: HTMLAnchorElement) {
+      downloaded = this.download;
+    });
+    renderApp('/fhir/Condition/silver-condition-5');
+    await userEvent.click(await screen.findByRole('button', { name: 'Download .json' }));
+    expect(downloaded).toBe('Condition-silver-condition-5.json');
+    expect(blobs[0]!.type).toBe('application/fhir+json');
+    expect(JSON.parse(await blobs[0]!.text())).toEqual(fixtures.fhirResourceCondition.resource);
+    expect(revoke).toHaveBeenCalledWith('blob:test');
+    click.mockRestore();
+  });
+
+  it('sorts the list by clicking column headers', async () => {
+    renderApp('/fhir');
+    const resource = await screen.findByRole('button', { name: /^Resource/ });
+    expect(resource.closest('th')).toHaveAttribute('aria-sort', 'ascending');
+    await userEvent.click(resource);
+    await waitFor(() => expect(calls('/fhir/resources').at(-1)!.query.get('dir')).toBe('desc'));
+    expect(calls('/fhir/resources').at(-1)!.query.get('sort')).toBe('resource');
+    await userEvent.click(screen.getByRole('button', { name: /^Updated/ }));
+    await waitFor(() => expect(calls('/fhir/resources').at(-1)!.query.get('sort')).toBe('updated'));
+    expect(calls('/fhir/resources').at(-1)!.query.get('dir')).toBe('desc');
+    expect(screen.getByRole('button', { name: /^Updated/ }).closest('th')).toHaveAttribute('aria-sort', 'descending');
+  });
+
   it('validates pasted JSON (allowed for viewers)', async () => {
     asVic();
     server.use(http.post(`${API}/fhir/validate`, ({ request }) => reply(request, fixtures.fhirValidate)));
@@ -260,6 +320,19 @@ describe('FHIR Viewer', () => {
 });
 
 describe('Data Lineage', () => {
+  it('lists recorded transformations in pipeline order, as the gateway returns them', async () => {
+    renderApp('/lineage');
+    const heading = await screen.findByRole('heading', { name: 'Transformations recorded' });
+    const card = heading.closest('section')!;
+    await waitFor(() => expect(within(card).getAllByRole('row').length).toBeGreaterThan(1));
+    const steps = within(card)
+      .getAllByRole('row')
+      .slice(1)
+      .map((row) => row.querySelector('td')!.textContent);
+    expect(steps).toEqual(fixtures.lineageSummary.map((r) => r.step));
+    expect(steps[0]).toBe('FHIR_MAP');
+  });
+
   it('traces a FHIR resource from the query string', async () => {
     renderApp('/lineage?fhirResourceId=46');
     expect(await screen.findByText('gold.fhir_resources')).toBeInTheDocument();

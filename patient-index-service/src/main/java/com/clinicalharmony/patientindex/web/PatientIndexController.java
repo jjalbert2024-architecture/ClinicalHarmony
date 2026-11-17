@@ -107,9 +107,10 @@ public class PatientIndexController {
 
     @GetMapping("/candidates")
     public List<MatchCandidate> candidates(
-            @RequestParam(defaultValue = "PENDING") @Pattern(regexp = CANDIDATE_STATUS + "|ALL") String status,
+            @RequestParam(defaultValue = "PENDING") @Pattern(regexp = CANDIDATE_STATUS + "|DECIDED|QUEUED|ALL") String status,
+            @RequestParam(required = false) @Min(1) Long runId,
             @RequestParam(defaultValue = "100") @Min(1) @Max(500) int limit) {
-        return queries.candidates("ALL".equals(status) ? null : status, limit);
+        return queries.candidates("ALL".equals(status) ? null : status, runId, limit);
     }
 
     @GetMapping("/candidates/{candidateId}")

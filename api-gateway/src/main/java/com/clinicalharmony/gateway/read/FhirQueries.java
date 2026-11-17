@@ -55,7 +55,32 @@ public class FhirQueries {
                 rs.getLong("total"), rs.getLong("compliant")));
     }
 
-    public Page<ResourceSummary> search(String type, Long masterPatientId, Boolean compliant, String q, int page, int size) {
+    /** Sortable columns of the FHIR Viewer list (the {@code sort} query parameter). */
+    public static final String SORTS = "resource|master|compliance|updated";
+
+    /**
+     * Natural order of {@code fhir_id}: the text before a trailing number, then that number numerically
+     * (so {@code silver-patient-8 < -80 < -100}), then the full id as a tie-break.
+     */
+    private static String naturalFhirId(String dir) {
+        return "regexp_replace(f.fhir_id, '[0-9]+$', '') " + dir
+                + ", substring(f.fhir_id from '([0-9]+)$')::numeric " + dir + " NULLS FIRST, f.fhir_id " + dir;
+    }
+
+    static String orderBy(String sort, boolean descending) {
+        String dir = descending ? "DESC" : "ASC";
+        String resource = "f.resource_type " + dir + ", " + naturalFhirId(dir);
+        return switch (sort == null ? "resource" : sort) {
+            case "master" -> "f.master_patient_id " + dir + " NULLS LAST, " + resource;
+            case "compliance" -> "f.is_us_core_compliant " + dir + ", (f.compliance_notes ->> 'errorCount')::int "
+                    + (descending ? "ASC" : "DESC") + " NULLS LAST, " + resource;
+            case "updated" -> "f.updated_at " + dir + ", f.id " + dir;
+            default -> resource;
+        };
+    }
+
+    public Page<ResourceSummary> search(String type, Long masterPatientId, Boolean compliant, String q, String sort,
+                                        boolean descending, int page, int size) {
         Sql.Where where = new Sql.Where()
                 .and(Sql.has(type), "f.resource_type = :type", "type", type)
                 .and(masterPatientId != null, "f.master_patient_id = :master", "master", masterPatientId)
@@ -64,7 +89,7 @@ public class FhirQueries {
         Long total = jdbc.queryForObject("SELECT count(*) FROM gold.fhir_resources f" + where.sql(), where.params, Long.class);
         where.params.addValue("limit", size).addValue("offset", (long) page * size);
         List<ResourceSummary> items = jdbc.query("SELECT " + SUMMARY_COLUMNS + " FROM gold.fhir_resources f" + where.sql()
-                + " ORDER BY f.resource_type, f.fhir_id LIMIT :limit OFFSET :offset", where.params, (rs, i) -> summary(rs));
+                + " ORDER BY " + orderBy(sort, descending) + " LIMIT :limit OFFSET :offset", where.params, (rs, i) -> summary(rs));
         return Page.of(items, page, size, total == null ? 0 : total);
     }
 

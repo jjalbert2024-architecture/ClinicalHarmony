@@ -1,11 +1,11 @@
 [
   {
-    "id": 27,
-    "runId": 28,
-    "silverPatientAId": 43,
-    "silverPatientBId": 44,
-    "masterAId": 40,
-    "masterBId": 41,
+    "id": 56,
+    "runId": 55,
+    "silverPatientAId": 83,
+    "silverPatientBId": 86,
+    "masterAId": 80,
+    "masterBId": 83,
     "score": 0.7143,
     "matchMethod": "PROBABILISTIC",
     "deterministicRule": null,
@@ -14,8 +14,8 @@
       "fields": [
         {
           "field": "lastName",
-          "valueA": "gwbnbefarn",
-          "valueB": "gwbnbefarn",
+          "valueA": "demonkhihj",
+          "valueB": "demonkhihj",
           "weight": 4.0,
           "outcome": "EXACT",
           "maxWeight": 4.0
@@ -31,8 +31,8 @@
         },
         {
           "field": "birthDate",
-          "valueA": "1981-10-22",
-          "valueB": "1981-10-22",
+          "valueA": "1956-03-12",
+          "valueB": "1956-03-12",
           "weight": 5.0,
           "outcome": "EXACT",
           "maxWeight": 5.0
@@ -47,8 +47,8 @@
         },
         {
           "field": "phone",
-          "valueA": "4045551801",
-          "valueB": "4045551801",
+          "valueA": "4045555217",
+          "valueB": "4045555217",
           "weight": 4.0,
           "outcome": "EXACT",
           "maxWeight": 4.0
@@ -75,111 +75,24 @@
       "maxWeight": 21.0,
       "totalWeight": 15.0,
       "weightedScore": 0.7143,
-      "silverPatientAId": 43,
-      "silverPatientBId": 44,
+      "silverPatientAId": 83,
+      "silverPatientBId": 86,
       "deterministicRule": null
     },
     "status": "REJECTED",
     "mergeId": null,
     "reviewedBy": "dana",
-    "reviewedAt": "2026-11-13T07:43:05.765955Z",
-    "reviewNote": "twin brother",
-    "createdAt": "2026-11-13T07:43:05.630519Z"
+    "reviewedAt": "2026-11-16T12:00:47.761498Z",
+    "reviewNote": "Twin siblings, different sex: not the same person.",
+    "createdAt": "2026-11-16T11:51:16.627145Z"
   },
   {
-    "id": 26,
-    "runId": 26,
-    "silverPatientAId": 39,
-    "silverPatientBId": 42,
-    "masterAId": 36,
-    "masterBId": 39,
-    "score": 0.7143,
-    "matchMethod": "PROBABILISTIC",
-    "deterministicRule": null,
-    "breakdown": {
-      "score": 0.7143,
-      "fields": [
-        {
-          "field": "lastName",
-          "valueA": "smkrhpctwrd",
-          "valueB": "smkrhpctwrd",
-          "weight": 4.0,
-          "outcome": "EXACT",
-          "maxWeight": 4.0
-        },
-        {
-          "field": "firstName",
-          "valueA": "maria",
-          "valueB": "mario",
-          "weight": 2.0,
-          "outcome": "SIMILAR",
-          "maxWeight": 3.5,
-          "similarity": 0.92
-        },
-        {
-          "field": "birthDate",
-          "valueA": "1936-03-09",
-          "valueB": "1936-03-09",
-          "weight": 5.0,
-          "outcome": "EXACT",
-          "maxWeight": 5.0
-        },
-        {
-          "field": "gender",
-          "valueA": "female",
-          "valueB": "male",
-          "weight": -4.0,
-          "outcome": "DISAGREE",
-          "maxWeight": 0.5
-        },
-        {
-          "field": "phone",
-          "valueA": "4045554612",
-          "valueB": "4045554612",
-          "weight": 4.0,
-          "outcome": "EXACT",
-          "maxWeight": 4.0
-        },
-        {
-          "field": "postalCode",
-          "valueA": "30301",
-          "valueB": "30301",
-          "weight": 1.5,
-          "outcome": "EXACT",
-          "maxWeight": 1.5
-        },
-        {
-          "field": "address",
-          "valueA": "12 harbor rd",
-          "valueB": "12 harbor rd",
-          "weight": 2.5,
-          "outcome": "EXACT",
-          "maxWeight": 2.5
-        }
-      ],
-      "method": "PROBABILISTIC",
-      "decision": "REVIEW",
-      "maxWeight": 21.0,
-      "totalWeight": 15.0,
-      "weightedScore": 0.7143,
-      "silverPatientAId": 39,
-      "silverPatientBId": 42,
-      "deterministicRule": null
-    },
-    "status": "REJECTED",
-    "mergeId": null,
-    "reviewedBy": "smoke",
-    "reviewedAt": "2026-11-13T07:43:02.476847Z",
-    "reviewNote": "twin brother",
-    "createdAt": "2026-11-13T07:43:02.051321Z"
-  },
-  {
-    "id": 25,
-    "runId": 26,
-    "silverPatientAId": 39,
-    "silverPatientBId": 41,
-    "masterAId": 36,
-    "masterBId": 38,
+    "id": 55,
+    "runId": 55,
+    "silverPatientAId": 83,
+    "silverPatientBId": 85,
+    "masterAId": 80,
+    "masterBId": 82,
     "score": 0.6471,
     "matchMethod": "PROBABILISTIC",
     "deterministicRule": null,
@@ -188,8 +101,8 @@
       "fields": [
         {
           "field": "lastName",
-          "valueA": "smkrhpctwrd",
-          "valueB": "smkrhpctwrd",
+          "valueA": "demonkhihj",
+          "valueB": "demonkhihj",
           "weight": 4.0,
           "outcome": "EXACT",
           "maxWeight": 4.0
@@ -204,8 +117,8 @@
         },
         {
           "field": "birthDate",
-          "valueA": "1936-03-09",
-          "valueB": "1936-09-03",
+          "valueA": "1956-03-12",
+          "valueB": "1956-12-03",
           "weight": 2.0,
           "outcome": "PARTIAL",
           "maxWeight": 5.0
@@ -220,7 +133,7 @@
         },
         {
           "field": "phone",
-          "valueA": "4045554612",
+          "valueA": "4045555217",
           "weight": 0.0,
           "outcome": "MISSING",
           "maxWeight": 0.0
@@ -248,15 +161,101 @@
       "maxWeight": 17.0,
       "totalWeight": 11.0,
       "weightedScore": 0.6471,
-      "silverPatientAId": 39,
-      "silverPatientBId": 41,
+      "silverPatientAId": 83,
+      "silverPatientBId": 85,
       "deterministicRule": null
     },
     "status": "ACCEPTED",
-    "mergeId": 16,
-    "reviewedBy": "smoke",
-    "reviewedAt": "2026-11-13T07:43:02.665102Z",
-    "reviewNote": "DOB keyed day-first",
-    "createdAt": "2026-11-13T07:43:02.050161Z"
+    "mergeId": 31,
+    "reviewedBy": "dana",
+    "reviewedAt": "2026-11-16T11:58:52.477113Z",
+    "reviewNote": "DOB day/month typo",
+    "createdAt": "2026-11-16T11:51:16.625643Z"
+  },
+  {
+    "id": 54,
+    "runId": 55,
+    "silverPatientAId": 83,
+    "silverPatientBId": 84,
+    "masterAId": 80,
+    "masterBId": 81,
+    "score": 1.0,
+    "matchMethod": "DETERMINISTIC",
+    "deterministicRule": "EXACT_NAME_DOB_PLUS_PHONE_OR_ZIP",
+    "breakdown": {
+      "score": 1.0,
+      "fields": [
+        {
+          "field": "lastName",
+          "valueA": "demonkhihj",
+          "valueB": "demonkhihj",
+          "weight": 4.0,
+          "outcome": "EXACT",
+          "maxWeight": 4.0
+        },
+        {
+          "field": "firstName",
+          "valueA": "maria",
+          "valueB": "maria",
+          "weight": 3.5,
+          "outcome": "EXACT",
+          "maxWeight": 3.5
+        },
+        {
+          "field": "birthDate",
+          "valueA": "1956-03-12",
+          "valueB": "1956-03-12",
+          "weight": 5.0,
+          "outcome": "EXACT",
+          "maxWeight": 5.0
+        },
+        {
+          "field": "gender",
+          "valueA": "female",
+          "valueB": "female",
+          "weight": 0.5,
+          "outcome": "EXACT",
+          "maxWeight": 0.5
+        },
+        {
+          "field": "phone",
+          "valueA": "4045555217",
+          "valueB": "4045555217",
+          "weight": 4.0,
+          "outcome": "EXACT",
+          "maxWeight": 4.0
+        },
+        {
+          "field": "postalCode",
+          "valueA": "30301",
+          "valueB": "30301",
+          "weight": 1.5,
+          "outcome": "EXACT",
+          "maxWeight": 1.5
+        },
+        {
+          "field": "address",
+          "valueA": "12 harbor rd",
+          "valueB": "12 harbor rd",
+          "weight": 2.5,
+          "outcome": "EXACT",
+          "maxWeight": 2.5
+        }
+      ],
+      "method": "DETERMINISTIC",
+      "decision": "AUTO_MERGE",
+      "maxWeight": 21.0,
+      "totalWeight": 21.0,
+      "weightedScore": 1.0,
+      "silverPatientAId": 83,
+      "silverPatientBId": 84,
+      "deterministicRule": "EXACT_NAME_DOB_PLUS_PHONE_OR_ZIP"
+    },
+    "status": "AUTO_MERGED",
+    "mergeId": 30,
+    "reviewedBy": null,
+    "reviewedAt": null,
+    "reviewNote": null,
+    "createdAt": "2026-11-16T11:51:16.620899Z"
   }
 ]

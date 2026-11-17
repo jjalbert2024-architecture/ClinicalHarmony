@@ -14,6 +14,8 @@ export function FhirPage() {
   const masterPatientId = params.get('masterPatientId') ?? '';
   const q = params.get('q') ?? '';
   const page = Number(params.get('page') ?? '0');
+  const sort = params.get('sort') ?? 'resource';
+  const dir = params.get('dir') === 'desc' ? 'desc' : 'asc';
   const [search, setSearch] = useState(q);
 
   const types = useQuery({
@@ -21,9 +23,9 @@ export function FhirPage() {
     queryFn: ({ signal }) => api.get<TypeCount[]>('/fhir/resource-types', undefined, signal),
   });
   const resources = useQuery({
-    queryKey: ['fhir', 'resources', type, compliant, masterPatientId, q, page],
+    queryKey: ['fhir', 'resources', type, compliant, masterPatientId, q, sort, dir, page],
     queryFn: ({ signal }) =>
-      api.get<Page<ResourceSummary>>('/fhir/resources', { type, compliant, masterPatientId, q, page, size: 25 }, signal),
+      api.get<Page<ResourceSummary>>('/fhir/resources', { type, compliant, masterPatientId, q, sort, dir, page, size: 25 }, signal),
     placeholderData: keepPreviousData,
   });
 
@@ -34,6 +36,28 @@ export function FhirPage() {
     if (key !== 'page') next.delete('page');
     setParams(next);
   }
+  /** Click a header: same column flips the direction, a new column starts ascending (Updated: newest first). */
+  function sortBy(column: string) {
+    const next = new URLSearchParams(params);
+    const nextDir = column === sort ? (dir === 'asc' ? 'desc' : 'asc') : column === 'updated' ? 'desc' : 'asc';
+    if (column === 'resource' && nextDir === 'asc') {
+      next.delete('sort');
+      next.delete('dir');
+    } else {
+      next.set('sort', column);
+      next.set('dir', nextDir);
+    }
+    next.delete('page');
+    setParams(next);
+  }
+  const header = (column: string, label: string, className?: string) => (
+    <th className={className} aria-sort={sort === column ? (dir === 'asc' ? 'ascending' : 'descending') : 'none'}>
+      <button type="button" className={`th-sort${sort === column ? ' active' : ''}`} onClick={() => sortBy(column)}>
+        {label}
+        {sort === column ? (dir === 'asc' ? ' ▲' : ' ▼') : ''}
+      </button>
+    </th>
+  );
   function submit(e: FormEvent) {
     e.preventDefault();
     set('q', search.trim());
@@ -106,11 +130,11 @@ export function FhirPage() {
                   <table className="table">
                     <thead>
                       <tr>
-                        <th>Resource</th>
-                        <th>Master</th>
-                        <th>US Core</th>
+                        {header('resource', 'Resource')}
+                        {header('master', 'Master')}
+                        {header('compliance', 'US Core')}
                         <th className="num">Errors / warnings</th>
-                        <th>Updated</th>
+                        {header('updated', 'Updated')}
                       </tr>
                     </thead>
                     <tbody>

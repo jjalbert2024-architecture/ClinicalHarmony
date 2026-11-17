@@ -19,6 +19,7 @@ import patientMerged from './fixtures/patient-merged.json';
 import patients from './fixtures/patients.json';
 import pmiCandidate from './fixtures/pmi-candidate.json';
 import pmiCandidates from './fixtures/pmi-candidates.json';
+import pmiDecided from './fixtures/pmi-decided.json';
 import pmiRuns from './fixtures/pmi-runs.json';
 import summary from './fixtures/summary.json';
 import timeline from './fixtures/timeline.json';
@@ -32,7 +33,7 @@ export const API = `${GATEWAY}/api/v1`;
 export const fixtures = {
   bronzeMessage, bronzeMessages, config, fhirResourceCondition, fhirResources, fhirTypes, fhirValidate, health,
   lineageFhir, lineageSummary, meDana, ontologyCoverage, patientMerged, patients, pmiCandidate, pmiCandidates,
-  pmiRuns, summary, timeline, validationFindings, validationRules, validationSummary,
+  pmiDecided, pmiRuns, summary, timeline, validationFindings, validationRules, validationSummary,
 };
 
 export const meVic = {
@@ -97,7 +98,10 @@ export const defaultHandlers = [
   get('/patients', fixtures.patients),
   get('/patients/:id', fixtures.patientMerged),
   get('/patients/:id/timeline', fixtures.timeline),
-  get('/pmi/candidates', fixtures.pmiCandidates),
+  // status=DECIDED feeds the "Recently decided" card; every other status gets the queue fixture
+  http.get(`${API}/pmi/candidates`, ({ request }) =>
+    reply(request, new URL(request.url).searchParams.get('status') === 'DECIDED' ? fixtures.pmiDecided : fixtures.pmiCandidates),
+  ),
   get('/pmi/candidates/:id', fixtures.pmiCandidate),
   get('/pmi/runs', fixtures.pmiRuns),
   get('/ontology/coverage', fixtures.ontologyCoverage),

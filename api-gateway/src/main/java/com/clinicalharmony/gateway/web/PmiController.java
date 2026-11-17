@@ -52,8 +52,13 @@ public class PmiController {
     @GetMapping("/candidates")
     public ResponseEntity<JsonNode> candidates(
             @RequestParam(defaultValue = "PENDING")
-            @Pattern(regexp = "PENDING|ACCEPTED|REJECTED|AUTO_MERGED|SUPERSEDED|ALL") String status,
+            @Pattern(regexp = "PENDING|ACCEPTED|REJECTED|AUTO_MERGED|SUPERSEDED|DECIDED|QUEUED|ALL") String status,
+            @RequestParam(required = false) @Min(1) Long runId,
             @RequestParam(defaultValue = "100") @Min(1) @Max(500) int limit) {
+        if (runId != null) {
+            return Proxy.relay(downstream.get(Downstream.PATIENT_INDEX,
+                    "/api/pmi/candidates?status={status}&runId={runId}&limit={limit}", status, runId, limit));
+        }
         return Proxy.relay(downstream.get(Downstream.PATIENT_INDEX, "/api/pmi/candidates?status={status}&limit={limit}",
                 status, limit));
     }

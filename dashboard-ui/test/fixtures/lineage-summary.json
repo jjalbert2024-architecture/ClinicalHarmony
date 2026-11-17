@@ -1,45 +1,38 @@
 [
   {
-    "step": "API_GENERATE",
-    "sourceSchema": "api",
-    "targetTable": "fhir_resources",
-    "count": 8,
-    "lastTransformedAt": "2026-11-13T07:42:56.421776Z"
-  },
-  {
     "step": "FHIR_MAP",
     "sourceSchema": "silver",
     "targetTable": "fhir_resources",
-    "count": 56,
-    "lastTransformedAt": "2026-11-13T07:43:05.587864Z"
-  },
-  {
-    "step": "PMI_MATCH",
-    "sourceSchema": "gold",
-    "targetTable": "master_patients",
-    "count": 17,
-    "lastTransformedAt": "2026-11-13T07:43:05.778901Z"
-  },
-  {
-    "step": "PMI_MERGE",
-    "sourceSchema": "gold",
-    "targetTable": "master_patient_merges",
-    "count": 16,
-    "lastTransformedAt": "2026-11-13T07:43:02.660541Z"
+    "count": 98,
+    "lastTransformedAt": "2026-11-16T11:32:55.585962Z"
   },
   {
     "step": "PMI_PROVISIONAL",
     "sourceSchema": "silver",
     "targetTable": "master_patients",
-    "count": 41,
-    "lastTransformedAt": "2026-11-13T07:43:05.587864Z"
+    "count": 83,
+    "lastTransformedAt": "2026-11-16T11:32:55.585962Z"
+  },
+  {
+    "step": "PMI_MATCH",
+    "sourceSchema": "gold",
+    "targetTable": "master_patients",
+    "count": 34,
+    "lastTransformedAt": "2026-11-16T12:00:47.793518Z"
+  },
+  {
+    "step": "PMI_MERGE",
+    "sourceSchema": "gold",
+    "targetTable": "master_patient_merges",
+    "count": 31,
+    "lastTransformedAt": "2026-11-16T11:58:52.458581Z"
   },
   {
     "step": "PMI_UNMERGE",
     "sourceSchema": "gold",
     "targetTable": "master_patient_merges",
-    "count": 7,
-    "lastTransformedAt": "2026-11-13T07:43:02.834434Z"
+    "count": 14,
+    "lastTransformedAt": "2026-11-16T12:17:47.387683Z"
   },
   {
     "step": "SEED_LOAD",
@@ -47,5 +40,12 @@
     "targetTable": "fhir_resources",
     "count": 13,
     "lastTransformedAt": "2026-11-11T14:43:25.10271Z"
+  },
+  {
+    "step": "API_GENERATE",
+    "sourceSchema": "api",
+    "targetTable": "fhir_resources",
+    "count": 8,
+    "lastTransformedAt": "2026-11-14T08:00:06.920868Z"
   }
 ]

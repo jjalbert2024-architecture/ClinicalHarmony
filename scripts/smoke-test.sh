@@ -645,6 +645,28 @@ check_sql "  → recorded reviewer is the token's user, not the body's" "SELECT 
 check_http "rejecting it again → 409 passed through" POST "$GW/pmi/candidates/$GC/reject" 409 "application/json" '{}'
 check_json "  → problem names patient-index-service" "$TMP/last_response.json" "(d['service'], d['downstreamStatus'])" "('patient-index-service', 409)"
 
+# dashboard ordering fixes (branch pmi-review-recent-decisions)
+fc_curl -s "$GW/pmi/candidates?status=DECIDED&limit=10" > "$TMP/gw_decided.json"
+check_json "Recently decided: dana's reject of the twin is the newest decision" "$TMP/gw_decided.json" "(d[0]['id'], d[0]['reviewedBy'])" "($GC, 'dana')"
+check_json "  → newest decision first, only ACCEPTED/REJECTED" "$TMP/gw_decided.json" \
+  "all(a['reviewedAt'] >= b['reviewedAt'] for a, b in zip(d, d[1:])) and {c['status'] for c in d} <= {'ACCEPTED', 'REJECTED'}" "True"
+GRUN="$(python3 -c "import json; print(json.load(open('$TMP/gw_run.json'))['run']['id'])")"
+fc_curl -s "$GW/pmi/candidates?status=QUEUED&runId=$GRUN" > "$TMP/gw_run_queued.json"
+check_json "run filter: QUEUED candidates of dana's run include the twin, nothing auto-merged" "$TMP/gw_run_queued.json" \
+  "($GC in [c['id'] for c in d], all(c['runId'] == $GRUN and c['status'] != 'AUTO_MERGED' for c in d))" "(True, True)"
+fc_curl -s "$GW/pmi/candidates?status=PENDING&limit=500" > "$TMP/gw_pending_sorted.json"
+check_json "PENDING stays highest score first" "$TMP/gw_pending_sorted.json" "all(a['score'] >= b['score'] for a, b in zip(d, d[1:]))" "True"
+fc_curl -s "$GW/fhir/resources?type=Patient&q=silver-patient-&size=200" > "$TMP/gw_fhir_sorted.json"
+check_json "FHIR Viewer: silver-patient-N ids sorted by number, not text" "$TMP/gw_fhir_sorted.json" \
+  "(lambda n: n == sorted(n))([int(r['fhirId'].rsplit('-', 1)[1]) for r in d['items']])" "True"
+fc_curl -s "$GW/fhir/resources?type=Patient&q=silver-patient-&size=200&sort=resource&dir=desc" > "$TMP/gw_fhir_desc.json"
+check_json "  → and descending on request" "$TMP/gw_fhir_desc.json" \
+  "(lambda n: n == sorted(n, reverse=True))([int(r['fhirId'].rsplit('-', 1)[1]) for r in d['items']])" "True"
+check_http "  → an unknown sort column is refused → 400" GET "$GW/fhir/resources?sort=fhir_id" 400
+fc_curl -s "$GW/lineage/summary" > "$TMP/gw_lineage_summary.json"
+check_json "Data Lineage summary in pipeline order (FHIR_MAP first, SEED/API last)" "$TMP/gw_lineage_summary.json" \
+  "(lambda s: s[0] == 'FHIR_MAP' and s.index('PMI_PROVISIONAL') < s.index('PMI_MATCH') < s.index('SEED_LOAD') < s.index('API_GENERATE'))([r['step'] for r in d])" "True"
+
 check_http "dana toggles LAB_REFERENCE_RANGE off (routed to rules-engine-service)" PUT "$GW/validation/rules/LAB_REFERENCE_RANGE/toggle" 200
 check_json "  → inactive" "$TMP/last_response.json" "(d['active'], d['evaluatedBy'])" "(False, 'rules-engine-service')"
 check_http "  … and back on" PUT "$GW/validation/rules/LAB_REFERENCE_RANGE/toggle" 200

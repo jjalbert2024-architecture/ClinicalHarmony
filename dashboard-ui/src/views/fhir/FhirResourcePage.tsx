@@ -2,7 +2,7 @@ import { useQuery } from '@tanstack/react-query';
 import { Link, useParams } from 'react-router';
 import type { ResourceDetail } from '../../api/types';
 import { useApi } from '../../app/context';
-import { Badge, Empty, JsonView, PageHeader, QueryState } from '../../components/common';
+import { Badge, Empty, JsonView, PageHeader, QueryState, safeFileName } from '../../components/common';
 import { fmtDateTime } from '../../format';
 import { LineageChain } from '../lineage/LineageChain';
 import { Violations } from './Violations';
@@ -87,7 +87,11 @@ export function FhirResourcePage() {
             </div>
             <section className="card">
               <h2>Resource</h2>
-              <JsonView value={d.resource} />
+              <JsonView
+                value={d.resource}
+                downloadName={safeFileName(`${d.summary.resourceType}-${d.summary.fhirId}.json`)}
+                mimeType="application/fhir+json"
+              />
             </section>
           </>
         );

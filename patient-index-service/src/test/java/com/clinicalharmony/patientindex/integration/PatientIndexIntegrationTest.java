@@ -202,6 +202,27 @@ class PatientIndexIntegrationTest {
         assertThat(jdbc.queryForObject("SELECT match_method || ' ' || decided_by FROM gold.master_patient_merges WHERE id = ?",
                 String.class, acceptMergeId)).isEqualTo("MANUAL reviewer:dana");
 
+        // ---- decided history is newest decision first; PENDING stays score-ordered; run filter works ----
+        JsonNode decided = objectMapper.readTree(http("system/*.rs")
+                .getForObject("/api/pmi/candidates?status=DECIDED&limit=10", String.class));
+        assertThat(decided.findValuesAsText("status")).containsExactly("ACCEPTED", "REJECTED");
+        assertThat(decided.get(0).get("id").asLong()).isEqualTo(swapCandidate.get("id").asLong());
+        assertThat(decided.get(0).get("reviewNote").asText()).isEqualTo("DOB keyed day-first at registration");
+        long firstRun = swapCandidate.get("runId").asLong();
+        JsonNode ofRun1 = objectMapper.readTree(http("system/*.rs")
+                .getForObject("/api/pmi/candidates?status=ALL&runId=" + firstRun, String.class));
+        assertThat(ofRun1).isNotEmpty();
+        ofRun1.forEach(c -> assertThat(c.get("runId").asLong()).isEqualTo(firstRun));
+        assertThat(objectMapper.readTree(http("system/*.rs")
+                .getForObject("/api/pmi/candidates?status=ALL&runId=999999", String.class))).isEmpty();
+        JsonNode queuedRun1 = objectMapper.readTree(http("system/*.rs")
+                .getForObject("/api/pmi/candidates?status=QUEUED&runId=" + firstRun, String.class));
+        assertThat(queuedRun1.findValuesAsText("status")).containsExactlyInAnyOrder("ACCEPTED", "REJECTED");
+        JsonNode autoRun1 = objectMapper.readTree(http("system/*.rs")
+                .getForObject("/api/pmi/candidates?status=AUTO_MERGED&runId=" + firstRun, String.class));
+        assertThat(autoRun1).isNotEmpty();
+        assertThat(autoRun1.findValuesAsText("status")).containsOnly("AUTO_MERGED");
+
         // ---- master view ----
         JsonNode view = objectMapper.readTree(http("system/*.rs").getForObject("/api/pmi/masters/" + garcia, String.class));
         assertThat(view.at("/master/matchStatus").asText()).isEqualTo("MATCHED");

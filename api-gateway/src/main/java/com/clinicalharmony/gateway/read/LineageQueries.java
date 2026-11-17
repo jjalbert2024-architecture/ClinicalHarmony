@@ -117,10 +117,24 @@ public class LineageQueries {
         return new LineageGraph("gold.master_patients", masterId, records, bronze(bronzeIds));
     }
 
+    /**
+     * One row per (step, source schema, target table), in pipeline order rather than alphabetically: the
+     * Silver → Gold mapping, then the PMI steps on the masters it creates, then the side entrances into Gold
+     * (seed load, API generate). Steps not listed here (later phases) sort last, alphabetically.
+     */
     public List<StepCount> summary() {
         return jdbc.query("""
                 SELECT transformation_step, source_schema, target_table, count(*) AS n, max(transformed_at) AS last
-                FROM gold.data_lineage GROUP BY 1, 2, 3 ORDER BY 1, 2, 3
+                FROM gold.data_lineage GROUP BY 1, 2, 3
+                ORDER BY CASE transformation_step
+                             WHEN 'FHIR_MAP' THEN 1
+                             WHEN 'PMI_PROVISIONAL' THEN 2
+                             WHEN 'PMI_MATCH' THEN 3
+                             WHEN 'PMI_MERGE' THEN 4
+                             WHEN 'PMI_UNMERGE' THEN 5
+                             WHEN 'SEED_LOAD' THEN 6
+                             WHEN 'API_GENERATE' THEN 7
+                             ELSE 99 END, 1, 2, 3
                 """, new MapSqlParameterSource(), (rs, i) -> new StepCount(rs.getString("transformation_step"),
                 rs.getString("source_schema"), rs.getString("target_table"), rs.getLong("n"), Sql.ts(rs, "last")));
     }

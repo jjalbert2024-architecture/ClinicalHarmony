@@ -9,20 +9,41 @@ import { StewardButton } from '../../components/StewardButton';
 import { fmtDateTime, fmtScore } from '../../format';
 
 export const PMI_SERVICE = 'patient-index-service';
-const STATUSES = ['PENDING', 'ACCEPTED', 'REJECTED', 'AUTO_MERGED', 'SUPERSEDED', 'ALL'];
+const STATUSES = ['PENDING', 'ACCEPTED', 'REJECTED', 'AUTO_MERGED', 'SUPERSEDED', 'DECIDED', 'QUEUED', 'ALL'];
+const STATUS_LABELS: Record<string, string> = {
+  DECIDED: 'DECIDED (accepted + rejected)',
+  QUEUED: 'QUEUED (sent to review)',
+};
 
 export function PmiPage() {
   const api = useApi();
   const queryClient = useQueryClient();
   const [params, setParams] = useSearchParams();
   const status = params.get('status') ?? 'PENDING';
+  const runFilter = params.get('run') ?? '';
   const [confirmRun, setConfirmRun] = useState(false);
   const [lastResult, setLastResult] = useState<RunResult | null>(null);
 
   const candidates = useQuery({
-    queryKey: ['pmi', 'candidates', status],
-    queryFn: ({ signal }) => api.get<MatchCandidate[]>('/pmi/candidates', { status, limit: 200 }, signal),
+    queryKey: ['pmi', 'candidates', status, runFilter],
+    queryFn: ({ signal }) => api.get<MatchCandidate[]>('/pmi/candidates', { status, runId: runFilter, limit: 200 }, signal),
   });
+  const decided = useQuery({
+    queryKey: ['pmi', 'decided'],
+    queryFn: ({ signal }) => api.get<MatchCandidate[]>('/pmi/candidates', { status: 'DECIDED', limit: 10 }, signal),
+  });
+
+  function setStatus(next: string) {
+    const p = new URLSearchParams(params);
+    if (next === 'PENDING') p.delete('status');
+    else p.set('status', next);
+    setParams(p);
+  }
+  function clearRun() {
+    const p = new URLSearchParams(params);
+    p.delete('run');
+    setParams(p);
+  }
   const runs = useQuery({
     queryKey: ['pmi', 'runs'],
     queryFn: ({ signal }) => api.get<MatchRun[]>('/pmi/runs', { limit: 10 }, signal),
@@ -62,19 +83,31 @@ export function PmiPage() {
           <h2>Review queue</h2>
           <label>
             Status{' '}
-            <select value={status} onChange={(e) => setParams(e.target.value === 'PENDING' ? {} : { status: e.target.value })}>
+            <select value={status} onChange={(e) => setStatus(e.target.value)}>
               {STATUSES.map((s) => (
                 <option key={s} value={s}>
-                  {s}
+                  {STATUS_LABELS[s] ?? s}
                 </option>
               ))}
             </select>
           </label>
         </div>
+        {runFilter && (
+          <div className="active-filters">
+            <button className="chip" onClick={clearRun}>
+              run #{runFilter} ×
+            </button>
+          </div>
+        )}
+        <p className="muted small">
+          {status === 'PENDING' ? 'Highest score first.' : 'Newest decision first.'}
+        </p>
         <QueryState query={candidates} context="Loading the review queue">
           {(items) =>
             items.length === 0 ? (
-              <Empty>{status === 'PENDING' ? 'Nothing waiting for review.' : `No ${status} candidates.`}</Empty>
+              <Empty>
+                {status === 'PENDING' && !runFilter ? 'Nothing waiting for review.' : `No ${status} candidates${runFilter ? ` from run #${runFilter}` : ''}.`}
+              </Empty>
             ) : (
               <table className="table">
                 <thead>
@@ -116,6 +149,32 @@ export function PmiPage() {
         </QueryState>
       </section>
       <section className="card">
+        <h2>Recently decided</h2>
+        <QueryState query={decided} context="Loading recent decisions">
+          {(items) =>
+            items.length === 0 ? (
+              <Empty>No review decisions yet.</Empty>
+            ) : (
+              <ul className="decision-list" aria-label="Recently decided">
+                {items.map((c) => (
+                  <li key={c.id}>
+                    <div>
+                      <Link to={`/pmi/candidates/${c.id}`}>#{c.id}</Link> <Badge value={c.status} />{' '}
+                      <Link to={`/patients/${c.masterAId}`}>#{c.masterAId}</Link> ↔ <Link to={`/patients/${c.masterBId}`}>#{c.masterBId}</Link>{' '}
+                      <span className="muted">· score {fmtScore(c.score)}</span>
+                    </div>
+                    <div className="muted small">
+                      {c.reviewedBy ?? '—'} · {fmtDateTime(c.reviewedAt)}
+                      {c.reviewNote ? <> · “{c.reviewNote}”</> : null}
+                    </div>
+                  </li>
+                ))}
+              </ul>
+            )
+          }
+        </QueryState>
+      </section>
+      <section className="card">
         <h2>Recent matching runs</h2>
         <QueryState query={runs} context="Loading matching runs">
           {(items) =>
@@ -148,8 +207,12 @@ export function PmiPage() {
                       <td>{fmtDateTime(r.startedAt)}</td>
                       <td className="num">{r.provisionalMasters}</td>
                       <td className="num">{r.pairsCompared}</td>
-                      <td className="num">{r.autoMerges}</td>
-                      <td className="num">{r.queuedForReview}</td>
+                      <td className="num">
+                        <RunCount count={r.autoMerges} to={`/pmi?status=AUTO_MERGED&run=${r.id}`} label={`Auto-merged candidates of run #${r.id}`} />
+                      </td>
+                      <td className="num">
+                        <RunCount count={r.queuedForReview} to={`/pmi?status=QUEUED&run=${r.id}`} label={`Review candidates of run #${r.id}`} />
+                      </td>
                       <td className="num">{r.confirmedSingletons}</td>
                     </tr>
                   ))}
@@ -176,5 +239,16 @@ export function PmiPage() {
         </ConfirmDialog>
       )}
     </>
+  );
+}
+
+/** A run's count, linking to that run's candidates when there are any. */
+function RunCount({ count, to, label }: { count: number; to: string; label: string }) {
+  return count > 0 ? (
+    <Link to={to} aria-label={label} title={label}>
+      {count}
+    </Link>
+  ) : (
+    <>{count}</>
   );
 }

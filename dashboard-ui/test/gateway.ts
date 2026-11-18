@@ -8,6 +8,7 @@ import bronzeMessages from './fixtures/bronze-messages.json';
 import config from './fixtures/config.json';
 import fhirResourceCondition from './fixtures/fhir-resource-condition.json';
 import fhirResources from './fixtures/fhir-resources.json';
+import fhirSourceSystems from './fixtures/fhir-source-systems.json';
 import fhirTypes from './fixtures/fhir-types.json';
 import fhirValidate from './fixtures/fhir-validate.json';
 import health from './fixtures/health.json';
@@ -31,7 +32,7 @@ export const GATEWAY = 'http://gateway.test';
 export const API = `${GATEWAY}/api/v1`;
 
 export const fixtures = {
-  bronzeMessage, bronzeMessages, config, fhirResourceCondition, fhirResources, fhirTypes, fhirValidate, health,
+  bronzeMessage, bronzeMessages, config, fhirResourceCondition, fhirResources, fhirSourceSystems, fhirTypes, fhirValidate, health,
   lineageFhir, lineageSummary, meDana, ontologyCoverage, patientMerged, patients, pmiCandidate, pmiCandidates,
   pmiDecided, pmiRuns, summary, timeline, validationFindings, validationRules, validationSummary,
 };
@@ -110,6 +111,7 @@ export const defaultHandlers = [
   get('/validation/rules', fixtures.validationRules),
   get('/fhir/resource-types', fixtures.fhirTypes),
   get('/fhir/resources', fixtures.fhirResources),
+  get('/fhir/source-systems', fixtures.fhirSourceSystems),
   get('/fhir/resources/:type/:id', fixtures.fhirResourceCondition),
   get('/lineage', fixtures.lineageFhir),
   get('/lineage/summary', fixtures.lineageSummary),

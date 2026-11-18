@@ -27,4 +27,8 @@ public final class FhirIds {
     public static String medicationRequest(long silverId) {
         return "silver-medication-" + silverId;
     }
+
+    public static String allergyIntolerance(long silverId) {
+        return "silver-allergy-" + silverId;
+    }
 }

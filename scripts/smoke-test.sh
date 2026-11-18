@@ -1,8 +1,9 @@
 #!/usr/bin/env bash
 # End-to-end smoke test for ingestion-service, ontology-service, rules-engine-service,
 # fhir-compliance-service, patient-index-service, api-gateway, dashboard-ui, (Phase 9a) the
-# MLLP → Kafka → bronze-listener-service path driven by data-generator, and (Phase 9b) the
-# bronze.ingested → silver-transformer-service → silver.patient.changed path.
+# MLLP → Kafka → bronze-listener-service path driven by data-generator, (Phase 9b) the
+# bronze.ingested → silver-transformer-service → silver.patient.changed path, and (Phase 9c) the
+# silver.patient.changed → gold-builder → Gold → gold.patient.changed → pmi-matcher path.
 # Assumes the stack is already up: `docker-compose up -d` from the repo root.
 # Usage: ./scripts/smoke-test.sh
 set -uo pipefail
@@ -660,7 +661,7 @@ check_json "run filter: QUEUED candidates of dana's run include the twin, nothin
   "($GC in [c['id'] for c in d], all(c['runId'] == $GRUN and c['status'] != 'AUTO_MERGED' for c in d))" "(True, True)"
 fc_curl -s "$GW/pmi/candidates?status=PENDING&limit=500" > "$TMP/gw_pending_sorted.json"
 check_json "PENDING stays highest score first" "$TMP/gw_pending_sorted.json" "all(a['score'] >= b['score'] for a, b in zip(d, d[1:]))" "True"
-fc_curl -s "$GW/fhir/resources?type=Patient&q=silver-patient-&size=200" > "$TMP/gw_fhir_sorted.json"
+fc_curl -s "$GW/fhir/resources?type=Patient&q=silver-patient-&sort=resource&size=200" > "$TMP/gw_fhir_sorted.json"
 check_json "FHIR Viewer: silver-patient-N ids sorted by number, not text" "$TMP/gw_fhir_sorted.json" \
   "(lambda n: n == sorted(n))([int(r['fhirId'].rsplit('-', 1)[1]) for r in d['items']])" "True"
 fc_curl -s "$GW/fhir/resources?type=Patient&q=silver-patient-&size=200&sort=resource&dir=desc" > "$TMP/gw_fhir_desc.json"
@@ -932,6 +933,146 @@ check_json "  → only HL7 v2 RDE rows, as many as Bronze has" "$TMP/last_respon
 TOKEN=""
 code="$(curl -s -o "$TMP/kafbat_sg.json" -w "%{http_code}" "$KAFBAT_URL/api/clusters/clinicalharmony/consumer-groups/silver-transformer")"
 [[ "$code" == "200" ]] && grep -q '"groupId":"silver-transformer"' "$TMP/kafbat_sg.json"; pass_if "Kafbat UI sees the silver-transformer consumer group" $? "HTTP $code"
+
+section "20. Gold over Kafka — silver.patient.changed → gold-builder → Gold → pmi-matcher (Phase 9c)"
+# Needs migration 25, gold-builder in fhir-compliance-service and pmi-matcher in patient-index-service. A fresh
+# random seed whose run is guaranteed to contain one IDENTICAL and one FUZZY cross-facility duplicate (both
+# registrations' first ADT valid), so the PMI outcomes are checked every run. No POST /api/fhir/build anywhere:
+# Gold and matching happen on their own.
+for t in clinicalharmony.silver.patient.changed.dlt clinicalharmony.gold.patient.changed clinicalharmony.gold.patient.changed.dlt; do
+  parts="$(kexec kafka-topics --bootstrap-server localhost:29092 --describe --topic "$t" | grep -c 'Partition: ')"
+  [[ "$parts" == "3" ]]; pass_if "topic $t exists with 3 partitions" $? "$parts partitions"
+done
+wait_gold_lag_zero() { for _ in $(seq 1 120); do [[ "$(group_lag gold-builder clinicalharmony.silver.patient.changed)" == "0" ]] && return 0; sleep 0.5; done; return 1; }
+GSEED="$(python3 - "$SCRIPT_DIR/../data-generator" <<'PY'
+import random, sys
+sys.path.insert(0, sys.argv[1])
+from hl7gen.messages import generate_run
+r = random.SystemRandom()
+while True:
+    seed = r.randrange(1, 2 ** 30)
+    msgs, dups = generate_run(60, seed, 0.10, 0.10)
+    first = {}
+    for m in msgs:
+        first.setdefault(m.patient_mrn, m)
+    ok = {d.kind for d in dups if all(x in first and first[x].kind == "valid" for x in (d.original_mrn, d.twin_mrn))}
+    if ok == {"IDENTICAL", "FUZZY"}:
+        print(seed)
+        break
+PY
+)"
+T0="$(psql_id "SELECT now()")"
+python3 "$SCRIPT_DIR/../data-generator/generate.py" --count 60 --seed "$GSEED" --out "$GEN_OUT" \
+  --host "$MLLP_HOST" --port "$MLLP_PORT" --quiet > "$TMP/gen3.out" 2>&1
+[[ $? -eq 0 ]] && grep -q "60 ACK AA" "$TMP/gen3.out"; pass_if "generator sent 60 messages (seed $GSEED, 2 cross-facility duplicates), all ACK AA" $? "$(tail -1 "$TMP/gen3.out")"
+GMAN="$GEN_OUT/seed-$GSEED/manifest.json"
+GSHAS="$(in_list "$GMAN")"
+wait_lag_zero; wait_silver_lag_zero
+for _ in $(seq 1 60); do
+  [[ "$(psql_id "SELECT count(*) FROM silver.outbox_events WHERE published_at IS NULL")" == "0" ]] && break; sleep 0.5
+done
+wait_gold_lag_zero; pass_if "gold-builder caught up (consumer lag 0)" $? "lag $(group_lag gold-builder clinicalharmony.silver.patient.changed)"
+# This seed's Silver patients = those whose demographics came from one of its messages.
+GP="SELECT p.id FROM silver.patients p JOIN bronze.raw_messages b ON b.id = p.raw_message_id WHERE b.payload_checksum IN ($GSHAS)"
+check_sql "every Silver patient of the seed has a Gold FHIR Patient on a master — with no POST /api/fhir/build" \
+  "SELECT count(*) > 0 AND count(*) = count(r.id) AND count(r.master_patient_id) = count(*) FROM ($GP) p LEFT JOIN gold.fhir_resources r ON r.resource_type = 'Patient' AND r.fhir_id = 'silver-patient-' || p.id" "t"
+GREF="SELECT 'Patient/silver-patient-' || id FROM ($GP) q"
+GRES="SELECT * FROM gold.fhir_resources WHERE resource_json #>> '{subject,reference}' IN ($GREF) OR resource_json #>> '{patient,reference}' IN ($GREF) OR fhir_id IN (SELECT 'silver-patient-' || id FROM ($GP) q)"
+check_sql "  → one Gold resource per Silver row (patients + conditions + observations + medications + allergies)" \
+  "SELECT (SELECT count(*) FROM ($GP) p) + (SELECT count(*) FROM silver.conditions WHERE patient_id IN ($GP)) + (SELECT count(*) FROM silver.observations WHERE patient_id IN ($GP)) + (SELECT count(*) FROM silver.medications WHERE patient_id IN ($GP)) + (SELECT count(*) FROM silver.allergies WHERE patient_id IN ($GP)) = (SELECT count(*) FROM ($GRES) r)" "t"
+check_sql "  → every one validated (compliance_notes from the HL7 validator, profile set)" \
+  "SELECT count(*) FROM ($GRES) r WHERE compliance_notes->>'profile' IS NULL OR compliance_notes->>'validatedAt' IS NULL" "0"
+check_sql "  → US Core AllergyIntolerance for every AL1 allergy, all compliant" \
+  "SELECT count(a.id) || '=' || count(r.id) || ' compliant=' || coalesce(bool_and(r.is_us_core_compliant), true) FROM silver.allergies a LEFT JOIN gold.fhir_resources r ON r.resource_type = 'AllergyIntolerance' AND r.fhir_id = 'silver-allergy-' || a.id WHERE a.patient_id IN ($GP)" \
+  "$(psql_id "SELECT count(*) || '=' || count(*) || ' compliant=true' FROM silver.allergies WHERE patient_id IN ($GP)")"
+check_sql "lineage of every Patient starts at its raw HL7 message: BRONZE (payload checksum, via Kafka) → SILVER → GOLD" \
+  "SELECT count(*) > 0 AND bool_and(l.transformation_details #>> '{steps,0,stage}' = 'BRONZE' AND l.transformation_details #>> '{steps,0,input_hash}' = b.payload_checksum AND l.transformation_details #>> '{steps,0,ref}' = 'bronze.raw_messages/' || b.id AND l.transformation_details #>> '{steps,0,transformer}' LIKE '%bronze-listener-service%' AND l.transformation_details #>> '{steps,1,transformer}' LIKE 'silver-transformer-service%' AND l.transformation_details #>> '{steps,2,stage}' = 'GOLD') FROM gold.data_lineage l JOIN silver.patients p ON l.source_schema = 'silver' AND l.source_table = 'patients' AND l.source_id = p.id AND l.target_table = 'fhir_resources' JOIN bronze.raw_messages b ON b.id = p.raw_message_id WHERE p.id IN ($GP)" "t"
+for _ in $(seq 1 30); do
+  [[ "$(psql_id "SELECT count(*) FROM gold.outbox_events WHERE published_at IS NULL")" == "0" ]] && break; sleep 0.5
+done
+check_sql "gold outbox: one gold.patient.changed per silver.patient.changed of the seed, caused by it, same correlation id" \
+  "SELECT count(s.id) = count(g.id) AND count(*) > 0 FROM silver.outbox_events s LEFT JOIN gold.outbox_events g ON g.headers->>'causation-id' = s.event_id::text AND g.headers->>'correlation-id' = s.headers->>'correlation-id' JOIN bronze.raw_messages b ON b.id = (s.payload->>'rawMessageId')::bigint WHERE b.payload_checksum IN ($GSHAS)" "t"
+check_sql "  → keyed by master id, all relayed to Kafka" \
+  "SELECT count(*) FILTER (WHERE message_key <> aggregate_id::text OR (payload->>'masterPatientId')::bigint <> aggregate_id) || '/' || count(*) FILTER (WHERE published_at IS NULL) FROM gold.outbox_events" "0/0"
+# pmi-matcher: one debounced run 5 s after the burst (at most every 30 s), after the last Gold event of the seed.
+LAST_GOLD="SELECT max(g.created_at) FROM gold.outbox_events g WHERE (g.payload->>'silverPatientId')::bigint IN ($GP)"
+for _ in $(seq 1 90); do
+  [[ "$(psql_id "SELECT count(*) FROM pmi.match_runs WHERE triggered_by LIKE 'kafka:pmi-matcher%' AND status = 'COMPLETED' AND started_at > ($LAST_GOLD)")" -ge 1 ]] && break; sleep 0.5
+done
+check_sql "pmi-matcher ran matching on its own after the seed's Gold events (no POST /api/pmi/match/run)" \
+  "SELECT count(*) >= 1 FROM pmi.match_runs WHERE triggered_by LIKE 'kafka:pmi-matcher (%' AND status = 'COMPLETED' AND started_at > ($LAST_GOLD)" "t"
+check_sql "  → debounced: far fewer runs than Gold events since the burst began" \
+  "SELECT (SELECT count(*) FROM pmi.match_runs WHERE triggered_by LIKE 'kafka:%' AND started_at > '$T0') * 3 <= (SELECT count(*) FROM gold.outbox_events WHERE created_at > '$T0')" "t"
+read -r IDA_SRC IDA_MRN IDA_DOB IDB_SRC IDB_MRN FZA_SRC FZA_MRN FZA_DOB FZB_SRC FZB_MRN FZB_DOB < <(python3 -c "
+import json; d = json.load(open('$GMAN'))['duplicates']
+i = next(x for x in d if x['kind'] == 'IDENTICAL'); f = next(x for x in d if x['kind'] == 'FUZZY')
+print(i['original']['sourceSystem'], i['original']['mrn'], i['original']['dob'], i['twin']['sourceSystem'], i['twin']['mrn'],
+      f['original']['sourceSystem'], f['original']['mrn'], f['original']['dob'], f['twin']['sourceSystem'], f['twin']['mrn'], f['twin']['dob'])")
+sp() { psql_id "SELECT id FROM silver.patients WHERE source_system = '$1' AND source_patient_id = '$2'"; }
+IA="$(sp "$IDA_SRC" "$IDA_MRN")"; IB="$(sp "$IDB_SRC" "$IDB_MRN")"; FA="$(sp "$FZA_SRC" "$FZA_MRN")"; FB="$(sp "$FZB_SRC" "$FZB_MRN")"
+echo "  (identical: $IDA_SRC $IDA_MRN = $IDB_SRC $IDB_MRN, DOB $IDA_DOB; fuzzy: $FZA_SRC $FZA_MRN DOB $FZA_DOB vs $FZB_SRC $FZB_MRN DOB $FZB_DOB)"
+check_sql "IDENTICAL duplicate ($IDA_SRC $IDA_MRN + $IDB_SRC $IDB_MRN) auto-merged into one MATCHED master (EXACT_NAME_DOB_PLUS_PHONE_OR_ZIP)" \
+  "SELECT (SELECT master_patient_id FROM gold.patient_source_xref WHERE silver_patient_id = ${IA:-0}) = (SELECT master_patient_id FROM gold.patient_source_xref WHERE silver_patient_id = ${IB:-0}) AND (SELECT match_status FROM gold.master_patients WHERE id = (SELECT master_patient_id FROM gold.patient_source_xref WHERE silver_patient_id = ${IA:-0})) = 'MATCHED' AND EXISTS (SELECT 1 FROM pmi.match_candidates WHERE status = 'AUTO_MERGED' AND deterministic_rule = 'EXACT_NAME_DOB_PLUS_PHONE_OR_ZIP' AND least(silver_patient_a_id, silver_patient_b_id) = least(${IA:-0}, ${IB:-0}) AND greatest(silver_patient_a_id, silver_patient_b_id) = greatest(${IA:-0}, ${IB:-0}))" "t"
+check_sql "FUZZY duplicate ($FZA_SRC $FZA_MRN vs $FZB_SRC $FZB_MRN, birth day off by one, other phone) queued for review at 0.6190" \
+  "SELECT string_agg(status || ' ' || score, ',') FROM pmi.match_candidates WHERE least(silver_patient_a_id, silver_patient_b_id) = least(${FA:-0}, ${FB:-0}) AND greatest(silver_patient_a_id, silver_patient_b_id) = greatest(${FA:-0}, ${FB:-0})" "PENDING 0.6190"
+check_sql "  → both stay PROVISIONAL on their own masters until a data steward decides" \
+  "SELECT count(DISTINCT x.master_patient_id) || ' ' || string_agg(DISTINCT m.match_status, ',') FROM gold.patient_source_xref x JOIN gold.master_patients m ON m.id = x.master_patient_id WHERE x.silver_patient_id IN (${FA:-0}, ${FB:-0})" "2 PROVISIONAL"
+
+TOKEN="$(user_token dana)"
+check_http "gateway Patient Timeline search by the identical duplicate's MRN ($IDB_MRN) — no manual build" GET "$GW/patients?q=$IDB_MRN" 200
+check_json "  → one master, both registrations linked" "$TMP/last_response.json" \
+  "(d['total'], [m['id'] for m in d['items']] == [$(psql_id "SELECT master_patient_id FROM gold.patient_source_xref WHERE silver_patient_id = ${IB:-0}")])" "(1, True)"
+check_http "gateway PMI review queue lists the fuzzy pair" GET "$GW/pmi/candidates?status=PENDING&limit=200" 200
+check_json "  → at 0.619" "$TMP/last_response.json" \
+  "[str(c['score']) for c in (d if isinstance(d, list) else d.get('items', [])) if {c['silverPatientAId'], c['silverPatientBId']} == {${FA:-0}, ${FB:-0}}]" "['0.619']"
+# FHIR Viewer filters (9c follow-up): patient, source system, origin, code; newest first by default.
+check_http "FHIR Viewer: patient filter by the identical duplicate's MRN ($IDB_MRN), Patient resources" GET "$GW/fhir/resources?patient=$IDB_MRN&type=Patient" 200
+check_json "  → both registrations' Patients on the merged master, built by the HL7 pipeline" "$TMP/last_response.json" \
+  "(d['total'], sorted({i['sourceSystem'] for i in d['items']}), {i['origin'] for i in d['items']})" \
+  "(2, ['CITY_HOSPITAL', 'NORTH_CLINIC'], {'pipeline'})"
+check_http "FHIR Viewer: source + code filters find section 19's amoxicillin allergy" GET "$GW/fhir/resources?sourceSystem=SMOKE_HOSPITAL&code=Amoxicillin&type=AllergyIntolerance&size=200" 200
+check_json "  → it is there, about SMOKE_HOSPITAL $SMRN" "$TMP/last_response.json" \
+  "any(i['sourcePatientId'] == '$SMRN' for i in d['items']) and all(i['sourceSystem'] == 'SMOKE_HOSPITAL' for i in d['items'])" "True"
+check_http "FHIR Viewer: origin=gold-seed" GET "$GW/fhir/resources?origin=gold-seed&size=200" 200
+check_json "  → exactly the SEED_LOAD rows" "$TMP/last_response.json" "(d['total'], {i['origin'] for i in d['items']})" \
+  "($(psql_id "SELECT count(DISTINCT target_id) FROM gold.data_lineage WHERE transformation_step = 'SEED_LOAD' AND target_table = 'fhir_resources'"), {'gold-seed'})"
+check_http "FHIR Viewer: default order" GET "$GW/fhir/resources?size=25" 200
+check_json "  → newest first" "$TMP/last_response.json" \
+  "(lambda ts, k: [k(t) for t in ts] == sorted(map(k, ts), reverse=True))([i['updatedAt'] for i in d['items']], lambda t: (t[:19], float('0' + t[19:].rstrip('Z'))))" "True"
+check_http "FHIR Viewer: unknown origin → 400" GET "$GW/fhir/resources?origin=everything" 400
+TOKEN=""
+check_sql "section 19's hand-sent amoxicillin allergy is now a compliant US Core AllergyIntolerance (criticality high)" \
+  "SELECT is_us_core_compliant || ' ' || (resource_json->>'criticality') || ' ' || (resource_json #>> '{code,coding,0,code}') FROM gold.fhir_resources WHERE resource_type = 'AllergyIntolerance' AND resource_json #>> '{patient,reference}' = 'Patient/silver-patient-${SPID:-0}'" "true high 723"
+
+# A broken silver.patient.changed record goes straight to the dead-letter topic.
+DKEY="smoke-dlt-$GSEED"
+echo "$DKEY|not json at all" | docker exec -i "$KAFKA_CONTAINER" kafka-console-producer --bootstrap-server localhost:29092 \
+  --topic clinicalharmony.silver.patient.changed --property parse.key=true --property key.separator='|' >/dev/null 2>&1
+found=1
+for _ in $(seq 1 6); do
+  kexec kafka-console-consumer --bootstrap-server localhost:29092 --topic clinicalharmony.silver.patient.changed.dlt \
+      --from-beginning --timeout-ms 10000 --property print.key=true > "$TMP/dlt.txt"
+  if grep -q "^$DKEY" "$TMP/dlt.txt"; then found=0; break; fi
+done
+pass_if "a broken silver.patient.changed record is dead-lettered to clinicalharmony.silver.patient.changed.dlt" $found "key $DKEY"
+
+# Logs to a file first: `docker logs | grep -q` under pipefail fails on SIGPIPE when the match comes early.
+docker logs clinicalharmony-fhir-compliance-service > "$TMP/fc.log" 2>&1
+docker logs clinicalharmony-patient-index-service > "$TMP/pmi.log" 2>&1
+if grep -q 'event="gold.built"' "$TMP/fc.log" && grep -q 'event="gold.deadlettered"' "$TMP/fc.log"; then
+  echo "  PASS  fhir-compliance-service logs gold.built and gold.deadlettered events"; PASS=$((PASS + 1))
+else
+  echo "  FAIL  no event=\"gold.built\" / \"gold.deadlettered\" line in fhir-compliance-service's log"; FAIL=$((FAIL + 1))
+fi
+if grep -q 'event="pmi.run"' "$TMP/pmi.log"; then
+  echo "  PASS  patient-index-service logs pmi.run events"; PASS=$((PASS + 1))
+else
+  echo "  FAIL  no event=\"pmi.run\" line in patient-index-service's log"; FAIL=$((FAIL + 1))
+fi
+for g in gold-builder pmi-matcher; do
+  code="$(curl -s -o "$TMP/kafbat_$g.json" -w "%{http_code}" "$KAFBAT_URL/api/clusters/clinicalharmony/consumer-groups/$g")"
+  [[ "$code" == "200" ]] && grep -q "\"groupId\":\"$g\"" "$TMP/kafbat_$g.json"; pass_if "Kafbat UI sees the $g consumer group" $? "HTTP $code"
+done
 
 echo
 echo "=== Summary: $PASS passed, $FAIL failed ==="

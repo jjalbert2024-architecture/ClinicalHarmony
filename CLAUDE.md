@@ -115,6 +115,8 @@ fhir-compliance-service, plus its outbound GoldWriter client:
 | `GOLD_WRITER_BASE_URL` | `http://localhost:8084` | fhir-compliance-service (compose: `http://fhir-compliance-service:8084`) |
 | `OAUTH_TOKEN_URI` | `http://localhost:8180/realms/clinicalharmony/protocol/openid-connect/token` | Its own client_credentials token (compose: `keycloak:8080`) |
 | `PMI_CLIENT_ID` / `PMI_CLIENT_SECRET` | `patient-index-service` / `patient-index-service-secret` | Its Keycloak client (DEV-only secret, in the realm JSON) |
+| `KAFKA_BOOTSTRAP_SERVERS` | `kafka:29092` (docker profile; `local` = `localhost:19092`) | Phase 9c pmi-matcher |
+| `PMI_MATCHER_ENABLED` | `true` | `false` = matching only on request (pre-9c); tunables under `pmi-matcher.*` (quiet-period 5 s, max-delay 30 s, tick, retry-delay 30 s, run-on-startup) |
 
 ### Environment variables (api-gateway)
 
@@ -148,6 +150,8 @@ Same `SPRING_PROFILES_ACTIVE` + `DB_*` pattern as ontology-service, plus (Phase 
 |---|---|---|
 | `OAUTH_ISSUER_URI` | `http://localhost:8180/realms/clinicalharmony` | Required `iss` of Bearer JWTs; also the base for SMART discovery URLs |
 | `OAUTH_JWK_SET_URI` | `http://localhost:8180/realms/clinicalharmony/protocol/openid-connect/certs` | Where signing keys are fetched (compose: `http://keycloak:8080/...`) |
+| `KAFKA_BOOTSTRAP_SERVERS` | `kafka:29092` (docker profile; `local` = `localhost:19092`) | Phase 9c gold-builder + Gold outbox relay |
+| `GOLD_BUILDER_ENABLED` | `true` | `false` = HTTP only (pre-9c); tunables under `gold-builder.*` (partitions, retry, outbox) |
 
 ## Architecture
 
@@ -163,7 +167,10 @@ ingestion-service  →  bronze.raw_messages  (every payload, valid or not)
    │ MLLP since 9a: → Kafka clinicalharmony.bronze.hl7v2.raw → bronze-listener-service → bronze.raw_messages
    │                  (+ outbox → clinicalharmony.bronze.ingested)
    │ since 9b:     bronze.ingested → silver-transformer-service → silver.* (+ rules-engine/ontology validation)
-   │                  (+ outbox → clinicalharmony.silver.patient.changed, consumed from 9c on)
+   │                  (+ outbox → clinicalharmony.silver.patient.changed)
+   │ since 9c:     silver.patient.changed → gold-builder (in fhir-compliance-service) → Gold via GoldWriter
+   │                  (+ gold.outbox_events → clinicalharmony.gold.patient.changed → pmi-matcher in
+   │                  patient-index-service: one debounced matching run per burst)
         │
         ▼
 ontology-service   →  silver.* validated against ICD-10/SNOMED/LOINC/RxNorm
@@ -294,6 +301,57 @@ Port 8087, package `com.clinicalharmony.silver`, consumer group `silver-transfor
   message type" dropdown (ADT/ORU/RDE/OMP) — picking one implies HL7 v2; FHIR JSON/Claims CSV clear + disable it; all in
   the URL. Tests: gateway 48 (web + integration), UI 65, refreshed `bronze-messages.json`/`bronze-message.json`,
   smoke 297, CHECKLIST rows 19–21.
+
+### Phase 9c — Gold over Kafka (built, in review — branch `phase-9c-gold-over-kafka`)
+
+- **gold-builder** = consumer group `gold-builder` INSIDE fhir-compliance-service (`goldbuilder/` package) on
+  `clinicalharmony.silver.patient.changed` (`ack-mode: record`, concurrency 3, max-poll-records 20). `GoldBuilder.build`
+  = ONE transaction: `SilverFhirBuildService.buildPatient` (unchanged path: master, resources + validator notes,
+  lineage, all via GoldWriter) + `GoldWriter.recordEvent` → `gold.outbox_events` (migration 25; GoldWriter writes the
+  outbox row so it stays the only Gold writer — the relay only stamps published_at/attempts). `GoldOutboxRelay` (500 ms,
+  copied from silver-transformer) → `clinicalharmony.gold.patient.changed`, key = master id, headers correlation-id +
+  causation-id (= silver event-id). Retries 1/2/4 s → `clinicalharmony.silver.patient.changed.dlt`; `InvalidEventException`
+  (bad JSON, no silverPatientId, unknown Silver patient) → DLT at once. `gold-builder.enabled` / `GOLD_BUILDER_ENABLED`
+  (all its beans are `@ConditionalOnProperty`). `POST /api/fhir/build` still works but emits no event.
+- **AllergyIntoleranceResourceBuilder** (silver.allergies → US Core AllergyIntolerance, id `silver-allergy-<n>`):
+  clinicalStatus active, no verificationStatus, AL1-2 → type/category, AL1-4 → criticality + reaction.severity, AL1-5 →
+  manifestation text; compliant with the real validator. `SilverTable.ALLERGIES`, `SilverClinicalRepository.findAllergies`.
+- **Lineage**: `SilverProvenance.bronzeIntakeChannel`; MLLP_KAFKA rows get transformer
+  `ingestion-service MLLP → Kafka → bronze-listener-service (HL7V2)` / `silver-transformer-service: Bronze → Silver parse`.
+  No new `transformation_step` (a Kafka-triggered build is the same FHIR_MAP / PMI_PROVISIONAL transformation; separate
+  steps would have given one resource two lineage rows) — so `LineageQueries.summary()`'s CASE needed no change.
+- **pmi-matcher** = consumer group `pmi-matcher` INSIDE patient-index-service (`kafka/` package). The listener only
+  `signal`s `MatchRunDebouncer`; `@Scheduled tick` runs `MatchingRunService.runIfIdle` (new; `PmiLock.tryExclusively`,
+  no wait) when 5 s quiet since the last event OR 30 s since the first pending one. Busy lock / failed run → batch
+  requeued, retry after 30 s. Startup catch-up run when PROVISIONAL masters wait. `triggered_by =
+  "kafka:pmi-matcher (<n> events, <m> masters)"`. API runs (`POST /match/run`) now WAIT up to 15 s for the lock (was
+  instant 409). Broken event → `clinicalharmony.gold.patient.changed.dlt` (declared by the PMI).
+- **Logs**: both services keep their pattern layout (the smoke test greps `[correlation-id]`) with `%kvp` appended, so
+  `event="gold.built" masterPatientId="…"` / `event="pmi.run" runId="…"` appear on the line. MDC requestId = the MLLP
+  correlation id on Kafka-driven work.
+- **Generator**: `--duplicate-rate` 0.10 (`make_duplicates`, `generate_run` returns (messages, duplicates); manifest
+  `duplicates[]` with `expectedPmiOutcome`; console prints source + MRN + DOB). IDENTICAL twin = same demographics,
+  other facility + MRN → deterministic auto-merge; FUZZY = birth day ±1 (same year/month) + other phone → 0.6190 review.
+  Twin ADT sent right after the original's first ADT. Changed every seed's bytes again (vs 9b).
+- **FHIR Viewer filters (9c follow-up, found by the user while testing 9c — finding `silver-allergy-165` meant paging
+  or guessing that the box searched the id)**: gateway `FhirQueries.search(Filter, …)` + `GET /api/v1/fhir/source-systems`;
+  new params `patient` (name contains / exact MRN or source id, the Patient Timeline rule), `origin`
+  (`pipeline|silver-seed|api|gold-seed`, from the resource's FHIR_MAP / API_GENERATE / SEED_LOAD lineage row; pipeline =
+  steps[0] BRONZE), `sourceSystem` (of the Silver patient the resource references: itself / subject / patient /
+  beneficiary = `Patient/silver-patient-N`), `code` (exact coding code or display/text contains, over `code` and
+  `medicationCodeableConcept`); default sort now `updated` desc (`dir` defaults desc for updated, asc otherwise); rows gain
+  `origin`, `sourceSystem`, `sourcePatientId`. UI: labelled filter row (Patient, Source system, Origin, US Core, Code or
+  name, Resource id contains) + hint "id = the part after the slash", Patient + Origin columns, Clear filters, all in the
+  URL. Deferred (user agreed): a per-resource "why compliant" checklist of required / must-support elements recorded at
+  validation time. Tests: gateway 50, UI 66 (fixtures `fhir-resources.json` re-captured, `fhir-source-systems.json` new),
+  smoke +9 in section 20 (333 total), CHECKLIST rows 22–24 (16 reworded).
+- **Live**: the first start replayed all 680 historical silver events → 680 gold events, 73 AllergyIntolerance (all
+  compliant), and exactly ONE debounced PMI run (waited 14.8 s).
+- **Tests**: fhir-compliance 276 (new: AllergyIntolerance builder 2, event parse 3, Kafka lineage 1,
+  `GoldBuilderIntegrationTest` 2 — the shared `AbstractIntegrationTest` now also starts cp-kafka 7.6.1 via
+  `@ServiceConnection`), PMI 64 (`MatchRunDebouncerTest` 5 on a hand-moved clock, event parse 2,
+  `PmiMatcherIntegrationTest` 1: burst → one run; `PatientIndexIntegrationTest` runs with `pmi-matcher.enabled=false`),
+  generator 18. Smoke section 20; Postman `fhir-compliance-service/postman/phase9c-gold-over-kafka` (8 items).
 
 ### data-generator (Phase 9a v1 — done, merged as PR #15; RDE^O11 added in 9b)
 
@@ -587,7 +645,7 @@ needs read models no service exposes, not routing). User decisions at Phase 7 sc
 - **Gotcha**: local `mvn package` fails offline (maven-jar-plugin 3.4.2's plexus-archiver etc. aren't in
   ~/.m2) — Docker builds download them in-container; locally run from `target/classes` +
   `dependency:build-classpath` if needed.
-- **Tests (48)**: `DownstreamClientTest` (JDK `HttpServer` stub with delays: token, correlation id,
+- **Tests (50)**: `DownstreamClientTest` (JDK `HttpServer` stub with delays: token, correlation id,
   401 retry, 4xx/5xx/timeout/down/Keycloak-down), `@WebMvcTest` `GatewayWebTest` with the real security
   chain (`@EnableConfigurationProperties(GatewayProperties)` + `@Import` security/CORS/`TestJwts`), and
   `ApiGatewayIntegrationTest` (Testcontainers, datasource = the read-only role, stubbed services,
@@ -624,7 +682,7 @@ scoping (all recommended):
   React StrictMode double-runs effects so the `/callback` exchange is memoized per attempt
   (`startBoot` in `main.tsx`); the Vite dev server needs port 3000 (the only registered redirect
   URI), so stop the compose container first.
-- **Tests (65, Vitest + jsdom + Testing Library + MSW)**: the MSW gateway stub serves REAL responses
+- **Tests (66, Vitest + jsdom + Testing Library + MSW)**: the MSW gateway stub serves REAL responses
   captured from the live gateway (`test/fixtures/`), and any unhandled request fails the test.
   No Playwright (2 GB image); instead smoke section 17 + `dashboard-ui/CHECKLIST.md` (12-step manual
   click-through, replaces a Postman collection for this phase).
@@ -635,6 +693,10 @@ scoping (all recommended):
 - `message_type`: `HL7V2`, `FHIR_JSON`, `CLAIMS_CSV`
 - `message_format`: `TEXT`, `JSON`, `CSV`
 - `processing_status`: `PENDING`, `PROCESSING`, `PROCESSED`, `FAILED`, `QUARANTINED`
+
+Phase 9c (`docs/db-init/25`, non-destructive + idempotent, applied to the running container): `gold.outbox_events`
+(same shape as bronze/silver's; rows written by GoldWriter, relayed by fhir-compliance-service's `GoldOutboxRelay`) +
+grant to the gateway's read-only role. No other schema change.
 
 Phase 9b (`docs/db-init/24`, non-destructive + idempotent, applied to the running container):
 `silver.allergies` (code_system RXNORM/SNOMED-CT/LOCAL, allergy_type table 0127, severity SV/MO/MI/U, unique
@@ -706,9 +768,11 @@ schema **`pmi`** (`match_runs`, `match_candidates` with a partial unique index o
   `anonymous()` clients — endpoints are Bearer-protected since Phase 5b slice 4.
 - **Kafka tests**: Testcontainers `org.testcontainers.kafka.ConfluentKafkaContainer` with the compose
   image `confluentinc/cp-kafka:7.6.1` (KRaft) — no new image. ingestion-service's publisher test uses
-  it without Spring; bronze-listener-service's integration test via `@ServiceConnection`.
+  it without Spring; bronze-listener / silver-transformer / fhir-compliance (shared `AbstractIntegrationTest`) /
+  patient-index (`PmiMatcherIntegrationTest`) via `@ServiceConnection`. The topic the service consumes but doesn't own
+  is declared by a `@TestConfiguration` `NewTopic` in the test.
 - **UI tests** (dashboard-ui, `test/*.test.ts(x)`): Vitest + jsdom + Testing Library against an MSW gateway stub serving real captured `/api/v1` responses; run in `node:24-alpine` via `docker run` (no host Node).
-- **Black-box smoke test** (`scripts/smoke-test.sh`): once the stack is up (`docker-compose up -d`), this hits all four implemented services' REST endpoints over HTTP and asserts on real responses — accept/quarantine outcomes, ontology validation results, all 7 rule-engine evaluations and live rule-toggle behavior, US Core structural validation (including a `requiredAnyOf` choice-type check), and FHIR generation round-tripped back through validation to cross-check the generator against the validator. Fixture payloads live in `scripts/fixtures/`. This replaces the earlier "verified manually" note — it's now a repeatable, scriptable check (297 assertions as of Phase 9b — section 18 runs the generator with a random seed over MLLP and checks Bronze/outbox/idempotency/Kafbat, expecting valid rows PROCESSED since 9b; section 19 = Silver: rows mapped, PID-3.4 patient keying, one silver event per row, a hand-sent allergy + conflicting order flagged against real Silver ids, an ADT without DOB → FAILED, both via the gateway; it fetches a Bearer token from the compose Keycloak for fhir-compliance-service and patient-index-service calls; section 15 = PMI, which inserts fresh random synthetic patients each run so it stays rerunnable; section 16 = api-gateway, with real dana/vic user tokens from the dev direct-grant client; section 17 = dashboard-ui's nginx: SPA fallback, caching, CSP/headers, runtime config, Keycloak accepting the dashboard's PKCE request and refusing it without PKCE or with a foreign redirect, CORS). Gold-layer checks with no HTTP surface yet (lineage, masters) use `check_sql` via `docker exec` into `clinicalharmony-postgres`.
+- **Black-box smoke test** (`scripts/smoke-test.sh`): once the stack is up (`docker-compose up -d`), this hits all four implemented services' REST endpoints over HTTP and asserts on real responses — accept/quarantine outcomes, ontology validation results, all 7 rule-engine evaluations and live rule-toggle behavior, US Core structural validation (including a `requiredAnyOf` choice-type check), and FHIR generation round-tripped back through validation to cross-check the generator against the validator. Fixture payloads live in `scripts/fixtures/`. This replaces the earlier "verified manually" note — it's now a repeatable, scriptable check (333 assertions as of Phase 9c incl. the FHIR Viewer filter checks — section 20 = Gold over Kafka: a random seed guaranteed to hold one IDENTICAL and one FUZZY cross-facility duplicate, every Silver patient built into Gold with no manual build, one resource per Silver row, AllergyIntolerance compliant, lineage from the raw HL7 via Kafka, one gold event per silver event (causation + correlation), the debounced pmi-matcher run, identical pair auto-merged / fuzzy pair PENDING at 0.6190 (also via the gateway), a broken event → DLT, log events, Kafbat groups; section 18 runs the generator with a random seed over MLLP and checks Bronze/outbox/idempotency/Kafbat, expecting valid rows PROCESSED since 9b; section 19 = Silver: rows mapped, PID-3.4 patient keying, one silver event per row, a hand-sent allergy + conflicting order flagged against real Silver ids, an ADT without DOB → FAILED, both via the gateway; it fetches a Bearer token from the compose Keycloak for fhir-compliance-service and patient-index-service calls; section 15 = PMI, which inserts fresh random synthetic patients each run so it stays rerunnable; section 16 = api-gateway, with real dana/vic user tokens from the dev direct-grant client; section 17 = dashboard-ui's nginx: SPA fallback, caching, CSP/headers, runtime config, Keycloak accepting the dashboard's PKCE request and refusing it without PKCE or with a foreign redirect, CORS). Gold-layer checks with no HTTP surface yet (lineage, masters) use `check_sql` via `docker exec` into `clinicalharmony-postgres`.
 
 ## Local Docker environment
 
@@ -720,7 +784,7 @@ schema **`pmi`** (`match_runs`, `match_candidates` with a partial unique index o
 
 ## Build order / phase plan
 
-Phases are meant to be fully complete before the next starts. Current state as of 2026-11-17:
+Phases are meant to be fully complete before the next starts. Current state as of 2026-11-18:
 
 - **Phase 1** (done): Foundation — docker-compose.yml, all 7 `docs/db-init/` SQL scripts, seed data.
 - **Phase 2 / 2b** (done): ingestion-service — all three intake paths (HL7 v2, FHIR JSON, Claims CSV) landing to Bronze.
@@ -765,7 +829,8 @@ Phases are meant to be fully complete before the next starts. Current state as o
     section above. Migration 24, generator RDE^O11, smoke 297/297 (twice), Postman
     `silver-transformer-service/postman/phase9b-silver-over-kafka` (6 items). Patient Timeline still lists
     Gold masters only, so generated patients appear there after `POST /api/fhir/build` until 9c.
-  - **9c** (next; scoping 2026-11-17) Gold: consumer `gold-builder` INSIDE fhir-compliance-service (GoldWriter stays the only Gold
+  - **9c** (BUILT, in review, 2026-11-18, branch `phase-9c-gold-over-kafka`, migration 25 applied to the running DB; see the
+    9c section above) Gold: consumer `gold-builder` INSIDE fhir-compliance-service (GoldWriter stays the only Gold
     writer) → US Core build + validator → Gold + lineage BRONZE→SILVER→GOLD →
     `clinicalharmony.gold.patient.changed` → `pmi-matcher` inside patient-index-service (batched runs).
     **9c decisions** (settled 2026-11-17, all recommended options): gold-builder also builds US Core

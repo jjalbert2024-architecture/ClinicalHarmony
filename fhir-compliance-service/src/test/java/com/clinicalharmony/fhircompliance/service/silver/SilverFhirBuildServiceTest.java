@@ -6,6 +6,7 @@ import com.clinicalharmony.fhircompliance.gold.GoldWriter;
 import com.clinicalharmony.fhircompliance.gold.LineageSource;
 import com.clinicalharmony.fhircompliance.gold.LineageStep;
 import com.clinicalharmony.fhircompliance.gold.SilverLineage;
+import com.clinicalharmony.fhircompliance.repository.silver.SilverAllergyRow;
 import com.clinicalharmony.fhircompliance.repository.silver.SilverClinicalRepository;
 import com.clinicalharmony.fhircompliance.repository.silver.SilverConditionRow;
 import com.clinicalharmony.fhircompliance.repository.silver.SilverMedicationRow;
@@ -71,7 +72,8 @@ class SilverFhirBuildServiceTest {
 
         service = new SilverFhirBuildService(silverRepository, new PatientResourceBuilder(),
                 new ConditionResourceBuilder(), new ObservationResourceBuilder(),
-                new MedicationRequestResourceBuilder(), UsCoreValidatorFixture.validator(), goldWriter, silverLineage,
+                new MedicationRequestResourceBuilder(), new AllergyIntoleranceResourceBuilder(),
+                UsCoreValidatorFixture.validator(), goldWriter, silverLineage,
                 FhirContext.forR4Cached(), objectMapper, transactionTemplate,
                 Clock.fixed(Instant.parse("2026-11-11T12:00:00Z"), ZoneOffset.UTC));
     }
@@ -86,6 +88,8 @@ class SilverFhirBuildServiceTest {
                 "Hemoglobin A1c", new BigDecimal("7.2"), null, "%", "final", OffsetDateTime.parse("2024-03-10T08:30:00Z"))));
         when(silverRepository.findMedications(id)).thenReturn(List.of(new SilverMedicationRow(30L, id, "6809",
                 "Metformin", "500 mg BID", "active", LocalDate.of(2015, 6, 3), null)));
+        when(silverRepository.findAllergies(id)).thenReturn(List.of(new SilverAllergyRow(40L, id, "RXNORM", "723",
+                "Amoxicillin", "DA", "MO", "HIVES")));
     }
 
     @Test
@@ -97,15 +101,15 @@ class SilverFhirBuildServiceTest {
         assertThat(result.silverPatientId()).isEqualTo(1L);
         assertThat(result.patientFhirId()).isEqualTo("silver-patient-1");
         assertThat(result.masterPatientId()).isEqualTo(7L);
-        assertThat(result.resourceCount()).isEqualTo(4);
-        assertThat(result.compliantCount()).isEqualTo(4);
+        assertThat(result.resourceCount()).isEqualTo(5);
+        assertThat(result.compliantCount()).isEqualTo(5);
         assertThat(result.resources()).extracting(BuiltResourceSummary::resourceType)
-                .containsExactly("Patient", "Condition", "Observation", "MedicationRequest");
+                .containsExactly("Patient", "Condition", "Observation", "MedicationRequest", "AllergyIntolerance");
         assertThat(result.resources()).extracting(BuiltResourceSummary::goldId)
-                .containsExactly(100L, 101L, 102L, 103L);
+                .containsExactly(100L, 101L, 102L, 103L, 104L);
 
         ArgumentCaptor<GoldResourceWrite> captor = ArgumentCaptor.forClass(GoldResourceWrite.class);
-        verify(goldWriter, times(4)).writeResource(captor.capture());
+        verify(goldWriter, times(5)).writeResource(captor.capture());
         GoldResourceWrite patientRecord = captor.getAllValues().get(0);
         assertThat(patientRecord.fhirId()).isEqualTo("silver-patient-1");
         assertThat(patientRecord.usCoreCompliant()).isTrue();
@@ -125,7 +129,8 @@ class SilverFhirBuildServiceTest {
                 LineageSource.silver("patients", 1L, LineageSource.FHIR_MAP),
                 LineageSource.silver("conditions", 10L, LineageSource.FHIR_MAP),
                 LineageSource.silver("observations", 20L, LineageSource.FHIR_MAP),
-                LineageSource.silver("medications", 30L, LineageSource.FHIR_MAP));
+                LineageSource.silver("medications", 30L, LineageSource.FHIR_MAP),
+                LineageSource.silver("allergies", 40L, LineageSource.FHIR_MAP));
         GoldResourceWrite condition = captor.getAllValues().get(1);
         assertThat(condition.upstreamSteps()).extracting(LineageStep::ref).containsExactly("silver.conditions/10");
         assertThat(condition.goldInputHash()).hasSize(64);

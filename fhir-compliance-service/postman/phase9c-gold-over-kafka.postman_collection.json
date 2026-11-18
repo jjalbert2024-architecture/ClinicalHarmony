@@ -1,0 +1,290 @@
+{
+  "info": {
+    "name": "ClinicalHarmony · Phase 9c — Gold over Kafka",
+    "description": "Happy-path walkthrough (8 requests) of Phase 9c: clinicalharmony.silver.patient.changed → gold-builder (inside fhir-compliance-service) → US Core FHIR + validator → Gold via GoldWriter, lineage BRONZE → SILVER → GOLD → outbox → clinicalharmony.gold.patient.changed → pmi-matcher (inside patient-index-service) → one debounced matching run. MLLP isn't HTTP, so messages are sent by the generator from a terminal (see request 2); Postman checks the results through the api-gateway and Kafbat UI. Prereqs: `docker-compose up -d`, migration 25 applied. Failure paths (broken event → DLT, redelivery, busy PMI lock, max-delay in a steady stream) are covered by scripts/smoke-test.sh section 20 and the integration / unit tests.",
+    "schema": "https://schema.getpostman.com/json/collection/v2.1.0/collection.json"
+  },
+  "item": [
+    {
+      "name": "1. Auth — sign in as dana (data steward)",
+      "event": [
+        {
+          "listen": "test",
+          "script": {
+            "type": "text/javascript",
+            "exec": [
+              "pm.test('token issued', () => pm.response.to.have.status(200));",
+              "pm.collectionVariables.set('access_token', pm.response.json().access_token);"
+            ]
+          }
+        }
+      ],
+      "request": {
+        "method": "POST",
+        "header": [],
+        "url": "{{keycloak_url}}/realms/clinicalharmony/protocol/openid-connect/token",
+        "description": "DEV-ONLY password grant on client clinicalharmony-dashboard-dev (same as the Phase 7 / 9b collections) so the gateway's read models can be called. Tokens live 10 minutes — re-run 1 on a 401.",
+        "auth": {
+          "type": "noauth"
+        },
+        "body": {
+          "mode": "urlencoded",
+          "urlencoded": [
+            {
+              "key": "grant_type",
+              "value": "password"
+            },
+            {
+              "key": "client_id",
+              "value": "clinicalharmony-dashboard-dev"
+            },
+            {
+              "key": "username",
+              "value": "dana"
+            },
+            {
+              "key": "password",
+              "value": "dana-dev-password"
+            }
+          ]
+        }
+      }
+    },
+    {
+      "name": "2. FHIR Viewer — US Core AllergyIntolerance built from Silver, newest first",
+      "event": [
+        {
+          "listen": "test",
+          "script": {
+            "type": "text/javascript",
+            "exec": [
+              "pm.test('200', () => pm.response.to.have.status(200));",
+              "const items = pm.response.json().items;",
+              "pm.test('AllergyIntolerance resources in Gold', () => pm.expect(items.length).to.be.above(0));",
+              "pm.test('US Core compliant', () => pm.expect(items[0].usCoreCompliant).to.eql(true));",
+              "pm.collectionVariables.set('fhir_resource_id', items[0].id);"
+            ]
+          }
+        }
+      ],
+      "request": {
+        "method": "GET",
+        "header": [],
+        "url": "{{gateway_url}}/api/v1/fhir/resources?type=AllergyIntolerance&sort=updated&dir=desc&size=10",
+        "description": "Run the generator first, in a terminal from the repo root:  python3 data-generator/generate.py --seed 919  (100 seeded ADT / ORU / RDE messages over MLLP to :8887; it prints the cross-facility duplicates it planted, by source + MRN + DOB). Nothing else to call: silver-transformer announces each changed patient on clinicalharmony.silver.patient.changed, and fhir-compliance-service's gold-builder rebuilds that patient's US Core resources into Gold through GoldWriter — now including AllergyIntolerance from silver.allergies (HL7 AL1). Saves the newest one's Gold id.",
+        "auth": {
+          "type": "bearer",
+          "bearer": [
+            {
+              "key": "token",
+              "value": "{{access_token}}",
+              "type": "string"
+            }
+          ]
+        }
+      }
+    },
+    {
+      "name": "3. Data Lineage — that resource traced back to the raw HL7 message",
+      "event": [
+        {
+          "listen": "test",
+          "script": {
+            "type": "text/javascript",
+            "exec": [
+              "pm.test('200', () => pm.response.to.have.status(200));",
+              "const body = pm.response.json();",
+              "const stages = body.records[0].details.steps.map(s => s.stage);",
+              "pm.test('BRONZE → SILVER → GOLD', () => pm.expect(stages).to.eql(['BRONZE', 'SILVER', 'GOLD']));",
+              "pm.test('raw HL7 message attached', () => pm.expect(body.bronzeMessages.length).to.be.above(0));"
+            ]
+          }
+        }
+      ],
+      "request": {
+        "method": "GET",
+        "header": [],
+        "url": "{{gateway_url}}/api/v1/lineage?fhirResourceId={{fhir_resource_id}}",
+        "description": "The gold.data_lineage chain GoldWriter wrote: BRONZE (the raw HL7 v2 message, its SHA-256 as input hash, via MLLP → Kafka → bronze-listener-service) → SILVER (silver-transformer-service's silver.allergies row) → GOLD (the FHIR resource, with the stored JSON's hash). bronzeMessages holds the raw message itself.",
+        "auth": {
+          "type": "bearer",
+          "bearer": [
+            {
+              "key": "token",
+              "value": "{{access_token}}",
+              "type": "string"
+            }
+          ]
+        }
+      }
+    },
+    {
+      "name": "4. PMI — matching ran by itself after the Gold events",
+      "event": [
+        {
+          "listen": "test",
+          "script": {
+            "type": "text/javascript",
+            "exec": [
+              "pm.test('200', () => pm.response.to.have.status(200));",
+              "const runs = pm.response.json();",
+              "const kafkaRun = runs.find(r => (r.triggeredBy || '').startsWith('kafka:pmi-matcher'));",
+              "pm.test('a debounced Kafka-triggered run', () => pm.expect(kafkaRun).to.not.be.undefined);",
+              "pm.test('COMPLETED', () => pm.expect(kafkaRun.status).to.eql('COMPLETED'));"
+            ]
+          }
+        }
+      ],
+      "request": {
+        "method": "GET",
+        "header": [],
+        "url": "{{gateway_url}}/api/v1/pmi/runs?limit=20",
+        "description": "patient-index-service's pmi-matcher consumes clinicalharmony.gold.patient.changed and debounces it: ONE matching run 5 s after the last event of a burst (at most every 30 s while events keep coming), triggered_by \"kafka:pmi-matcher (<n> events, <m> masters)\". No POST /match/run needed.",
+        "auth": {
+          "type": "bearer",
+          "bearer": [
+            {
+              "key": "token",
+              "value": "{{access_token}}",
+              "type": "string"
+            }
+          ]
+        }
+      }
+    },
+    {
+      "name": "5. PMI — identical cross-facility duplicates auto-merged",
+      "event": [
+        {
+          "listen": "test",
+          "script": {
+            "type": "text/javascript",
+            "exec": [
+              "pm.test('200', () => pm.response.to.have.status(200));",
+              "const c = pm.response.json().find(x => x.deterministicRule === 'EXACT_NAME_DOB_PLUS_PHONE_OR_ZIP');",
+              "pm.test('a deterministic auto-merge', () => pm.expect(c).to.not.be.undefined);",
+              "pm.collectionVariables.set('master_id', c.masterAId);"
+            ]
+          }
+        }
+      ],
+      "request": {
+        "method": "GET",
+        "header": [],
+        "url": "{{gateway_url}}/api/v1/pmi/candidates?status=AUTO_MERGED&limit=20",
+        "description": "The generator registers ~10% of patients at BOTH CITY_HOSPITAL and NORTH_CLINIC under different MRNs. The IDENTICAL ones (same name, DOB, address, ZIP, phone) match the deterministic rule EXACT_NAME_DOB_PLUS_PHONE_OR_ZIP and are merged into one master automatically. Saves that master's id.",
+        "auth": {
+          "type": "bearer",
+          "bearer": [
+            {
+              "key": "token",
+              "value": "{{access_token}}",
+              "type": "string"
+            }
+          ]
+        }
+      }
+    },
+    {
+      "name": "6. PMI Review — fuzzy cross-facility duplicates wait for a data steward",
+      "event": [
+        {
+          "listen": "test",
+          "script": {
+            "type": "text/javascript",
+            "exec": [
+              "pm.test('200', () => pm.response.to.have.status(200));",
+              "pm.test('a 0.619 pair is queued', () => pm.expect(pm.response.json().some(c => Number(c.score) === 0.619)).to.eql(true));"
+            ]
+          }
+        }
+      ],
+      "request": {
+        "method": "GET",
+        "header": [],
+        "url": "{{gateway_url}}/api/v1/pmi/candidates?status=PENDING&limit=50",
+        "description": "The FUZZY duplicates differ in the birth DAY (a typo: same year and month) and the phone: weighted score 13 / 21 = 0.619, inside the review band 0.60–0.85, so they're queued — accept or reject them on the dashboard's PMI Review (dana).",
+        "auth": {
+          "type": "bearer",
+          "bearer": [
+            {
+              "key": "token",
+              "value": "{{access_token}}",
+              "type": "string"
+            }
+          ]
+        }
+      }
+    },
+    {
+      "name": "7. Kafka — gold-builder consumer group (Kafbat UI API)",
+      "event": [
+        {
+          "listen": "test",
+          "script": {
+            "type": "text/javascript",
+            "exec": [
+              "pm.test('200', () => pm.response.to.have.status(200));",
+              "pm.test('group gold-builder', () => pm.expect(pm.response.json().groupId).to.eql('gold-builder'));",
+              "pm.test('caught up', () => pm.expect(pm.response.json().consumerLag || 0).to.eql(0));"
+            ]
+          }
+        }
+      ],
+      "request": {
+        "method": "GET",
+        "header": [],
+        "url": "{{kafbat_url}}/api/clusters/clinicalharmony/consumer-groups/gold-builder",
+        "description": "Lag 0 = every silver.patient.changed event has been built into Gold. Open http://localhost:8090 to browse clinicalharmony.gold.patient.changed (key = master id; value = the master, the resources written and their US Core compliance)."
+      }
+    },
+    {
+      "name": "8. Kafka — pmi-matcher consumer group (Kafbat UI API)",
+      "event": [
+        {
+          "listen": "test",
+          "script": {
+            "type": "text/javascript",
+            "exec": [
+              "pm.test('200', () => pm.response.to.have.status(200));",
+              "pm.test('group pmi-matcher', () => pm.expect(pm.response.json().groupId).to.eql('pmi-matcher'));",
+              "pm.test('caught up', () => pm.expect(pm.response.json().consumerLag || 0).to.eql(0));"
+            ]
+          }
+        }
+      ],
+      "request": {
+        "method": "GET",
+        "header": [],
+        "url": "{{kafbat_url}}/api/clusters/clinicalharmony/consumer-groups/pmi-matcher",
+        "description": "Lag 0 = every gold.patient.changed event has been seen by the PMI (runs themselves are debounced, see 4)."
+      }
+    }
+  ],
+  "variable": [
+    {
+      "key": "gateway_url",
+      "value": "http://localhost:8080"
+    },
+    {
+      "key": "keycloak_url",
+      "value": "http://localhost:8180"
+    },
+    {
+      "key": "kafbat_url",
+      "value": "http://localhost:8090"
+    },
+    {
+      "key": "access_token",
+      "value": ""
+    },
+    {
+      "key": "fhir_resource_id",
+      "value": ""
+    },
+    {
+      "key": "master_id",
+      "value": ""
+    }
+  ]
+}

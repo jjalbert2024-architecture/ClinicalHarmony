@@ -1,7 +1,9 @@
 import unittest
 
 from hl7gen import catalog
-from hl7gen.messages import generate
+from datetime import datetime
+
+from hl7gen.messages import generate, generate_run
 
 
 class GenerateTest(unittest.TestCase):
@@ -94,11 +96,72 @@ class GenerateTest(unittest.TestCase):
                 self.assertLess(len(first.split("|")), 9)
             self.assertEqual(m.manifest_entry()["expectedStatus"], "QUARANTINED")
 
+    # ---- 9c: cross-facility duplicates -------------------------------------------------------------
+
+    @staticmethod
+    def _pid(m):
+        seg = next(s for s in m.payload.split("\r") if s.startswith("PID|")).split("|")
+        name = seg[5].split("^")
+        addr = seg[11].split("^")
+        return {"mrn": seg[3].split("^")[0], "aa": seg[3].split("^")[3], "last": name[0], "first": name[1],
+                "dob": seg[7], "sex": seg[8], "street": addr[0], "zip": addr[4], "phone": seg[13]}
+
+    def test_about_ten_percent_of_patients_are_registered_at_both_facilities(self):
+        messages, dups = generate_run(100, 42, 0.10, 0.10)
+        self.assertEqual(len(dups), 3)                        # round(33 × 0.10)
+        self.assertEqual([d.kind for d in dups], ["IDENTICAL", "FUZZY", "IDENTICAL"])
+        for d in dups:
+            self.assertEqual({d.original_facility, d.twin_facility}, {"CITY_HOSPITAL", "NORTH_CLINIC"})
+            self.assertNotEqual(d.original_mrn, d.twin_mrn)
+            self.assertTrue(d.twin_mrn.startswith("CH" if d.twin_facility == "CITY_HOSPITAL" else "NC"))
+        self.assertEqual(generate_run(100, 42)[1], dups)       # same seed → same duplicates
+        self.assertEqual(generate_run(100, 42, 0.10, 0.0)[1], [])
+
+    def test_twin_registration_follows_the_originals_first_adt_at_the_other_facility(self):
+        messages, dups = generate_run(300, 11, 0.0, 0.10)
+        by_mrn = {}
+        for m in messages:
+            by_mrn.setdefault(m.patient_mrn, []).append(m)
+        sent = [d for d in dups if d.original_mrn in by_mrn]
+        self.assertGreater(len(sent), 5)
+        for d in sent:
+            first = by_mrn[d.original_mrn][0]
+            twin_first = by_mrn[d.twin_mrn][0]
+            self.assertEqual(twin_first.index, first.index + 1)
+            self.assertEqual(twin_first.message_type, "ADT^A01" if d.twin_facility == "CITY_HOSPITAL" else "ADT^A04")
+            self.assertEqual(twin_first.source_system, d.twin_facility)
+            self.assertEqual(self._pid(twin_first)["aa"], d.twin_facility)   # PID-3.4 = the twin's facility
+
+    def test_identical_twins_match_deterministically_and_fuzzy_ones_differ_in_birth_day_and_phone(self):
+        messages, dups = generate_run(300, 11, 0.0, 0.10)
+        first_adt = {}
+        for m in messages:
+            first_adt.setdefault(m.patient_mrn, m)
+        kinds = set()
+        for d in dups:
+            if d.original_mrn not in first_adt:
+                continue
+            a, b = self._pid(first_adt[d.original_mrn]), self._pid(first_adt[d.twin_mrn])
+            for f in ("last", "first", "sex", "street", "zip"):
+                self.assertEqual(a[f], b[f], f)
+            if d.kind == "IDENTICAL":
+                self.assertEqual(a["dob"], b["dob"])            # EXACT_NAME_DOB_PLUS_PHONE_OR_ZIP
+                self.assertEqual(a["phone"], b["phone"])
+            else:
+                da, db = datetime.strptime(a["dob"], "%Y%m%d"), datetime.strptime(b["dob"], "%Y%m%d")
+                self.assertEqual((da.year, da.month), (db.year, db.month))
+                self.assertEqual(abs((da - db).days), 1)       # PARTIAL birth date: review band, not auto
+                self.assertNotEqual(a["phone"], b["phone"])
+            kinds.add(d.kind)
+        self.assertEqual(kinds, {"IDENTICAL", "FUZZY"})
+
     def test_bad_arguments(self):
         with self.assertRaises(ValueError):
             generate(0)
         with self.assertRaises(ValueError):
             generate(10, malformed_rate=1.5)
+        with self.assertRaises(ValueError):
+            generate(10, duplicate_rate=-0.1)
 
 
 if __name__ == "__main__":

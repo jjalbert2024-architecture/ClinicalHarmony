@@ -4,6 +4,7 @@ import com.clinicalharmony.fhircompliance.repository.DataLineageRecord;
 import com.clinicalharmony.fhircompliance.repository.DataLineageRepository;
 import com.clinicalharmony.fhircompliance.repository.GoldFhirResourceRecord;
 import com.clinicalharmony.fhircompliance.repository.GoldFhirResourceRepository;
+import com.clinicalharmony.fhircompliance.repository.GoldOutboxRepository;
 import com.clinicalharmony.fhircompliance.repository.MasterMergeRepository;
 import com.clinicalharmony.fhircompliance.repository.MasterMergeRow;
 import com.clinicalharmony.fhircompliance.repository.MasterPatientRepository;
@@ -26,10 +27,11 @@ import java.util.ArrayList;
 import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
+import java.util.UUID;
 
 /**
  * The one component that writes the Gold layer: gold.master_patients (+ patient_source_xref),
- * gold.fhir_resources and gold.data_lineage. Every Gold write path — Silver → FHIR builds (Slice
+ * gold.fhir_resources, gold.data_lineage and (Phase 9c) the gold.outbox_events row announcing a change. Every Gold write path — Silver → FHIR builds (Slice
  * 1), Phase 5's caller-supplied /api/fhir-compliance/generate, and validation of rows seeded
  * straight into Gold (migration 19) — goes through here, so every Gold row gets a lineage row
  * and the same master-patient linking, whichever path produced it.
@@ -65,21 +67,25 @@ public class GoldWriter {
     private final MasterPatientRepository masterPatients;
     private final MasterMergeRepository merges;
     private final DataLineageRepository lineage;
+    private final GoldOutboxRepository outbox;
     private final ObjectMapper objectMapper;
     private final Clock clock;
 
     @Autowired
     public GoldWriter(GoldFhirResourceRepository fhirResources, MasterPatientRepository masterPatients,
-                      MasterMergeRepository merges, DataLineageRepository lineage, ObjectMapper objectMapper) {
-        this(fhirResources, masterPatients, merges, lineage, objectMapper, Clock.systemUTC());
+                      MasterMergeRepository merges, DataLineageRepository lineage, GoldOutboxRepository outbox,
+                      ObjectMapper objectMapper) {
+        this(fhirResources, masterPatients, merges, lineage, outbox, objectMapper, Clock.systemUTC());
     }
 
     GoldWriter(GoldFhirResourceRepository fhirResources, MasterPatientRepository masterPatients,
-               MasterMergeRepository merges, DataLineageRepository lineage, ObjectMapper objectMapper, Clock clock) {
+               MasterMergeRepository merges, DataLineageRepository lineage, GoldOutboxRepository outbox,
+               ObjectMapper objectMapper, Clock clock) {
         this.fhirResources = fhirResources;
         this.masterPatients = masterPatients;
         this.merges = merges;
         this.lineage = lineage;
+        this.outbox = outbox;
         this.objectMapper = objectMapper;
         this.clock = clock;
     }
@@ -145,6 +151,17 @@ public class GoldWriter {
             log.info("Linked {} Gold resource(s) referencing Patient/{} to master {}", linked, patientFhirId, masterPatientId);
         }
         return linked;
+    }
+
+    /**
+     * Phase 9c: records the event announcing a Gold change in gold.outbox_events, in the caller's transaction —
+     * so the event exists if and only if the Gold rows it describes committed. The gold-builder's relay sends
+     * it to Kafka afterwards. Returns the event id.
+     */
+    @Transactional
+    public UUID recordEvent(String topic, String eventType, String key, Map<String, Object> payload,
+                            Map<String, String> headers, long masterPatientId) {
+        return outbox.insert(topic, eventType, key, payload, headers, masterPatientId);
     }
 
     // ---------------------------------------------------------------------------------------------

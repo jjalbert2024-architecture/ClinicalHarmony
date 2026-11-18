@@ -106,6 +106,24 @@ public class SilverClinicalRepository {
                 patientId);
     }
 
+    /** silver.allergies (Phase 9b, HL7 AL1) — one row per (patient, code system, code). */
+    public List<SilverAllergyRow> findAllergies(long patientId) {
+        return jdbcTemplate.query("""
+                        SELECT id, patient_id, code_system, code, display, allergy_type, severity, reaction
+                        FROM silver.allergies WHERE patient_id = ? ORDER BY id
+                        """,
+                (rs, n) -> new SilverAllergyRow(
+                        rs.getLong("id"),
+                        rs.getLong("patient_id"),
+                        rs.getString("code_system"),
+                        rs.getString("code"),
+                        rs.getString("display"),
+                        rs.getString("allergy_type"),
+                        rs.getString("severity"),
+                        rs.getString("reaction")),
+                patientId);
+    }
+
     private static LocalDate toLocalDate(Date date) {
         return date == null ? null : date.toLocalDate();
     }

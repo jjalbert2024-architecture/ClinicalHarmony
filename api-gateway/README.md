@@ -63,7 +63,7 @@ that issues the same token shape. Never enable that client anywhere real.
 | | `GET /ontology/codes/{icd10\|loinc}/{code}` · `GET /ontology/map?source=&code=&target=` | ontology |
 | Validation Report | `GET /validation/summary` · `GET /validation/findings?ruleCode=&severity=&entityType=&category=&patientId=&resolved=&page=&size=` · `GET /validation/rules[/{code}]` | DB |
 | | `PUT /validation/rules/{code}/toggle` → rules-engine or fhir-compliance, whichever evaluates the rule (409 for rules no service can toggle) | owner (steward) |
-| FHIR Viewer | `GET /fhir/resource-types` · `GET /fhir/resources?type=&masterPatientId=&compliant=&q=&page=&size=` · `GET /fhir/resources/{type}/{fhirId}` (JSON + validator notes + lineage) | DB |
+| FHIR Viewer | `GET /fhir/resource-types` · `GET /fhir/source-systems` · `GET /fhir/resources?type=&masterPatientId=&compliant=&q=&patient=&origin=&sourceSystem=&code=&sort=&dir=&page=&size=` (newest first by default; `q` = resource id contains, `patient` = name contains or exact MRN / source id, `origin` = `pipeline`\|`silver-seed`\|`api`\|`gold-seed` from the resource's lineage, `sourceSystem` of the patient it's about, `code` = exact code or display contains; each row carries `origin`, `sourceSystem`, `sourcePatientId`) · `GET /fhir/resources/{type}/{fhirId}` (JSON + validator notes + lineage) | DB |
 | | `POST /fhir/validate` (body forwarded verbatim) · `POST /fhir/convert/ccda` | fhir-compliance |
 | Data Lineage | `GET /lineage?fhirResourceId=` **or** `?masterPatientId=` · `GET /lineage/summary` · `GET /bronze/messages?status=&messageType=&hl7Type=&sourceSystem=&page=&size=` (`hl7Type` = MSH-9.1, e.g. `ORU`; each row has `hl7MessageType`, e.g. `ORU^R01`) · `GET /bronze/messages/{id}` | DB |
 

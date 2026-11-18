@@ -274,7 +274,7 @@ class ApiGatewayIntegrationTest {
                     VALUES ('Observation', 'natsort-obs-' || ?, '{"resourceType":"Observation"}', true)
                     ON CONFLICT DO NOTHING""", n);
         }
-        JsonNode asc = getJson("/api/v1/fhir/resources?q=natsort-obs-");
+        JsonNode asc = getJson("/api/v1/fhir/resources?q=natsort-obs-&sort=resource");
         assertThat(asc.get("items").findValuesAsText("fhirId"))
                 .containsExactly("natsort-obs-8", "natsort-obs-9", "natsort-obs-80", "natsort-obs-100");
         JsonNode desc = getJson("/api/v1/fhir/resources?q=natsort-obs-&sort=resource&dir=desc");
@@ -294,6 +294,79 @@ class ApiGatewayIntegrationTest {
         JsonNode summary = getJson("/api/v1/lineage/summary");
         assertThat(summary.findValuesAsText("step"))
                 .containsSubsequence("FHIR_MAP", "PMI_PROVISIONAL", "PMI_MERGE", "SEED_LOAD", "API_GENERATE");
+    }
+
+    @Test
+    void fhirViewerFiltersByPatientOriginSourceAndCodeNewestFirst() throws Exception {
+        JdbcTemplate admin = new JdbcTemplate(new DriverManagerDataSource(POSTGRES.getJdbcUrl(), "clinicalharmony",
+                "clinicalharmony"));
+        if (admin.queryForObject("SELECT count(*) FROM silver.patients WHERE source_system = 'FV_CLINIC'", Integer.class) == 0) {
+            long silver = admin.queryForObject("""
+                    INSERT INTO silver.patients (source_system, source_patient_id, mrn, first_name, last_name, date_of_birth, gender)
+                    VALUES ('FV_CLINIC', 'FV123', 'FV123', 'Fiona', 'Viewer', '1971-05-06', 'female') RETURNING id""", Long.class);
+            long master = admin.queryForObject("""
+                    INSERT INTO gold.master_patients (first_name, last_name, date_of_birth, gender, match_status)
+                    VALUES ('Fiona', 'Viewer', '1971-05-06', 'female', 'MATCHED') RETURNING id""", Long.class);
+            admin.update("INSERT INTO gold.patient_source_xref (master_patient_id, silver_patient_id) VALUES (?, ?)", master, silver);
+            String ref = "Patient/silver-patient-" + silver;
+            // fhir_id, type, json, master, lineage step, first lineage stage, updated_at
+            Object[][] rows = {
+                    {"silver-patient-" + silver, "Patient", "{\"resourceType\":\"Patient\"}", master, "FHIR_MAP", "BRONZE", "2026-11-18T10:00:00Z"},
+                    {"fv-allergy-1", "AllergyIntolerance", "{\"resourceType\":\"AllergyIntolerance\",\"patient\":{\"reference\":\"" + ref
+                            + "\"},\"code\":{\"coding\":[{\"system\":\"http://www.nlm.nih.gov/research/umls/rxnorm\",\"code\":\"723\",\"display\":\"Amoxicillin\"}]}}",
+                            master, "FHIR_MAP", "SILVER", "2026-11-18T12:00:00Z"},
+                    {"fv-med-1", "MedicationRequest", "{\"resourceType\":\"MedicationRequest\",\"subject\":{\"reference\":\"" + ref
+                            + "\"},\"medicationCodeableConcept\":{\"text\":\"Metformin 500 MG Oral Tablet\",\"coding\":[{\"code\":\"6809\"}]}}",
+                            master, "API_GENERATE", null, "2026-11-18T11:00:00Z"},
+                    {"fv-cov-1", "Coverage", "{\"resourceType\":\"Coverage\"}", null, "SEED_LOAD", null, "2026-11-18T09:00:00Z"}};
+            for (Object[] r : rows) {
+                long gold = admin.queryForObject("""
+                        INSERT INTO gold.fhir_resources (resource_type, fhir_id, resource_json, master_patient_id, is_us_core_compliant,
+                                                         updated_at)
+                        VALUES (?, ?, ?::jsonb, ?, true, ?::timestamptz) RETURNING id""", Long.class, r[1], r[0], r[2], r[3], r[6]);
+                admin.update("""
+                        INSERT INTO gold.data_lineage (source_schema, source_table, target_schema, target_table, target_id,
+                                                       transformation_step, transformation_details)
+                        VALUES ('test', 'fv', 'gold', 'fhir_resources', ?, ?, ?::jsonb)""", gold, r[4],
+                        r[5] == null ? "{}" : "{\"steps\":[{\"stage\":\"" + r[5] + "\"},{\"stage\":\"GOLD\"}]}");
+            }
+        }
+
+        // patient: exact MRN in any case, or part of the name — every resource of that person (Coverage has no master)
+        JsonNode byMrn = getJson("/api/v1/fhir/resources?patient=fv123");
+        assertThat(byMrn.get("items").findValuesAsText("fhirId")).containsExactly("fv-allergy-1", "fv-med-1",
+                byMrn.at("/items/2/fhirId").asText());   // newest first by default: 12:00, 11:00, 10:00
+        assertThat(byMrn.at("/items/2/resourceType").asText()).isEqualTo("Patient");
+        assertThat(getJson("/api/v1/fhir/resources?patient=viewer").at("/total").asInt()).isEqualTo(3);
+        assertThat(getJson("/api/v1/fhir/resources?patient=FV12").at("/total").asInt()).isZero();   // partial MRN: no
+
+        // each row says where it came from and whose it is
+        assertThat(byMrn.get("items").findValuesAsText("origin")).containsExactly("silver-seed", "api", "pipeline");
+        assertThat(byMrn.get("items").findValuesAsText("sourceSystem")).containsOnly("FV_CLINIC");
+        assertThat(byMrn.get("items").findValuesAsText("sourcePatientId")).containsOnly("FV123");
+
+        JsonNode src = getJson("/api/v1/fhir/resources?sourceSystem=FV_CLINIC&origin=pipeline");
+        assertThat(src.get("items").findValuesAsText("resourceType")).containsExactly("Patient");
+        JsonNode seed = getJson("/api/v1/fhir/resources?origin=gold-seed&q=fv-cov");
+        assertThat(seed.at("/total").asInt()).isEqualTo(1);
+        assertThat(seed.at("/items/0/sourceSystem").isNull()).isTrue();
+
+        // code: exact code or part of the display / text
+        assertThat(getJson("/api/v1/fhir/resources?sourceSystem=FV_CLINIC&code=723").get("items").findValuesAsText("fhirId"))
+                .containsExactly("fv-allergy-1");
+        assertThat(getJson("/api/v1/fhir/resources?sourceSystem=FV_CLINIC&code=metformin").get("items").findValuesAsText("fhirId"))
+                .containsExactly("fv-med-1");
+        assertThat(getJson("/api/v1/fhir/resources?sourceSystem=FV_CLINIC&code=72").at("/total").asInt()).isZero();
+
+        JsonNode sources = getJson("/api/v1/fhir/source-systems");
+        JsonNode fv = null;
+        for (JsonNode n : sources) {
+            if ("FV_CLINIC".equals(n.path("sourceSystem").asText())) {
+                fv = n;
+            }
+        }
+        assertThat(fv).isNotNull();
+        assertThat(fv.path("resources").asInt()).isEqualTo(3);
     }
 
     @Test

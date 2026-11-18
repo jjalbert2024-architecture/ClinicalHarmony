@@ -1,14 +1,20 @@
 package com.clinicalharmony.fhircompliance.integration;
 
+import com.clinicalharmony.fhircompliance.goldbuilder.Topics;
+import org.apache.kafka.clients.admin.NewTopic;
 import org.springframework.boot.test.context.SpringBootTest;
+import org.springframework.boot.test.context.TestConfiguration;
 import org.springframework.boot.test.web.client.TestRestTemplate;
 import org.springframework.boot.test.web.server.LocalServerPort;
 import org.springframework.boot.testcontainers.service.connection.ServiceConnection;
 import org.springframework.boot.web.client.RestTemplateBuilder;
+import org.springframework.context.annotation.Bean;
 import org.springframework.context.annotation.Import;
+import org.springframework.kafka.config.TopicBuilder;
 import org.springframework.http.HttpHeaders;
 import org.testcontainers.containers.PostgreSQLContainer;
 import org.testcontainers.junit.jupiter.Testcontainers;
+import org.testcontainers.kafka.ConfluentKafkaContainer;
 import org.testcontainers.utility.DockerImageName;
 import org.testcontainers.utility.MountableFile;
 
@@ -20,11 +26,30 @@ import java.nio.file.Path;
  * {@code @ServiceConnection} field without {@code @Container}, so Spring Boot starts it with the
  * (cached, shared) application context rather than JUnit stopping it after each class — every
  * subclass reuses the same context and database. Skipped, not failed, without Docker.
+ *
+ * <p>Since Phase 9c the context also runs the gold-builder consumer and Gold outbox relay, so a real Kafka
+ * broker (cp-kafka 7.6.1, KRaft — the compose image) is part of the shared setup, started the same way.
  */
-@SpringBootTest(webEnvironment = SpringBootTest.WebEnvironment.RANDOM_PORT)
+@SpringBootTest(webEnvironment = SpringBootTest.WebEnvironment.RANDOM_PORT, properties = {
+        "gold-builder.retry.initial-interval=100ms",
+        "gold-builder.outbox.poll-interval=200ms",
+        "spring.kafka.consumer.auto-offset-reset=earliest"
+})
 @Testcontainers(disabledWithoutDocker = true)
-@Import(TestJwts.class)
+@Import({TestJwts.class, AbstractIntegrationTest.TopicConfig.class})
 abstract class AbstractIntegrationTest {
+
+    @ServiceConnection
+    static final ConfluentKafkaContainer KAFKA = new ConfluentKafkaContainer("confluentinc/cp-kafka:7.6.1");
+
+    @TestConfiguration
+    static class TopicConfig {
+        /** In compose silver-transformer-service (the producer) declares this topic; here the test does. */
+        @Bean
+        NewTopic silverPatientChanged() {
+            return TopicBuilder.name(Topics.SILVER_PATIENT_CHANGED).partitions(3).replicas(1).build();
+        }
+    }
 
     @ServiceConnection
     static final PostgreSQLContainer<?> POSTGRES = new PostgreSQLContainer<>(DockerImageName.parse("postgres:16-alpine"))

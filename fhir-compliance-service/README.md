@@ -378,6 +378,56 @@ Tests: `GoldWriterMasterOperationsTest` (decision logic, mocked SQL), `GoldMaste
 `integration/GoldMasterIntegrationTest` (real schema: build two Silver patients, merge, conflicts,
 unmerge back to exactly where they were, lineage rows).
 
+## Phase 9c — gold-builder: Gold over Kafka
+
+A Kafka consumer **inside this service** (consumer group `gold-builder`, `goldbuilder/` package), so
+GoldWriter stays the only writer of `gold.*`. Nothing to call: Gold is built as Silver changes.
+
+```
+clinicalharmony.silver.patient.changed ──▶ SilverPatientChangedListener ──▶ GoldBuilder (ONE transaction)
+   (silver-transformer-service, key source|PID-3)        │  SilverFhirBuildService.buildPatient → GoldWriter:
+                                                         │    master (PROVISIONAL), every US Core resource +
+                                                         │    validator findings, BRONZE → SILVER → GOLD lineage
+                                                         └  GoldWriter.recordEvent → gold.outbox_events (migration 25)
+GoldOutboxRelay (500 ms, id order, FOR UPDATE SKIP LOCKED) ──▶ clinicalharmony.gold.patient.changed (key = master id)
+                                                               ──▶ patient-index-service's pmi-matcher
+```
+
+- **Same build as `POST /api/fhir/build/patients/{id}`**, plus **US Core AllergyIntolerance** from
+  `silver.allergies` (`AllergyIntoleranceResourceBuilder`): `clinicalStatus` active (ait-1), no
+  `verificationStatus` (AL1 doesn't say), AL1-2 DA / FA / EA·AA·PA·LA → `type` allergy + `category`
+  medication / food / environment, AL1-4 SV / MO / MI / U → `criticality` high / low / low /
+  unable-to-assess and `reaction.severity`, AL1-5 → `reaction.manifestation` text, RxNorm / SNOMED CT
+  coding (LOCAL codes as text). Ids `silver-allergy-<n>`.
+- **Lineage names the Kafka path**: for `intake_channel = MLLP_KAFKA` Bronze rows the BRONZE step's
+  transformer is `ingestion-service MLLP → Kafka → bronze-listener-service (HL7V2)` and the SILVER step's
+  `silver-transformer-service: Bronze → Silver parse (…)`; input hash = the raw message's SHA-256.
+- **Event** `gold.patient.changed` (schema-version 1): `masterPatientId`, `silverPatientId`,
+  `patientFhirId`, `sourceSystem`, `sourcePatientId`, `rawMessageId`, `silverChange`, `compliance
+  {resources, compliant, nonCompliant}`, `resources [{resourceType, fhirId, goldId, usCoreCompliant,
+  errorCount}]`. Headers: `event-id`, `event-type`, `schema-version`, `producer`, `produced-at`,
+  `correlation-id` (from MLLP intake), `causation-id` (= the silver event's id).
+- **Idempotent**: resources upsert on (resource_type, fhir_id), lineage on (target, step), the master is
+  reused; a redelivered event rebuilds the same rows and announces the patient again (the PMI debounces).
+- **Failures**: a non-compliant resource is data, not an error (stored with its violations). Technical
+  failure → 3 retries (1 s, 2 s, 4 s) → `clinicalharmony.silver.patient.changed.dlt`; a broken event (not
+  JSON, no `silverPatientId`, unknown Silver patient) → straight to the DLT.
+- **Logs / metrics**: `gold.consumed`, `gold.built` (resources, compliant / nonCompliant, master),
+  `gold.lineage.written`, `gold.published`, `gold.delivery_failed`, `gold.deadlettered`,
+  `gold.outbox.publish_failed` (key/values appended to the usual log line via `%kvp`);
+  `clinicalharmony.gold.builds{outcome}`, `clinicalharmony.gold.resources{compliant}`,
+  `clinicalharmony.gold.outbox.backlog`, `clinicalharmony.gold.end_to_end.latency` (MLLP receipt → Gold
+  commit) on `/actuator/metrics` (Bearer).
+- **Config**: `KAFKA_BOOTSTRAP_SERVERS` (compose `kafka:29092`, local `localhost:19092`),
+  `GOLD_BUILDER_ENABLED` (default `true`; `false` = HTTP only, as before 9c); tunables under `gold-builder.*`.
+- `POST /api/fhir/build` still works and builds on demand, but announces nothing (the PMI isn't
+  triggered by it).
+- **Tests**: `AllergyIntoleranceResourceBuilderTest` (real validator), `SilverPatientChangedEventTest`,
+  `SilverLineageTest` (Kafka path), and `integration/GoldBuilderIntegrationTest` — the shared integration
+  context now has a cp-kafka 7.6.1 container too: event → Patient + Condition + AllergyIntolerance in Gold,
+  lineage BRONZE → SILVER → GOLD, the gold event (key, correlation, causation, payload), redelivery,
+  broken events → DLT.
+
 ## Postman collections
 
 One collection per phase/slice in [`postman/`](postman), so you can import only the one you're
@@ -393,6 +443,7 @@ the GoldWriter master endpoints above) lives in
 | `phase5b-slice2-ccda-to-fhir.postman_collection.json` | 16–21: C-CDA → FHIR |
 | `phase5b-slice3-goldwriter-cms0057.postman_collection.json` | 22–35: GoldWriter, CMS-0057-F read API |
 | `phase5b-slice4-smart-oauth.postman_collection.json` | 36–44: SMART discovery, tokens, 401/403 |
+| `phase9c-gold-over-kafka.postman_collection.json` | Phase 9c happy path, its own numbering 1–8: generated AllergyIntolerance in the FHIR Viewer, its lineage back to the raw HL7, the debounced PMI run, auto-merged and queued cross-facility duplicates, Kafbat consumer groups (through the api-gateway, sign-in as dana) |
 
 Each file also has `0. Health check` and `0b. Auth`. Run `0b` first: it stores a Keycloak token
 in that collection's `{{access_token}}`, which every request in it sends. The token lives

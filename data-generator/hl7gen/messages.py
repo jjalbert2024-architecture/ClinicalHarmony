@@ -5,9 +5,9 @@ bytes, so a re-run re-sends identical messages (and Bronze, being idempotent, st
 """
 import hashlib
 import random
-from dataclasses import dataclass, field, asdict
+from dataclasses import dataclass, field, asdict, replace
 from datetime import datetime, timedelta
-from typing import List, Optional
+from typing import List, Optional, Tuple
 
 from . import catalog
 
@@ -32,6 +32,39 @@ class Patient:
     diagnoses: List[tuple] = field(default_factory=list)
     allergy: Optional[tuple] = None
     admitted: bool = False
+    twin: Optional["Patient"] = None   # the same person registered at the other facility (9c)
+
+
+DUPLICATE_KINDS = ("IDENTICAL", "FUZZY")
+OTHER_FACILITY = {"CITY_HOSPITAL": "NORTH_CLINIC", "NORTH_CLINIC": "CITY_HOSPITAL"}
+
+
+@dataclass
+class Duplicate:
+    """One person registered at both CITY_HOSPITAL and NORTH_CLINIC under different MRNs (Phase 9c, for the PMI).
+
+    IDENTICAL: same name, DOB, sex, address, ZIP and phone → the PMI's deterministic rule
+    EXACT_NAME_DOB_PLUS_PHONE_OR_ZIP auto-merges them (still true if an A08 later changes one phone: ZIP matches).
+    FUZZY: same name, sex, address and ZIP, but the birth DAY differs (a typo: same year and month) and the
+    phone differs → weighted score 13 / 21 = 0.619, inside the review band (0.60–0.85): a human decides."""
+    kind: str
+    original_facility: str
+    original_mrn: str
+    original_dob: str
+    twin_facility: str
+    twin_mrn: str
+    twin_dob: str
+    last: str
+    first: str
+
+    def manifest_entry(self) -> dict:
+        return {
+            "kind": self.kind,
+            "expectedPmiOutcome": "AUTO_MERGED" if self.kind == "IDENTICAL" else "PENDING_REVIEW",
+            "name": "%s %s" % (self.first, self.last),
+            "original": {"sourceSystem": self.original_facility, "mrn": self.original_mrn, "dob": self.original_dob},
+            "twin": {"sourceSystem": self.twin_facility, "mrn": self.twin_mrn, "dob": self.twin_dob},
+        }
 
 
 @dataclass
@@ -93,6 +126,34 @@ def make_patients(rng: random.Random, n: int) -> List[Patient]:
         )
         patients.append(p)
     return patients
+
+
+def make_duplicates(rng: random.Random, patients: List[Patient], rate: float) -> List[Duplicate]:
+    """Registers round(len(patients) × rate) of the patients a second time at the other facility, alternating
+    IDENTICAL / FUZZY (so any run with two or more has both kinds). The twins are appended to ``patients``."""
+    n = round(len(patients) * rate)
+    if n == 0:
+        return []
+    used_mrns = {p.mrn for p in patients}
+    duplicates = []
+    for i, p in enumerate(rng.sample(patients, n)):
+        kind = DUPLICATE_KINDS[i % 2]
+        facility = OTHER_FACILITY[p.facility]
+        mrn = p.mrn
+        while mrn in used_mrns:
+            mrn = "%s%06d" % ("CH" if facility == "CITY_HOSPITAL" else "NC", rng.randrange(100000, 999999))
+        used_mrns.add(mrn)
+        twin = replace(p, mrn=mrn, facility=facility, diagnoses=list(p.diagnoses), admitted=False, twin=None)
+        if kind == "FUZZY":
+            dob = datetime.strptime(p.dob, "%Y%m%d")
+            day = dob.day + 1 if dob.day < 28 else dob.day - 1      # same year and month: a one-field typo
+            twin.dob = dob.replace(day=day).strftime("%Y%m%d")
+            while twin.phone == p.phone:
+                twin.phone = "555%07d" % rng.randrange(0, 9999999)
+        p.twin = twin
+        patients.append(twin)
+        duplicates.append(Duplicate(kind, p.facility, p.mrn, p.dob, facility, mrn, twin.dob, p.last, p.first))
+    return duplicates
 
 
 def msh(app: str, facility: str, when: datetime, msg_type: str, structure: str, control_id: str) -> str:
@@ -207,14 +268,31 @@ def corrupt(rng: random.Random, msg: GeneratedMessage, defect: str) -> Generated
     return GeneratedMessage(msg.index, "malformed", defect, msg.message_type, source, control, msg.patient_mrn, payload)
 
 
-def generate(count: int = 100, seed: int = 42, malformed_rate: float = 0.10) -> List[GeneratedMessage]:
+def generate(count: int = 100, seed: int = 42, malformed_rate: float = 0.10,
+             duplicate_rate: float = 0.10) -> List[GeneratedMessage]:
     """``count`` messages in send order; exactly ``round(count * malformed_rate)`` are malformed."""
+    return generate_run(count, seed, malformed_rate, duplicate_rate)[0]
+
+
+def generate_run(count: int = 100, seed: int = 42, malformed_rate: float = 0.10,
+                 duplicate_rate: float = 0.10) -> Tuple[List[GeneratedMessage], List[Duplicate]]:
+    """The messages plus the cross-facility duplicates planted among their patients (9c).
+
+    A duplicate's registration (A01 at CITY_HOSPITAL / A04 at NORTH_CLINIC) is sent right after the
+    original's first ADT, so both reach Silver — and Gold and the PMI — in the same burst."""
     if count < 1:
         raise ValueError("count must be >= 1")
     if not 0 <= malformed_rate <= 1:
         raise ValueError("malformed_rate must be between 0 and 1")
+    if not 0 <= duplicate_rate <= 1:
+        raise ValueError("duplicate_rate must be between 0 and 1")
     rng = random.Random(seed)
     patients = make_patients(rng, max(1, count // 3))
+    duplicates = make_duplicates(rng, patients, duplicate_rate)
+    twins = {id(p.twin) for p in patients if p.twin is not None}
+    # Twins only arrive via their original (below); later messages may be for either registration.
+    first_pick = [p for p in patients if id(p) not in twins]
+    queued: List[Patient] = []
     n_bad = round(count * malformed_rate)
     bad_positions = set(rng.sample(range(count), n_bad))
     kinds = list(catalog.MALFORMED_KINDS)
@@ -226,8 +304,15 @@ def generate(count: int = 100, seed: int = 42, malformed_rate: float = 0.10) -> 
     for i in range(count):
         when += timedelta(minutes=rng.randrange(2, 15), seconds=rng.randrange(0, 60))
         control_id = "S%d-%05d" % (seed, i + 1)
-        p = rng.choice(patients)
+        if queued:
+            p = queued.pop(0)
+        else:
+            p = rng.choice(patients)
+            if not p.admitted and id(p) in twins:
+                p = rng.choice(first_pick)
         if not p.admitted:
+            if p.twin is not None and not p.twin.admitted:
+                queued.append(p.twin)
             msg = build_adt(rng, p, "A01" if p.facility == "CITY_HOSPITAL" else "A04", when, control_id)
             p.admitted = True
         else:
@@ -245,4 +330,4 @@ def generate(count: int = 100, seed: int = 42, malformed_rate: float = 0.10) -> 
             msg = corrupt(rng, msg, kinds[bad_seen % len(kinds)])
             bad_seen += 1
         messages.append(msg)
-    return messages
+    return messages, duplicates

@@ -339,27 +339,45 @@ class GatewayWebTest {
     }
 
     @Test
-    void pagingDefaultsArePassedToTheReadModel() throws Exception {
-        when(fhir.search(any(), any(), any(), any(), any(), anyBoolean(), anyInt(), anyInt())).thenReturn(Page.of(List.of(), 0, 25, 0));
+    void pagingDefaultsArePassedToTheReadModelNewestFirst() throws Exception {
+        when(fhir.search(any(), any(), anyBoolean(), anyInt(), anyInt())).thenReturn(Page.of(List.of(), 0, 25, 0));
         mvc.perform(get("/api/v1/fhir/resources?type=Patient&compliant=false")
                         .header(HttpHeaders.AUTHORIZATION, bearer(TestJwts.viewer())))
                 .andExpect(status().isOk())
                 .andExpect(jsonPath("$.size").value(25))
                 .andExpect(jsonPath("$.totalPages").value(0));
-        verify(fhir).search("Patient", null, false, null, "resource", false, 0, 25);
+        verify(fhir).search(new FhirQueries.Filter("Patient", null, false, null, null, null, null, null),
+                "updated", true, 0, 25);
     }
 
     @Test
-    void fhirSortIsWhitelisted() throws Exception {
-        when(fhir.search(any(), any(), any(), any(), any(), anyBoolean(), anyInt(), anyInt()))
-                .thenReturn(Page.of(List.of(), 0, 25, 0));
-        mvc.perform(get("/api/v1/fhir/resources?sort=updated&dir=desc")
+    void fhirSortIsWhitelistedAndOtherColumnsDefaultAscending() throws Exception {
+        when(fhir.search(any(), any(), anyBoolean(), anyInt(), anyInt())).thenReturn(Page.of(List.of(), 0, 25, 0));
+        mvc.perform(get("/api/v1/fhir/resources?sort=updated&dir=asc")
                         .header(HttpHeaders.AUTHORIZATION, bearer(TestJwts.viewer())))
                 .andExpect(status().isOk());
-        verify(fhir).search(null, null, null, null, "updated", true, 0, 25);
+        verify(fhir).search(FhirQueries.Filter.none(), "updated", false, 0, 25);
+        mvc.perform(get("/api/v1/fhir/resources?sort=resource")
+                        .header(HttpHeaders.AUTHORIZATION, bearer(TestJwts.viewer())))
+                .andExpect(status().isOk());
+        verify(fhir).search(FhirQueries.Filter.none(), "resource", false, 0, 25);
         mvc.perform(get("/api/v1/fhir/resources?sort=fhir_id;drop").header(HttpHeaders.AUTHORIZATION, bearer(TestJwts.viewer())))
                 .andExpect(status().isBadRequest());
         mvc.perform(get("/api/v1/fhir/resources?dir=sideways").header(HttpHeaders.AUTHORIZATION, bearer(TestJwts.viewer())))
+                .andExpect(status().isBadRequest());
+    }
+
+    @Test
+    void fhirFiltersArePassedThroughAndValidated() throws Exception {
+        when(fhir.search(any(), any(), anyBoolean(), anyInt(), anyInt())).thenReturn(Page.of(List.of(), 0, 25, 0));
+        mvc.perform(get("/api/v1/fhir/resources?patient=NC700343&origin=pipeline&sourceSystem=NORTH_CLINIC&code=723")
+                        .header(HttpHeaders.AUTHORIZATION, bearer(TestJwts.viewer())))
+                .andExpect(status().isOk());
+        verify(fhir).search(new FhirQueries.Filter(null, null, null, null, "NC700343", "pipeline", "NORTH_CLINIC", "723"),
+                "updated", true, 0, 25);
+        mvc.perform(get("/api/v1/fhir/resources?origin=everything").header(HttpHeaders.AUTHORIZATION, bearer(TestJwts.viewer())))
+                .andExpect(status().isBadRequest());
+        mvc.perform(get("/api/v1/fhir/resources?sourceSystem=A%27%3B--").header(HttpHeaders.AUTHORIZATION, bearer(TestJwts.viewer())))
                 .andExpect(status().isBadRequest());
     }
 

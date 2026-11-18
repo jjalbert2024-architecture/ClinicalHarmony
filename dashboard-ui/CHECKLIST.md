@@ -24,12 +24,15 @@ use a private window so no Keycloak session is left over. The users are DEV-ONLY
 | 13 | Sign in as `dana` again. **PMI Review** → set Status to **REJECTED** (or **DECIDED**) | The most recently decided pair is at the **top** (hint: "Newest decision first."). Back on **PENDING**, the highest score is on top |
 | 14 | **PMI Review** → **Recently decided** card | Up to 10 accepted / rejected pairs, newest first, each with reviewer · time · note. Accept or reject a pending pair: it appears at the top of the card at once |
 | 15 | **Recent matching runs** → click a run's **To review** (or **Auto-merged**) number | The queue shows only that run's candidates (Status QUEUED or AUTO_MERGED) with a `run #N ×` chip. Clicking the chip clears the filter |
-| 16 | **FHIR Viewer** → **Patient** | `silver-patient-8, -9, -10 … -80 … -100` in number order. Click **Resource**: ▼, reversed. Click **Updated**: newest first. Each click changes the URL (`sort`, `dir`) |
+| 16 | **FHIR Viewer** → **Patient**, click **Resource** | `silver-patient-8, -9, -10 … -80 … -100` in number order (▲). Click again: ▼, reversed. Click **Updated**: back to the default, newest first. Each click changes the URL (`sort`, `dir`) |
 | 17 | Open any FHIR resource → **Download .json** (next to Copy JSON) | Saves `<Type>-<fhirId>.json`, the same JSON as on screen |
 | 18 | **Data Lineage** → "Transformations recorded" | Pipeline order: FHIR_MAP, PMI_PROVISIONAL, PMI_MATCH, PMI_MERGE, PMI_UNMERGE, then SEED_LOAD, API_GENERATE |
 | 19 | **Patient Timeline** → type an MRN, e.g. `MRN100001` (any case) → **Search** | Exactly Maria Garcia's master. A part of an MRN (`MRN1000`) finds nothing |
 | 20 | **Data Lineage** → Bronze messages | Columns **Format** (HL7 v2 / FHIR JSON / Claims CSV) and **HL7 type** (e.g. `ORU^R01`, `—` when none). Filters "Any payload format" and "Any HL7 message type" |
 | 21 | Pick HL7 message type **RDE (pharmacy order)** | Format switches to **HL7 v2**, only `RDE^O11` rows remain, the URL gains `messageType=HL7V2&hl7Type=RDE`. Pick format **FHIR JSON**: the HL7 type is cleared and greyed out |
+| 22 | **FHIR Viewer** (no filters) | Newest first (**Updated ▼**): what the pipeline just built is on page 1. Columns **Patient** (source · MRN, e.g. `NORTH_CLINIC · NC700343`) and **Origin** (HL7 pipeline / Silver seed / API-generated / Gold seed; hover for what each means) |
+| 23 | **Patient** = `NC700343` → **Search**, then click **AllergyIntolerance** on the left | Only HUGO PATEL's resources (NORTH_CLINIC NC700343, DOB 1942-12-13); with the type, exactly `AllergyIntolerance/silver-allergy-165`, HL7 pipeline, compliant. A part of the MRN (`NC7003`) finds nothing; a name part (`patel`) finds every PATEL |
+| 24 | **Clear filters**, then **Source system** = NORTH_CLINIC, **Origin** = HL7 pipeline, **Code or name** = `Amoxicillin` → **Search** | Only NORTH_CLINIC allergies (and orders) for amoxicillin, all with origin HL7 pipeline; the URL holds every filter. **Origin** = Gold seed instead: the CMS-0057 seed rows (`cms-…`). **Clear filters** empties every box |
 
 **Optional degraded check:** run `docker stop clinicalharmony-patient-index-service`. Within 30 s
 the header shows "Degraded (1)" and a banner names the service. PMI buttons say "patient-index-service

@@ -13,15 +13,18 @@ import java.util.List;
  * Builds the pre-Gold lineage steps for a Silver row: BRONZE (only when the row links back to
  * bronze.raw_messages) then SILVER.
  *
- * <p>No service parses Bronze into Silver yet, so in practice the Silver rows today (migration 17's
- * seed) have no raw_message_id and their chain starts at SILVER, with a null input_hash — the
- * honest answer, rather than guessing which Bronze message they "came from". Once a Bronze → Silver
- * parser sets raw_message_id, the BRONZE step appears with no change here.
+ * <p>Rows written by the Kafka pipeline (Phase 9a/9b: MLLP → ingestion-service → Kafka →
+ * bronze-listener-service → Bronze, then silver-transformer-service → Silver) link back to their raw
+ * HL7 message, and the step transformers name that path. Seed rows (migrations 17, 21) have no
+ * raw_message_id: their chain starts at SILVER with a null input_hash — the honest answer, rather
+ * than guessing which Bronze message they "came from".
  */
 @Component
 public class SilverLineage {
 
     static final String INGESTION_TRANSFORMER = "ingestion-service";
+    static final String KAFKA_INGESTION_TRANSFORMER = "ingestion-service MLLP → Kafka → bronze-listener-service";
+    static final String KAFKA_SILVER_TRANSFORMER = "silver-transformer-service";
 
     private final SilverProvenanceRepository provenanceRepository;
 
@@ -39,10 +42,12 @@ public class SilverLineage {
         List<LineageStep> steps = new ArrayList<>(2);
         if (p.hasBronzeLink()) {
             steps.add(new LineageStep(LineageStep.BRONZE, iso(p.bronzeReceivedAt()),
-                    INGESTION_TRANSFORMER + " (" + p.bronzeMessageType() + ")",
+                    (p.viaKafka() ? KAFKA_INGESTION_TRANSFORMER : INGESTION_TRANSFORMER)
+                            + " (" + p.bronzeMessageType() + ")",
                     p.bronzePayloadChecksum(), null, "bronze.raw_messages/" + p.rawMessageId()));
             steps.add(new LineageStep(LineageStep.SILVER, iso(p.silverCreatedAt()),
-                    "Bronze → Silver parse (source_system=" + p.sourceSystem() + ")",
+                    (p.viaKafka() ? KAFKA_SILVER_TRANSFORMER + ": " : "")
+                            + "Bronze → Silver parse (source_system=" + p.sourceSystem() + ")",
                     p.bronzePayloadChecksum(), null, table.ref(id)));
         } else {
             steps.add(new LineageStep(LineageStep.SILVER, iso(p.silverCreatedAt()),

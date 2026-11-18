@@ -83,17 +83,27 @@ public class MatchingRunService {
     }
 
     public RunResult run(String triggeredBy) {
-        return lock.runExclusively(() -> {
-            MatchSettings settings = settingsLoader.loadActive();
-            long runId = runs.start(triggeredBy, settingsLoader.toJson(settings));
-            try {
-                return execute(runId, settings);
-            } catch (RuntimeException e) {
-                runs.fail(runId, e.getMessage());
-                log.warn("PMI run {} failed: {}", runId, e.getMessage());
-                throw e;
-            }
-        });
+        return lock.runExclusively(() -> runLocked(triggeredBy));
+    }
+
+    /**
+     * Phase 9c pmi-matcher: the same run, but if a run or review holds the lock it throws
+     * {@link ConflictException} immediately (the caller retries later) instead of waiting.
+     */
+    public RunResult runIfIdle(String triggeredBy) {
+        return lock.tryExclusively(() -> runLocked(triggeredBy));
+    }
+
+    private RunResult runLocked(String triggeredBy) {
+        MatchSettings settings = settingsLoader.loadActive();
+        long runId = runs.start(triggeredBy, settingsLoader.toJson(settings));
+        try {
+            return execute(runId, settings);
+        } catch (RuntimeException e) {
+            runs.fail(runId, e.getMessage());
+            log.warn("PMI run {} failed: {}", runId, e.getMessage());
+            throw e;
+        }
     }
 
     private RunResult execute(long runId, MatchSettings settings) {

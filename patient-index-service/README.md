@@ -100,6 +100,32 @@ propose an excluded pair again.
 | PMI-0004 **Mario** Garcia, same DOB/address/phone, male | Garcia master | 0.7143 (gender −4) | review |
 | PMI-0005 Robert Wilson, same DOB as James | SEED-0002 | 0.2143 | no match → confirmed |
 
+## Phase 9c — pmi-matcher: matching runs on their own
+
+A Kafka consumer **inside this service** (consumer group `pmi-matcher`, `kafka/` package) on
+`clinicalharmony.gold.patient.changed`, written by fhir-compliance-service's gold-builder after each
+Gold build. Each event only **signals** `MatchRunDebouncer`; the run itself is debounced:
+
+- **one run 5 s after the last event of a burst** (`pmi-matcher.quiet-period`), and **at most 30 s after the
+  first pending event** (`max-delay`), so a steady stream still gets a run every 30 s;
+- a run is the same `MatchingRunService` run as `POST /api/pmi/match/run` (every PROVISIONAL master),
+  `triggered_by = "kafka:pmi-matcher (<n> events, <m> masters)"`, via `runIfIdle`, which never waits for the
+  PMI lock: if a manual run or a review holds it, or the run fails (GoldWriter down), the batch is kept and
+  retried after `retry-delay` (30 s);
+- offsets are committed when an event is signalled, not after its run: a crash in between loses only the
+  trigger, and on startup (`run-on-startup`) a catch-up run is scheduled whenever PROVISIONAL masters wait;
+- a broken event (not JSON, no `masterPatientId`) → `clinicalharmony.gold.patient.changed.dlt`;
+- since a debounced run may be going, `POST /api/pmi/match/run` now **waits up to 15 s** for the lock before
+  answering 409 (reviews still wait 5 s);
+- logs `pmi.signalled`, `pmi.run` (runId, events, changedMasters, autoMerges, queuedForReview, confirmed,
+  waitedMs), `pmi.run_deferred`, `pmi.run_failed`, `pmi.catch_up_scheduled`, `pmi.deadlettered`; metrics
+  `clinicalharmony.pmi.runs{trigger,outcome}`, `clinicalharmony.pmi.auto_merges`, `clinicalharmony.pmi.reviews_queued`.
+
+Live: the first start after deploy replayed all 680 historical events as one burst → **one** run (waited
+14.8 s). The generator (9c) registers ~10% of its patients at both CITY_HOSPITAL and NORTH_CLINIC: the
+identical ones auto-merge (`EXACT_NAME_DOB_PLUS_PHONE_OR_ZIP`), the fuzzy ones (birth day off by one,
+other phone) land in the review queue at 0.6190.
+
 ## Endpoints (port 8085)
 
 `GET`s need any valid Bearer token from the `clinicalharmony` realm (they show demographics, so
@@ -145,11 +171,13 @@ service's own token) can't be reached. GoldWriter's own 404/409 keep their statu
 | `GOLD_WRITER_BASE_URL` | `http://localhost:8084` | fhir-compliance-service (compose: `fhir-compliance-service:8084`) |
 | `OAUTH_TOKEN_URI` | `http://localhost:8180/realms/clinicalharmony/protocol/openid-connect/token` | Where this service gets its own token (compose: `keycloak:8080`) |
 | `PMI_CLIENT_ID` / `PMI_CLIENT_SECRET` | `patient-index-service` / `patient-index-service-secret` | Its Keycloak client — **dev-only** secret, from `keycloak/realm-clinicalharmony.json` |
+| `KAFKA_BOOTSTRAP_SERVERS` | `kafka:29092` (docker profile; `local` uses `localhost:19092`) | Phase 9c pmi-matcher |
+| `PMI_MATCHER_ENABLED` | `true` | `false` = runs only on request, as before 9c; tunables under `pmi-matcher.*` |
 
 ## Run and test
 
 ```bash
-mvn test                      # 55 tests; the integration test needs Docker (skipped without it)
+mvn test                      # 64 tests; the integration tests need Docker (skipped without it)
 mvn spring-boot:run           # local profile: Postgres on 5432, Keycloak on 8180, fhir-compliance on 8084
 ```
 

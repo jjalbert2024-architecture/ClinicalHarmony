@@ -286,17 +286,57 @@ describe('FHIR Viewer', () => {
     click.mockRestore();
   });
 
-  it('sorts the list by clicking column headers', async () => {
+  it('lists newest first by default and sorts by clicking column headers', async () => {
+    const before = calls('/fhir/resources').length;
     renderApp('/fhir');
-    const resource = await screen.findByRole('button', { name: /^Resource/ });
-    expect(resource.closest('th')).toHaveAttribute('aria-sort', 'ascending');
-    await userEvent.click(resource);
+    const updated = await screen.findByRole('button', { name: /^Updated/ });
+    expect(updated.closest('th')).toHaveAttribute('aria-sort', 'descending');
+    expect(calls('/fhir/resources')[before]!.query.get('sort')).toBe('updated');
+    expect(calls('/fhir/resources')[before]!.query.get('dir')).toBe('desc');
+    await userEvent.click(screen.getByRole('button', { name: /^Resource/ }));
+    await waitFor(() => expect(calls('/fhir/resources').at(-1)!.query.get('sort')).toBe('resource'));
+    expect(calls('/fhir/resources').at(-1)!.query.get('dir')).toBe('asc');
+    await userEvent.click(screen.getByRole('button', { name: /^Resource/ }));
     await waitFor(() => expect(calls('/fhir/resources').at(-1)!.query.get('dir')).toBe('desc'));
-    expect(calls('/fhir/resources').at(-1)!.query.get('sort')).toBe('resource');
+    // Back to the default (served from the query cache, so no new request): newest first again.
     await userEvent.click(screen.getByRole('button', { name: /^Updated/ }));
-    await waitFor(() => expect(calls('/fhir/resources').at(-1)!.query.get('sort')).toBe('updated'));
-    expect(calls('/fhir/resources').at(-1)!.query.get('dir')).toBe('desc');
-    expect(screen.getByRole('button', { name: /^Updated/ }).closest('th')).toHaveAttribute('aria-sort', 'descending');
+    await waitFor(() =>
+      expect(screen.getByRole('button', { name: /^Updated/ }).closest('th')).toHaveAttribute('aria-sort', 'descending'),
+    );
+  });
+
+  it('shows each row\'s patient and origin, and filters by patient, source, origin and code', async () => {
+    renderApp('/fhir');
+    const first = fixtures.fhirResources.items[0]!;
+    expect((await screen.findAllByText(`${first.sourceSystem} · ${first.sourcePatientId}`)).length).toBe(
+      fixtures.fhirResources.items.length,
+    );
+    expect(screen.getAllByText('HL7 pipeline').length).toBeGreaterThan(0);
+
+    const source = fixtures.fhirSourceSystems[0]!.sourceSystem;
+    await screen.findByRole('option', { name: new RegExp(`^${source} \\(`) });
+    await userEvent.selectOptions(screen.getByLabelText('Source system'), source);
+    await waitFor(() => expect(calls('/fhir/resources').at(-1)!.query.get('sourceSystem')).toBe(source));
+    await userEvent.selectOptions(screen.getByLabelText('Origin'), 'pipeline');
+    await waitFor(() => expect(calls('/fhir/resources').at(-1)!.query.get('origin')).toBe('pipeline'));
+
+    await userEvent.type(screen.getByLabelText('Patient'), ' nc700343 ');
+    await userEvent.type(screen.getByLabelText('Code or name'), 'Amoxicillin');
+    await userEvent.type(screen.getByLabelText('Resource id contains'), 'silver-allergy');
+    await userEvent.click(screen.getByRole('button', { name: 'Search' }));
+    await waitFor(() => expect(calls('/fhir/resources').at(-1)!.query.get('patient')).toBe('nc700343'));
+    const last = calls('/fhir/resources').at(-1)!.query;
+    expect([last.get('code'), last.get('q'), last.get('sourceSystem'), last.get('origin')])
+      .toEqual(['Amoxicillin', 'silver-allergy', source, 'pipeline']);
+
+    // Clear filters resets every box and dropdown (the unfiltered list comes back from the query cache).
+    await userEvent.click(screen.getByRole('button', { name: 'Clear filters' }));
+    await waitFor(() => expect(screen.queryByRole('button', { name: 'Clear filters' })).not.toBeInTheDocument());
+    expect(screen.getByLabelText('Patient')).toHaveValue('');
+    expect(screen.getByLabelText('Code or name')).toHaveValue('');
+    expect(screen.getByLabelText('Resource id contains')).toHaveValue('');
+    expect(screen.getByLabelText('Source system')).toHaveValue('');
+    expect(screen.getByLabelText('Origin')).toHaveValue('');
   });
 
   it('validates pasted JSON (allowed for viewers)', async () => {

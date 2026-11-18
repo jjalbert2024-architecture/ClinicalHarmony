@@ -28,7 +28,7 @@ import java.util.List;
 
 /**
  * Silver → Gold FHIR materialization: reads one silver.patients row plus its conditions,
- * observations and medications, builds US Core resources, validates each with the HL7 validator,
+ * observations, medications and (Phase 9c) allergies, builds US Core resources, validates each with the HL7 validator,
  * and hands them to {@link GoldWriter} — which links them to the patient's (provisional) master,
  * upserts them into gold.fhir_resources with the findings in {@code compliance_notes}, and writes
  * each one's gold.data_lineage chain back through Silver (and Bronze, where linked).
@@ -50,6 +50,7 @@ public class SilverFhirBuildService {
     private final ConditionResourceBuilder conditionBuilder;
     private final ObservationResourceBuilder observationBuilder;
     private final MedicationRequestResourceBuilder medicationBuilder;
+    private final AllergyIntoleranceResourceBuilder allergyBuilder;
     private final UsCoreFhirValidator validator;
     private final GoldWriter goldWriter;
     private final SilverLineage silverLineage;
@@ -64,13 +65,15 @@ public class SilverFhirBuildService {
                                   ConditionResourceBuilder conditionBuilder,
                                   ObservationResourceBuilder observationBuilder,
                                   MedicationRequestResourceBuilder medicationBuilder,
+                                  AllergyIntoleranceResourceBuilder allergyBuilder,
                                   UsCoreFhirValidator validator,
                                   GoldWriter goldWriter,
                                   SilverLineage silverLineage,
                                   FhirContext fhirContext,
                                   ObjectMapper objectMapper,
                                   TransactionTemplate transactionTemplate) {
-        this(silverRepository, patientBuilder, conditionBuilder, observationBuilder, medicationBuilder, validator,
+        this(silverRepository, patientBuilder, conditionBuilder, observationBuilder, medicationBuilder, allergyBuilder,
+                validator,
                 goldWriter, silverLineage, fhirContext, objectMapper, transactionTemplate, Clock.systemUTC());
     }
 
@@ -79,6 +82,7 @@ public class SilverFhirBuildService {
                            ConditionResourceBuilder conditionBuilder,
                            ObservationResourceBuilder observationBuilder,
                            MedicationRequestResourceBuilder medicationBuilder,
+                           AllergyIntoleranceResourceBuilder allergyBuilder,
                            UsCoreFhirValidator validator,
                            GoldWriter goldWriter,
                            SilverLineage silverLineage,
@@ -91,6 +95,7 @@ public class SilverFhirBuildService {
         this.conditionBuilder = conditionBuilder;
         this.observationBuilder = observationBuilder;
         this.medicationBuilder = medicationBuilder;
+        this.allergyBuilder = allergyBuilder;
         this.validator = validator;
         this.goldWriter = goldWriter;
         this.silverLineage = silverLineage;
@@ -140,6 +145,9 @@ public class SilverFhirBuildService {
         silverRepository.findMedications(patientId).forEach(m -> built.add(new Built(
                 medicationBuilder.build(m, patientFhirId), SilverTable.MEDICATIONS, m.id(),
                 Hashes.sha256Hex(m.toString()), "MedicationRequestResourceBuilder")));
+        silverRepository.findAllergies(patientId).forEach(a -> built.add(new Built(
+                allergyBuilder.build(a, patientFhirId), SilverTable.ALLERGIES, a.id(),
+                Hashes.sha256Hex(a.toString()), "AllergyIntoleranceResourceBuilder")));
 
         List<BuiltResourceSummary> summaries = built.stream().map(b -> validateAndPersist(b, masterId)).toList();
         // Resources written before this patient had a master (e.g. the CMS-0057 seed's Coverage) get linked now.

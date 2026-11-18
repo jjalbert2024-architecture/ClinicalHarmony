@@ -46,17 +46,39 @@ public class FhirController {
         return fhir.types();
     }
 
+    /** Source systems whose patients have Gold resources — options for the source filter. */
+    @GetMapping("/source-systems")
+    public List<FhirQueries.SourceCount> sourceSystems() {
+        return fhir.sourceSystems();
+    }
+
+    /**
+     * The FHIR Viewer list. Newest first unless asked otherwise ({@code sort} defaults to {@code updated}, and
+     * {@code dir} to {@code desc} for it, {@code asc} for every other column).
+     *
+     * @param q            resource id contains (the part after the slash, e.g. {@code silver-allergy-165})
+     * @param patient      a patient's name, or exactly their MRN / source id — every resource of that person
+     * @param origin       pipeline | silver-seed | api | gold-seed
+     * @param sourceSystem source system of the patient the resource is about, e.g. CITY_HOSPITAL
+     * @param code         an exact code (e.g. 723) or part of its display (e.g. Amoxicillin)
+     */
     @GetMapping("/resources")
     public Page<FhirQueries.ResourceSummary> resources(
             @RequestParam(required = false) @Pattern(regexp = TYPE) String type,
             @RequestParam(required = false) Long masterPatientId,
             @RequestParam(required = false) Boolean compliant,
             @RequestParam(required = false) @Size(max = 100) String q,
-            @RequestParam(defaultValue = "resource") @Pattern(regexp = FhirQueries.SORTS) String sort,
-            @RequestParam(defaultValue = "asc") @Pattern(regexp = "asc|desc") String dir,
+            @RequestParam(required = false) @Size(max = 100) String patient,
+            @RequestParam(required = false) @Pattern(regexp = FhirQueries.ORIGINS) String origin,
+            @RequestParam(required = false) @Pattern(regexp = "[A-Za-z0-9_.-]{1,50}") String sourceSystem,
+            @RequestParam(required = false) @Size(max = 100) String code,
+            @RequestParam(defaultValue = "updated") @Pattern(regexp = FhirQueries.SORTS) String sort,
+            @RequestParam(required = false) @Pattern(regexp = "asc|desc") String dir,
             @RequestParam(defaultValue = "0") @Min(0) int page,
             @RequestParam(defaultValue = "25") @Min(1) @Max(200) int size) {
-        return fhir.search(type, masterPatientId, compliant, q, sort, "desc".equals(dir), page, size);
+        boolean descending = dir == null ? "updated".equals(sort) : "desc".equals(dir);
+        return fhir.search(new FhirQueries.Filter(type, masterPatientId, compliant, q, patient, origin, sourceSystem, code),
+                sort, descending, page, size);
     }
 
     @GetMapping("/resources/{type}/{fhirId}")

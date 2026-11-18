@@ -3,6 +3,7 @@ package com.clinicalharmony.fhircompliance.gold;
 import com.clinicalharmony.fhircompliance.repository.DataLineageRecord;
 import com.clinicalharmony.fhircompliance.repository.DataLineageRepository;
 import com.clinicalharmony.fhircompliance.repository.GoldFhirResourceRepository;
+import com.clinicalharmony.fhircompliance.repository.GoldOutboxRepository;
 import com.clinicalharmony.fhircompliance.repository.MasterMergeRepository;
 import com.clinicalharmony.fhircompliance.repository.MasterMergeRow;
 import com.clinicalharmony.fhircompliance.repository.MasterPatientRepository;
@@ -52,7 +53,8 @@ class GoldWriterMasterOperationsTest {
         masterPatients = mock(MasterPatientRepository.class);
         merges = mock(MasterMergeRepository.class);
         lineage = mock(DataLineageRepository.class);
-        writer = new GoldWriter(fhirResources, masterPatients, merges, lineage, objectMapper,
+        writer = new GoldWriter(fhirResources, masterPatients, merges, lineage, 
+                mock(GoldOutboxRepository.class), objectMapper,
                 Clock.fixed(Instant.parse("2026-11-12T12:00:00Z"), ZoneOffset.UTC));
     }
 

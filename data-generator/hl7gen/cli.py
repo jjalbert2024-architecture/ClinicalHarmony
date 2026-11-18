@@ -6,11 +6,12 @@ import sys
 import time
 from pathlib import Path
 
-from .messages import generate
+from .messages import generate_run
 from .mllp import MllpClient
 
 
-def write_files(messages, out_dir: Path, seed: int, malformed_rate: float) -> Path:
+def write_files(messages, out_dir: Path, seed: int, malformed_rate: float, duplicates=(),
+                duplicate_rate: float = 0.0) -> Path:
     out_dir.mkdir(parents=True, exist_ok=True)
     for old in out_dir.glob("*.hl7"):
         old.unlink()
@@ -26,6 +27,9 @@ def write_files(messages, out_dir: Path, seed: int, malformed_rate: float) -> Pa
         "malformedRate": malformed_rate,
         "valid": sum(1 for m in messages if m.kind == "valid"),
         "malformed": sum(1 for m in messages if m.kind == "malformed"),
+        "duplicateRate": duplicate_rate,
+        # 9c: the same person at CITY_HOSPITAL and NORTH_CLINIC (different MRNs), for the PMI to find.
+        "duplicates": [d.manifest_entry() for d in duplicates],
         "messages": [m.manifest_entry() for m in messages],
     }
     path = out_dir / "manifest.json"
@@ -67,11 +71,15 @@ def main(argv=None) -> int:
     here = Path(__file__).resolve().parent.parent
     p = argparse.ArgumentParser(
         prog="generate.py",
-        description="Seeded synthetic HL7 v2.5 ADT + ORU messages (some deliberately malformed), "
+        description="Seeded synthetic HL7 v2.5 ADT / ORU / RDE messages (some deliberately malformed, some patients "
+                    "registered at both facilities), "
                     "written to .hl7 files and sent over MLLP to ingestion-service.")
     p.add_argument("--count", type=int, default=100, help="messages to generate (default 100)")
     p.add_argument("--seed", type=int, default=42, help="same seed → same bytes (default 42)")
     p.add_argument("--malformed-rate", type=float, default=0.10, help="share deliberately malformed (default 0.10)")
+    p.add_argument("--duplicate-rate", type=float, default=0.10,
+                   help="share of patients also registered at the other facility, half identical (auto-merge), "
+                        "half fuzzy (review queue) (default 0.10)")
     p.add_argument("--out", type=Path, default=here / "out",
                    help="output root; files go to <out>/seed-<seed>/ (default data-generator/out)")
     p.add_argument("--host", default=os.environ.get("MLLP_HOST", "localhost"))
@@ -85,11 +93,15 @@ def main(argv=None) -> int:
     if args.send_dir:
         return send_dir(args.send_dir, args.host, args.port, args.delay_ms, args.quiet)
 
-    messages = generate(args.count, args.seed, args.malformed_rate)
+    messages, duplicates = generate_run(args.count, args.seed, args.malformed_rate, args.duplicate_rate)
     out_dir = args.out / ("seed-%d" % args.seed)
-    manifest = write_files(messages, out_dir, args.seed, args.malformed_rate)
+    manifest = write_files(messages, out_dir, args.seed, args.malformed_rate, duplicates, args.duplicate_rate)
     valid = sum(1 for m in messages if m.kind == "valid")
     print("Wrote %d messages (%d valid, %d malformed) to %s" % (len(messages), valid, len(messages) - valid, out_dir))
+    for d in duplicates:
+        print("Duplicate %-9s %s: %s %s (DOB %s) = %s %s (DOB %s)" % (
+            d.kind, "%s %s" % (d.first, d.last), d.original_facility, d.original_mrn, d.original_dob,
+            d.twin_facility, d.twin_mrn, d.twin_dob))
     print("Manifest: %s" % manifest)
     if args.no_send:
         return 0

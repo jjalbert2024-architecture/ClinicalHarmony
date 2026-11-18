@@ -9,7 +9,8 @@ public enum SilverTable {
     PATIENTS("patients", "id"),
     CONDITIONS("conditions", "patient_id"),
     OBSERVATIONS("observations", "patient_id"),
-    MEDICATIONS("medications", "patient_id");
+    MEDICATIONS("medications", "patient_id"),
+    ALLERGIES("allergies", "patient_id");
 
     private final String tableName;
     private final String patientIdColumn;

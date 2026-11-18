@@ -6,6 +6,24 @@ spring:
     name: patient-index-service
   profiles:
     active: ${SPRING_PROFILES_ACTIVE:local}
+  # Phase 9c pmi-matcher (consumer group pmi-matcher). The producer is used only by the dead-letter publisher.
+  kafka:
+    consumer:
+      group-id: pmi-matcher
+      auto-offset-reset: earliest
+      enable-auto-commit: false
+      key-deserializer: org.apache.kafka.common.serialization.StringDeserializer
+      value-deserializer: org.apache.kafka.common.serialization.StringDeserializer
+    producer:
+      acks: all
+      key-serializer: org.apache.kafka.common.serialization.StringSerializer
+      value-serializer: org.apache.kafka.common.serialization.StringSerializer
+      properties:
+        enable.idempotence: true
+        max.block.ms: 5000
+    listener:
+      ack-mode: record
+      concurrency: 3
   security:
     oauth2:
       resourceserver:
@@ -26,15 +44,32 @@ gold-writer:
   client-secret: ${PMI_CLIENT_SECRET:patient-index-service-secret}  # DEV-ONLY default, matches keycloak/realm-clinicalharmony.json
   scope: clinicalharmony/pipeline.write
 
+# Phase 9c: clinicalharmony.gold.patient.changed → one debounced matching run per burst.
+pmi-matcher:
+  enabled: ${PMI_MATCHER_ENABLED:true}
+  partitions: 3
+  # One run 5 s after the last event of a burst, and at most 30 s after the first pending event.
+  quiet-period: 5s
+  max-delay: 30s
+  tick: 500ms
+  # GoldWriter down or the PMI lock busy (manual run / review): try the run again after this.
+  retry-delay: 30s
+  run-on-startup: true
+  retry:
+    max-retries: 3
+    initial-interval: 1s
+    multiplier: 2.0
+
 management:
   endpoints:
     web:
       exposure:
-        include: health,info
+        include: health,info,metrics
 
 logging:
   pattern:
-    console: "%d{yyyy-MM-dd HH:mm:ss.SSS} %-5level [%X{requestId}] %logger{36} - %msg%n"
+    # %kvp: the SLF4J key/values of the Phase 9c log events (event=pmi.run runId=… …).
+    console: "%d{yyyy-MM-dd HH:mm:ss.SSS} %-5level [%X{requestId}] %logger{36} - %msg %kvp%n"
 
 ---
 spring:
@@ -47,6 +82,8 @@ spring:
     password: clinicalharmony
     hikari:
       schema: pmi
+  kafka:
+    bootstrap-servers: localhost:19092
 
 ---
 spring:
@@ -59,3 +96,5 @@ spring:
     password: ${DB_PASSWORD:clinicalharmony}
     hikari:
       schema: pmi
+  kafka:
+    bootstrap-servers: ${KAFKA_BOOTSTRAP_SERVERS:kafka:29092}

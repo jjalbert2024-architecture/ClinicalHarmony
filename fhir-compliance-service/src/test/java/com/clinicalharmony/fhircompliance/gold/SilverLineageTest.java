@@ -22,7 +22,7 @@ class SilverLineageTest {
     void silverRowLinkedToBronzeGetsBronzeThenSilverWithPayloadChecksum() {
         when(repository.find(SilverTable.CONDITIONS, 10L)).thenReturn(Optional.of(new SilverProvenance(
                 OffsetDateTime.parse("2026-11-01T10:00:05Z"), "EPIC_ADT", 77L, "c".repeat(64),
-                OffsetDateTime.parse("2026-11-01T10:00:00Z"), "HL7V2")));
+                OffsetDateTime.parse("2026-11-01T10:00:00Z"), "HL7V2", "REST")));
 
         List<LineageStep> steps = lineage.stepsFor(SilverTable.CONDITIONS, 10L);
 
@@ -36,9 +36,25 @@ class SilverLineageTest {
     }
 
     @Test
+    void kafkaFedSilverRowNamesTheKafkaPathInBothSteps() {
+        when(repository.find(SilverTable.ALLERGIES, 12L)).thenReturn(Optional.of(new SilverProvenance(
+                OffsetDateTime.parse("2026-11-18T09:00:02Z"), "CITY_HOSPITAL", 501L, "d".repeat(64),
+                OffsetDateTime.parse("2026-11-18T09:00:00Z"), "HL7V2", "MLLP_KAFKA")));
+
+        List<LineageStep> steps = lineage.stepsFor(SilverTable.ALLERGIES, 12L);
+
+        assertThat(steps).extracting(LineageStep::stage).containsExactly("BRONZE", "SILVER");
+        assertThat(steps.get(0).transformer()).isEqualTo("ingestion-service MLLP → Kafka → bronze-listener-service (HL7V2)");
+        assertThat(steps.get(0).ref()).isEqualTo("bronze.raw_messages/501");
+        assertThat(steps.get(1).transformer()).startsWith("silver-transformer-service: Bronze → Silver parse");
+        assertThat(steps.get(1).ref()).isEqualTo("silver.allergies/12");
+        assertThat(steps.get(1).inputHash()).isEqualTo("d".repeat(64));
+    }
+
+    @Test
     void silverRowWithoutBronzeLinkStartsAtSilverWithNoInputHash() {
         when(repository.find(SilverTable.PATIENTS, 1L)).thenReturn(Optional.of(new SilverProvenance(
-                OffsetDateTime.parse("2026-11-01T10:00:05Z"), "SEED_EPIC_ADT", null, null, null, null)));
+                OffsetDateTime.parse("2026-11-01T10:00:05Z"), "SEED_EPIC_ADT", null, null, null, null, null)));
 
         List<LineageStep> steps = lineage.stepsFor(SilverTable.PATIENTS, 1L);
 

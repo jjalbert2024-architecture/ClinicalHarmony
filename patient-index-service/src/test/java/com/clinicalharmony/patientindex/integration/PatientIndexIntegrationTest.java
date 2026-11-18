@@ -36,7 +36,10 @@ import static org.assertj.core.api.Assertions.assertThat;
  * migration 21's cross-source duplicates) and a fake GoldWriter over real HTTP. Silver patients
  * get PROVISIONAL masters the way fhir-compliance-service's GoldWriter creates them on build.
  */
-@SpringBootTest(webEnvironment = SpringBootTest.WebEnvironment.RANDOM_PORT)
+@SpringBootTest(webEnvironment = SpringBootTest.WebEnvironment.RANDOM_PORT,
+        // This class drives every run itself and asserts exact counts; the debounced Kafka trigger has its own
+        // test (PmiMatcherIntegrationTest).
+        properties = "pmi-matcher.enabled=false")
 @Testcontainers(disabledWithoutDocker = true)
 @Import(TestJwts.class)
 class PatientIndexIntegrationTest {

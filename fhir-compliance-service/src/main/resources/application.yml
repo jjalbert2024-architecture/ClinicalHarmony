@@ -9,11 +9,51 @@ gold-writer:
   # Validate Gold rows seeded with compliance_notes.status = PENDING_VALIDATION (migration 19) on startup.
   revalidate-pending-on-startup: true
 
+# Phase 9c: clinicalharmony.silver.patient.changed → Gold (via GoldWriter) → clinicalharmony.gold.patient.changed
+gold-builder:
+  enabled: ${GOLD_BUILDER_ENABLED:true}
+  partitions: 3
+  retry:
+    # Technical failures (DB down…): 3 retries with exponential backoff, then <topic>.dlt.
+    max-retries: 3
+    initial-interval: 1s
+    multiplier: 2.0
+  outbox:
+    poll-interval: 500ms
+    batch-size: 100
+    send-timeout: 10s
+
 spring:
   application:
     name: fhir-compliance-service
   profiles:
     active: ${SPRING_PROFILES_ACTIVE:local}
+  # Phase 9c gold-builder (consumer group gold-builder) + the Gold outbox relay.
+  kafka:
+    consumer:
+      group-id: gold-builder
+      auto-offset-reset: earliest
+      enable-auto-commit: false
+      key-deserializer: org.apache.kafka.common.serialization.StringDeserializer
+      value-deserializer: org.apache.kafka.common.serialization.StringDeserializer
+      # A build validates every resource with the HL7 validator (tens of ms each): keep polls small so a
+      # batch finishes well inside max.poll.interval.ms.
+      max-poll-records: 20
+    producer:
+      # Used by the outbox relay and the dead-letter publisher.
+      acks: all
+      key-serializer: org.apache.kafka.common.serialization.StringSerializer
+      value-serializer: org.apache.kafka.common.serialization.StringSerializer
+      properties:
+        enable.idempotence: true
+        max.block.ms: 5000
+        request.timeout.ms: 5000
+        delivery.timeout.ms: 9000
+    listener:
+      # Offset committed after EACH record, i.e. only after its Gold transaction has committed.
+      ack-mode: record
+      # One consumer thread per partition of clinicalharmony.silver.patient.changed.
+      concurrency: 3
   security:
     oauth2:
       resourceserver:
@@ -34,11 +74,12 @@ management:
   endpoints:
     web:
       exposure:
-        include: health,info
+        include: health,info,metrics
 
 logging:
   pattern:
-    console: "%d{yyyy-MM-dd HH:mm:ss.SSS} %-5level [%X{requestId}] %logger{36} - %msg%n"
+    # %kvp: the SLF4J key/values of the Phase 9c log events (event=gold.built masterPatientId=… …).
+    console: "%d{yyyy-MM-dd HH:mm:ss.SSS} %-5level [%X{requestId}] %logger{36} - %msg %kvp%n"
 
 ---
 # Local profile: for running via `mvn spring-boot:run` on the host machine,
@@ -53,6 +94,8 @@ spring:
     password: clinicalharmony
     hikari:
       schema: ontology
+  kafka:
+    bootstrap-servers: localhost:19092
 
 ---
 # Docker profile: activated via SPRING_PROFILES_ACTIVE=docker in docker-compose.yml.
@@ -66,3 +109,5 @@ spring:
     password: ${DB_PASSWORD:clinicalharmony}
     hikari:
       schema: ontology
+  kafka:
+    bootstrap-servers: ${KAFKA_BOOTSTRAP_SERVERS:kafka:29092}

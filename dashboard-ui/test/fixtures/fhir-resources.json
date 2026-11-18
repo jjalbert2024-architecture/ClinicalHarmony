@@ -1,32 +1,53 @@
 {
-  "items": [
-    {
-      "id": 5,
-      "resourceType": "AllergyIntolerance",
-      "fhirId": "allergyintolerance-4",
-      "masterPatientId": null,
-      "usCoreCompliant": true,
-      "complianceStatus": null,
-      "errorCount": null,
-      "warningCount": null,
-      "profile": null,
-      "updatedAt": "2026-11-14T08:00:06.920868Z"
-    },
-    {
-      "id": 2,
-      "resourceType": "Condition",
-      "fhirId": "condition-1",
-      "masterPatientId": null,
-      "usCoreCompliant": true,
-      "complianceStatus": null,
-      "errorCount": null,
-      "warningCount": null,
-      "profile": null,
-      "updatedAt": "2026-11-14T08:00:06.920868Z"
-    }
-  ],
-  "page": 0,
-  "size": 2,
-  "total": 119,
-  "totalPages": 60
+    "items": [
+        {
+            "id": 42991,
+            "resourceType": "Observation",
+            "fhirId": "silver-observation-1290",
+            "masterPatientId": 523,
+            "usCoreCompliant": true,
+            "complianceStatus": null,
+            "errorCount": 0,
+            "warningCount": 2,
+            "profile": "http://hl7.org/fhir/us/core/StructureDefinition/us-core-observation-lab",
+            "updatedAt": "2026-11-18T13:38:40.506266Z",
+            "origin": "pipeline",
+            "sourceSystem": "NORTH_CLINIC",
+            "sourcePatientId": "NC700343"
+        },
+        {
+            "id": 42990,
+            "resourceType": "Observation",
+            "fhirId": "silver-observation-1289",
+            "masterPatientId": 523,
+            "usCoreCompliant": true,
+            "complianceStatus": null,
+            "errorCount": 0,
+            "warningCount": 2,
+            "profile": "http://hl7.org/fhir/us/core/StructureDefinition/us-core-observation-lab",
+            "updatedAt": "2026-11-18T13:38:40.506266Z",
+            "origin": "pipeline",
+            "sourceSystem": "NORTH_CLINIC",
+            "sourcePatientId": "NC700343"
+        },
+        {
+            "id": 42989,
+            "resourceType": "Observation",
+            "fhirId": "silver-observation-1288",
+            "masterPatientId": 523,
+            "usCoreCompliant": true,
+            "complianceStatus": null,
+            "errorCount": 0,
+            "warningCount": 2,
+            "profile": "http://hl7.org/fhir/us/core/StructureDefinition/us-core-observation-lab",
+            "updatedAt": "2026-11-18T13:38:40.506266Z",
+            "origin": "pipeline",
+            "sourceSystem": "NORTH_CLINIC",
+            "sourcePatientId": "NC700343"
+        }
+    ],
+    "page": 0,
+    "size": 3,
+    "total": 14,
+    "totalPages": 5
 }

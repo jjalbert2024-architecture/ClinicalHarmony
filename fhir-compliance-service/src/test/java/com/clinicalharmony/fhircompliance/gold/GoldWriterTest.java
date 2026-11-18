@@ -4,6 +4,7 @@ import com.clinicalharmony.fhircompliance.repository.DataLineageRecord;
 import com.clinicalharmony.fhircompliance.repository.DataLineageRepository;
 import com.clinicalharmony.fhircompliance.repository.GoldFhirResourceRecord;
 import com.clinicalharmony.fhircompliance.repository.GoldFhirResourceRepository;
+import com.clinicalharmony.fhircompliance.repository.GoldOutboxRepository;
 import com.clinicalharmony.fhircompliance.repository.MasterMergeRepository;
 import com.clinicalharmony.fhircompliance.repository.MasterPatientRepository;
 import com.clinicalharmony.fhircompliance.repository.silver.SilverPatientRow;
@@ -50,7 +51,8 @@ class GoldWriterTest {
         fhirResources = mock(GoldFhirResourceRepository.class);
         masterPatients = mock(MasterPatientRepository.class);
         lineage = mock(DataLineageRepository.class);
-        writer = new GoldWriter(fhirResources, masterPatients, mock(MasterMergeRepository.class), lineage, objectMapper,
+        writer = new GoldWriter(fhirResources, masterPatients, mock(MasterMergeRepository.class), lineage, 
+                mock(GoldOutboxRepository.class), objectMapper,
                 Clock.fixed(Instant.parse("2026-11-11T12:00:00Z"), ZoneOffset.UTC));
     }
 

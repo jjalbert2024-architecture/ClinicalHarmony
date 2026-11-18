@@ -371,6 +371,18 @@ export interface ResourceSummary {
   warningCount: number | null;
   profile: string | null;
   updatedAt: string;
+  /** pipeline | silver-seed | api | gold-seed (from the resource's lineage); null when unknown */
+  origin: ResourceOrigin | null;
+  /** Source system + id (MRN) of the Silver patient the resource is about; null when not about one */
+  sourceSystem: string | null;
+  sourcePatientId: string | null;
+}
+
+export type ResourceOrigin = 'pipeline' | 'silver-seed' | 'api' | 'gold-seed';
+
+export interface SourceCount {
+  sourceSystem: string;
+  resources: number;
 }
 
 export interface Violation {

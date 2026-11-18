@@ -20,7 +20,7 @@ public class SilverProvenanceRepository {
         // Table/column names come from the SilverTable enum, never from input.
         String sql = """
                 SELECT s.created_at, p.source_system, s.raw_message_id,
-                       b.payload_checksum, b.received_at, b.message_type
+                       b.payload_checksum, b.received_at, b.message_type, b.intake_channel
                 FROM silver.%s s
                 JOIN silver.patients p ON p.id = s.%s
                 LEFT JOIN bronze.raw_messages b ON b.id = s.raw_message_id
@@ -32,7 +32,8 @@ public class SilverProvenanceRepository {
                         rs.getObject("raw_message_id", Long.class),
                         rs.getString("payload_checksum"),
                         rs.getObject("received_at", OffsetDateTime.class),
-                        rs.getString("message_type")),
+                        rs.getString("message_type"),
+                        rs.getString("intake_channel")),
                 id).stream().findFirst();
     }
 }

@@ -784,7 +784,8 @@ schema **`pmi`** (`match_runs`, `match_candidates` with a partial unique index o
 
 ## Build order / phase plan
 
-Phases are meant to be fully complete before the next starts. Current state as of 2026-11-18:
+Phases are meant to be fully complete before the next starts. Current state as of 2026-11-18 (next: 9d, branch
+`phase-9d-full-generator`):
 
 - **Phase 1** (done): Foundation — docker-compose.yml, all 7 `docs/db-init/` SQL scripts, seed data.
 - **Phase 2 / 2b** (done): ingestion-service — all three intake paths (HL7 v2, FHIR JSON, Claims CSV) landing to Bronze.
@@ -841,7 +842,7 @@ Phases are meant to be fully complete before the next starts. Current state as o
     OWN branch after 9c. Kafka deps = Boot-managed spring-kafka 3.3.16 / kafka-clients 3.9.2, already in ~/.m2.
   - **9d** Full generator (FHIR / claims / C-CDA, cross-feed duplicates, defects, `--seed`/`--reset`/`--trickle`).
   - **9e** Observability: logs to Datadog or Splunk (undecided) + dashboards/alerts.
-  - **Data Lineage layer browser** (built, in review, 2026-11-18, branch `lineage-layer-browser`; the user's idea from 9b
+  - **Data Lineage layer browser** (done, merged as PR #19 on 2026-11-18, branch `lineage-layer-browser`; the user's idea from 9b
     testing, design agreed 2026-11-17: cards-as-tabs + one full-width list + linked detail pages, NOT 3 side-by-side tables).
     Gateway: new `read/SilverQueries` (`/api/v1/silver/patients` list — newest first, `q` = name part / exact MRN or source
     id / Silver id, `sourceSystem`, `validationStatus` VALIDATED|PENDING_VALIDATION|NOT_TRACKED; `/silver/patients/{id}` —

@@ -302,7 +302,7 @@ Port 8087, package `com.clinicalharmony.silver`, consumer group `silver-transfor
   the URL. Tests: gateway 48 (web + integration), UI 65, refreshed `bronze-messages.json`/`bronze-message.json`,
   smoke 297, CHECKLIST rows 19–21.
 
-### Phase 9c — Gold over Kafka (built, in review — branch `phase-9c-gold-over-kafka`)
+### Phase 9c — Gold over Kafka (done, merged as PR #18)
 
 - **gold-builder** = consumer group `gold-builder` INSIDE fhir-compliance-service (`goldbuilder/` package) on
   `clinicalharmony.silver.patient.changed` (`ack-mode: record`, concurrency 3, max-poll-records 20). `GoldBuilder.build`
@@ -829,7 +829,7 @@ Phases are meant to be fully complete before the next starts. Current state as o
     section above. Migration 24, generator RDE^O11, smoke 297/297 (twice), Postman
     `silver-transformer-service/postman/phase9b-silver-over-kafka` (6 items). Patient Timeline still lists
     Gold masters only, so generated patients appear there after `POST /api/fhir/build` until 9c.
-  - **9c** (BUILT, in review, 2026-11-18, branch `phase-9c-gold-over-kafka`, migration 25 applied to the running DB; see the
+  - **9c** (done, merged as PR #18 on 2026-11-18, branch `phase-9c-gold-over-kafka`, migration 25 applied to the running DB; see the
     9c section above) Gold: consumer `gold-builder` INSIDE fhir-compliance-service (GoldWriter stays the only Gold
     writer) → US Core build + validator → Gold + lineage BRONZE→SILVER→GOLD →
     `clinicalharmony.gold.patient.changed` → `pmi-matcher` inside patient-index-service (batched runs).

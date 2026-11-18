@@ -74,6 +74,7 @@ function SourcesCard({ detail }: { detail: MasterDetail }) {
             <th>Name</th>
             <th>DOB</th>
             <th>Contact</th>
+            <th>Silver</th>
             <th>Bronze</th>
           </tr>
         </thead>
@@ -90,6 +91,9 @@ function SourcesCard({ detail }: { detail: MasterDetail }) {
               <td className="muted">
                 {[s.addressLine1, s.city, s.state, s.postalCode].filter(Boolean).join(', ') || '—'}
                 {s.phone && <div>{s.phone}</div>}
+              </td>
+              <td>
+                <Link to={`/lineage/silver/${s.silverPatientId}`}>#{s.silverPatientId}</Link>
               </td>
               <td>{s.rawMessageId ? <Link to={`/lineage/bronze/${s.rawMessageId}`}>#{s.rawMessageId}</Link> : <span className="muted">seed</span>}</td>
             </tr>

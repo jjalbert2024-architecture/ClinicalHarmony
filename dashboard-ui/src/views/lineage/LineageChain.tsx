@@ -3,13 +3,26 @@ import type { LineageRecord } from '../../api/types';
 import { Badge } from '../../components/common';
 import { fmtDateTime, shortHash } from '../../format';
 
-/** Turns a lineage step ref like "gold.fhir_resources/46" or "bronze.raw_messages/12" into a link. */
-function refLink(ref: string | undefined) {
+/**
+ * Turns a lineage step ref into a link to that record's page: bronze.raw_messages/12, silver.<table>/7 (via the
+ * Silver patient it belongs to), gold.master_patients/3, and gold.fhir_resources/46 (when the record names the
+ * resource, e.g. "AllergyIntolerance/silver-allergy-165").
+ */
+export function refLink(ref: string | undefined, fhirTarget?: string) {
   if (!ref) return null;
   const bronze = /^bronze\.raw_messages\/(\d+)$/.exec(ref);
   if (bronze) return <Link to={`/lineage/bronze/${bronze[1]}`}>{ref}</Link>;
+  const silverPatient = /^silver\.patients\/(\d+)$/.exec(ref);
+  if (silverPatient) return <Link to={`/lineage/silver/${silverPatient[1]}`}>{ref}</Link>;
+  const silverRow = /^silver\.(conditions|observations|medications|allergies)\/(\d+)$/.exec(ref);
+  if (silverRow) return <Link to={`/lineage/silver/${silverRow[1]}/${silverRow[2]}`}>{ref}</Link>;
   const master = /^gold\.master_patients\/(\d+)$/.exec(ref);
   if (master) return <Link to={`/patients/${master[1]}`}>{ref}</Link>;
+  const fhir = /^gold\.fhir_resources\/\d+$/.test(ref) && fhirTarget && /^[A-Z][A-Za-z]+\/[^/]+$/.test(fhirTarget);
+  if (fhir) {
+    const [type, id] = fhirTarget!.split('/');
+    return <Link to={`/fhir/${type}/${encodeURIComponent(id!)}`}>{ref}</Link>;
+  }
   return <code>{ref}</code>;
 }
 
@@ -36,7 +49,7 @@ export function LineageChain({ records }: { records: LineageRecord[] }) {
               {r.details.steps.map((s, i) => (
                 <li key={i} className={`stage stage-${s.stage.toLowerCase()}`}>
                   <div className="stage-name">{s.stage}</div>
-                  {s.ref && <div>{refLink(s.ref)}</div>}
+                  {s.ref && <div>{refLink(s.ref, r.details?.target)}</div>}
                   {s.transformer && <div className="stage-transformer">{s.transformer}</div>}
                   <div className="muted small">
                     {s.timestamp && fmtDateTime(s.timestamp)}

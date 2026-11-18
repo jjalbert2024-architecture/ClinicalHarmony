@@ -181,6 +181,10 @@ class ApiGatewayIntegrationTest {
         return objectMapper.readTree(response.getBody());
     }
 
+    private int status(String path) {
+        return as(TestJwts.viewer()).getForEntity(path, String.class).getStatusCode().value();
+    }
+
     // ---- read models over real SQL ---------------------------------------------------------------
 
     @Test
@@ -367,6 +371,120 @@ class ApiGatewayIntegrationTest {
         }
         assertThat(fv).isNotNull();
         assertThat(fv.path("resources").asInt()).isEqualTo(3);
+    }
+
+    @Test
+    void layerBrowserFollowsOneRecordBronzeToSilverToGoldAndBack() throws Exception {
+        JdbcTemplate admin = new JdbcTemplate(new DriverManagerDataSource(POSTGRES.getJdbcUrl(), "clinicalharmony",
+                "clinicalharmony"));
+        long seed1 = admin.queryForObject("SELECT id FROM silver.patients WHERE source_patient_id = 'SEED-0001'", Long.class);
+
+        // Silver list: exact MRN / source id, name part, or the Silver id itself; each row knows its master
+        JsonNode byId = getJson("/api/v1/silver/patients?q=seed-0001");
+        assertThat(byId.at("/total").asInt()).isEqualTo(1);
+        assertThat(byId.at("/items/0/id").asLong()).isEqualTo(seed1);
+        assertThat(byId.at("/items/0/masterPatientId").asLong()).isEqualTo(maria);
+        assertThat(byId.at("/items/0/conditions").asInt()).isPositive();
+        assertThat(getJson("/api/v1/silver/patients?q=" + seed1).get("items").findValuesAsText("sourcePatientId"))
+                .contains("SEED-0001");
+        assertThat(getJson("/api/v1/silver/patients?q=SEED-000").at("/total").asInt()).isZero();   // partial id: no
+        JsonNode untracked = getJson("/api/v1/silver/patients?validationStatus=NOT_TRACKED&sourceSystem=SEED_EPIC_ADT");
+        assertThat(untracked.at("/total").asInt()).isPositive();
+        untracked.get("items").forEach(item -> assertThat(item.get("validationStatus").isNull()).isTrue());
+        assertThat(getJson("/api/v1/silver/source-systems").findValuesAsText("sourceSystem")).contains("SEED_EPIC_ADT");
+
+        // Silver patient page: the condition fed by the Bronze message, linked to its Gold Condition
+        JsonNode detail = getJson("/api/v1/silver/patients/" + seed1);
+        assertThat(detail.at("/summary/sourcePatientId").asText()).isEqualTo("SEED-0001");
+        assertThat(detail.at("/gold/masterPatientId").asLong()).isEqualTo(maria);
+        assertThat(detail.get("bronzeMessages").findValuesAsText("id")).contains(String.valueOf(bronzeId));
+        JsonNode e119 = null;
+        for (JsonNode r : detail.get("rows")) {
+            if (r.path("id").asLong() == mariaE119 && "CONDITION".equals(r.path("kind").asText())) {
+                e119 = r;
+            }
+        }
+        assertThat(e119).isNotNull();
+        assertThat(e119.path("rawMessageId").asLong()).isEqualTo(bronzeId);
+        assertThat(e119.path("fhirResourceId").asLong()).isEqualTo(goldCondition);
+        assertThat(e119.path("fhirResourceType").asText()).isEqualTo("Condition");
+        assertThat(detail.get("findings").isArray()).isTrue();
+
+        // a lineage ref like silver.conditions/<id> resolves to its patient
+        assertThat(getJson("/api/v1/silver/rows/conditions/" + mariaE119).at("/silverPatientId").asLong()).isEqualTo(seed1);
+
+        // Bronze message page: each Silver row carries its patient for the link
+        JsonNode bronze = getJson("/api/v1/bronze/messages/" + bronzeId);
+        assertThat(bronze.at("/silverRows/0/silverPatientId").asLong()).isEqualTo(seed1);
+
+        // trace from Silver and from Bronze reaches the same Gold Condition
+        JsonNode fromSilver = getJson("/api/v1/lineage?silverPatientId=" + seed1);
+        assertThat(fromSilver.at("/target").asText()).isEqualTo("silver.patients");
+        assertThat(fromSilver.get("records").findValuesAsText("targetId")).contains(String.valueOf(goldCondition));
+        assertThat(fromSilver.at("/bronzeMessages/0/id").asLong()).isEqualTo(bronzeId);
+        JsonNode fromBronze = getJson("/api/v1/lineage?bronzeMessageId=" + bronzeId);
+        assertThat(fromBronze.at("/target").asText()).isEqualTo("bronze.raw_messages");
+        assertThat(fromBronze.get("records").findValuesAsText("targetId")).contains(String.valueOf(goldCondition));
+
+        // layer cards + Gold tab numbers
+        JsonNode summary = getJson("/api/v1/summary");
+        assertThat(summary.at("/silverByValidation/NOT_TRACKED").asLong()).isPositive();
+        assertThat(summary.at("/silver/allergies").isNumber()).isTrue();
+        JsonNode masters = getJson("/api/v1/patients?q=seed-0001");
+        assertThat(masters.at("/items/0/fhirResourceCount").asLong()).isPositive();
+    }
+
+    @Test
+    void bronzeListShowsAndSearchesThePatientEachMessageIsAbout() throws Exception {
+        JdbcTemplate admin = new JdbcTemplate(new DriverManagerDataSource(POSTGRES.getJdbcUrl(), "clinicalharmony",
+                "clinicalharmony"));
+        long seed1 = admin.queryForObject("SELECT id FROM silver.patients WHERE source_patient_id = 'SEED-0001'", Long.class);
+        // PID-3.4 names the Silver patient's source system even though MSH-4 (Bronze source_system) is the lab's
+        long known = admin.queryForObject("""
+                INSERT INTO bronze.raw_messages (source_system, message_type, message_format, raw_payload, processing_status)
+                VALUES ('BRZ_LAB', 'HL7V2', 'TEXT',
+                        'MSH|^~\\&|LIS|BRZ_LAB|CH|ING|20261118||ORU^R01|BRZ1|P|2.5' || chr(13) ||
+                        'PID|1||SEED-0001^^^SEED_EPIC_ADT^MR~OTHER^^^X||Garcia^Maria^L||19680412|F' || chr(13),
+                        'PROCESSED') RETURNING id""", Long.class);
+        long unknown = admin.queryForObject("""
+                INSERT INTO bronze.raw_messages (source_system, message_type, message_format, raw_payload, processing_status,
+                                                 error_message)
+                VALUES ('BRZ_CLINIC', 'HL7V2', 'TEXT',
+                        'MSH|^~\\&|EHR|BRZ_CLINIC|CH|ING|20261118||ADT^A04|BRZ2|P|2.5' || chr(13) ||
+                        'PID|1||BRZ-404^^^BRZ_CLINIC^MR||Nobody^Zed||' || chr(13), 'FAILED', 'PID-7 (date of birth) is empty')
+                RETURNING id""", Long.class);
+
+        JsonNode byMrn = getJson("/api/v1/bronze/messages?q=seed-0001&size=200");
+        JsonNode row = null;
+        for (JsonNode m : byMrn.get("items")) {
+            if (m.path("id").asLong() == known) {
+                row = m;
+            }
+        }
+        assertThat(row).as("message %d found by its patient's MRN", known).isNotNull();
+        assertThat(row.path("patientName").asText()).isEqualTo("Maria Garcia");
+        assertThat(row.path("patientMrn").asText()).isEqualTo("SEED-0001");
+        assertThat(row.path("silverPatientId").asLong()).isEqualTo(seed1);
+        assertThat(getJson("/api/v1/bronze/messages?q=garc&size=200").get("items").findValuesAsText("id"))
+                .contains(String.valueOf(known));                                   // part of the name
+        assertThat(getJson("/api/v1/bronze/messages?q=SEED-000&size=200").get("items").findValuesAsText("id"))
+                .doesNotContain(String.valueOf(known));                             // a part of the MRN: no
+        assertThat(getJson("/api/v1/bronze/messages?q=" + known).at("/items/0/id").asLong()).isEqualTo(known);
+
+        JsonNode failed = getJson("/api/v1/bronze/messages?q=nobody");
+        assertThat(failed.at("/total").asInt()).isEqualTo(1);
+        assertThat(failed.at("/items/0/patientName").asText()).isEqualTo("Zed Nobody");
+        assertThat(failed.at("/items/0/silverPatientId").isNull()).isTrue();          // never reached Silver
+        assertThat(getJson("/api/v1/bronze/messages/" + known).at("/summary/silverPatientId").asLong()).isEqualTo(seed1);
+        assertThat(getJson("/api/v1/bronze/messages/" + unknown).at("/summary/patientMrn").asText()).isEqualTo("BRZ-404");
+    }
+
+    @Test
+    void unknownSilverPatientOrRowIs404() throws Exception {
+        assertThat(status("/api/v1/silver/patients/999999999")).isEqualTo(404);
+        assertThat(status("/api/v1/silver/rows/allergies/999999999")).isEqualTo(404);
+        assertThat(status("/api/v1/lineage?silverPatientId=999999999")).isEqualTo(404);
+        assertThat(status("/api/v1/lineage?bronzeMessageId=999999999")).isEqualTo(404);
     }
 
     @Test

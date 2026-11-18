@@ -25,7 +25,7 @@ public class PatientQueries {
     public record MasterSummary(long id, UUID uuid, String firstName, String lastName, LocalDate dateOfBirth,
                                 String gender, String matchStatus, BigDecimal matchConfidenceScore,
                                 int sourcePatientCount, boolean active, List<String> sourceSystems,
-                                OffsetDateTime updatedAt) {
+                                OffsetDateTime updatedAt, long fhirResourceCount) {
     }
 
     public record SourceRecord(long silverPatientId, String sourceSystem, String sourcePatientId, String mrn,
@@ -65,7 +65,8 @@ public class PatientQueries {
             m.match_confidence_score, m.source_patient_count, m.is_active, m.updated_at,
             (SELECT array_agg(DISTINCT p.source_system ORDER BY p.source_system)
                FROM gold.patient_source_xref x JOIN silver.patients p ON p.id = x.silver_patient_id
-              WHERE x.master_patient_id = m.id) AS source_systems
+              WHERE x.master_patient_id = m.id) AS source_systems,
+            (SELECT count(*) FROM gold.fhir_resources f WHERE f.master_patient_id = m.id) AS fhir_resource_count
             """;
 
     private final NamedParameterJdbcTemplate jdbc;
@@ -209,6 +210,6 @@ public class PatientQueries {
                 rs.getString("first_name"), rs.getString("last_name"), Sql.date(rs, "date_of_birth"),
                 rs.getString("gender"), rs.getString("match_status"), rs.getBigDecimal("match_confidence_score"),
                 rs.getInt("source_patient_count"), rs.getBoolean("is_active"), Sql.strings(rs, "source_systems"),
-                Sql.ts(rs, "updated_at"));
+                Sql.ts(rs, "updated_at"), rs.getLong("fhir_resource_count"));
     }
 }

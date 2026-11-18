@@ -13,6 +13,7 @@ import com.clinicalharmony.gateway.read.NotFoundException;
 import com.clinicalharmony.gateway.read.OntologyQueries;
 import com.clinicalharmony.gateway.read.Page;
 import com.clinicalharmony.gateway.read.PatientQueries;
+import com.clinicalharmony.gateway.read.SilverQueries;
 import com.clinicalharmony.gateway.read.SummaryQueries;
 import com.clinicalharmony.gateway.read.ValidationQueries;
 import com.clinicalharmony.gateway.security.SecurityConfig;
@@ -81,6 +82,8 @@ class GatewayWebTest {
     @MockitoBean
     private LineageQueries lineage;
     @MockitoBean
+    private SilverQueries silver;
+    @MockitoBean
     private SummaryQueries summary;
     @MockitoBean
     private DownstreamClient downstream;
@@ -148,7 +151,7 @@ class GatewayWebTest {
 
     @Test
     void viewerCanReadButNotAct() throws Exception {
-        when(summary.summary()).thenReturn(new SummaryQueries.Summary(Map.of(), Map.of(), Map.of(), 0, 0, 0, Map.of(), 0, null));
+        when(summary.summary()).thenReturn(new SummaryQueries.Summary(Map.of(), Map.of(), Map.of(), Map.of(), 0, 0, 0, Map.of(), 0, null));
         mvc.perform(get("/api/v1/summary").header(HttpHeaders.AUTHORIZATION, bearer(TestJwts.viewer())))
                 .andExpect(status().isOk());
         mvc.perform(post("/api/v1/pmi/match/run").header(HttpHeaders.AUTHORIZATION, bearer(TestJwts.viewer())))
@@ -316,11 +319,11 @@ class GatewayWebTest {
 
     @Test
     void bronzeListPassesTheHl7TypeFilterAndRejectsMalformedOnes() throws Exception {
-        when(lineage.bronzeMessages(any(), any(), any(), any(), anyInt(), anyInt())).thenReturn(Page.of(List.of(), 0, 15, 0));
+        when(lineage.bronzeMessages(any(), any(), any(), any(), any(), anyInt(), anyInt())).thenReturn(Page.of(List.of(), 0, 15, 0));
         mvc.perform(get("/api/v1/bronze/messages?messageType=HL7V2&hl7Type=ORU&size=15")
                         .header(HttpHeaders.AUTHORIZATION, bearer(TestJwts.viewer())))
                 .andExpect(status().isOk());
-        verify(lineage).bronzeMessages(null, "HL7V2", "ORU", null, 0, 15);
+        verify(lineage).bronzeMessages(null, "HL7V2", "ORU", null, null, 0, 15);
         for (String bad : List.of("oru", "ORU%5ER01", "ORUX", "'--")) {
             mvc.perform(get("/api/v1/bronze/messages?hl7Type=" + bad).header(HttpHeaders.AUTHORIZATION, bearer(TestJwts.viewer())))
                     .andExpect(status().isBadRequest());
@@ -335,7 +338,36 @@ class GatewayWebTest {
         mvc.perform(get("/api/v1/lineage?fhirResourceId=1&masterPatientId=1")
                         .header(HttpHeaders.AUTHORIZATION, bearer(TestJwts.viewer())))
                 .andExpect(status().isBadRequest());
+        mvc.perform(get("/api/v1/lineage?silverPatientId=1&bronzeMessageId=1")
+                        .header(HttpHeaders.AUTHORIZATION, bearer(TestJwts.viewer())))
+                .andExpect(status().isBadRequest());
         verifyNoInteractions(lineage);
+    }
+
+    @Test
+    void lineageTracesFromSilverAndBronzeToo() throws Exception {
+        when(lineage.forSilverPatient(681L)).thenReturn(new LineageQueries.LineageGraph("silver.patients", 681L, List.of(), List.of()));
+        when(lineage.forBronzeMessage(12L)).thenReturn(new LineageQueries.LineageGraph("bronze.raw_messages", 12L, List.of(), List.of()));
+        mvc.perform(get("/api/v1/lineage?silverPatientId=681").header(HttpHeaders.AUTHORIZATION, bearer(TestJwts.viewer())))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.target").value("silver.patients"));
+        mvc.perform(get("/api/v1/lineage?bronzeMessageId=12").header(HttpHeaders.AUTHORIZATION, bearer(TestJwts.viewer())))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.target").value("bronze.raw_messages"));
+    }
+
+    @Test
+    void silverEndpointsValidateTheirInputs() throws Exception {
+        when(silver.patients(any(), any(), any(), anyInt(), anyInt())).thenReturn(Page.of(List.of(), 0, 25, 0));
+        mvc.perform(get("/api/v1/silver/patients?q=NC700343&sourceSystem=NORTH_CLINIC&validationStatus=NOT_TRACKED")
+                        .header(HttpHeaders.AUTHORIZATION, bearer(TestJwts.viewer())))
+                .andExpect(status().isOk());
+        verify(silver).patients("NC700343", "NORTH_CLINIC", "NOT_TRACKED", 0, 25);
+        mvc.perform(get("/api/v1/silver/patients?validationStatus=MAYBE").header(HttpHeaders.AUTHORIZATION, bearer(TestJwts.viewer())))
+                .andExpect(status().isBadRequest());
+        mvc.perform(get("/api/v1/silver/rows/pg_user/1").header(HttpHeaders.AUTHORIZATION, bearer(TestJwts.viewer())))
+                .andExpect(status().isBadRequest());
+        mvc.perform(get("/api/v1/silver/patients")).andExpect(status().isUnauthorized());
     }
 
     @Test
@@ -410,7 +442,7 @@ class GatewayWebTest {
 
     @Test
     void actualCorsResponseExposesTheCorrelationId() throws Exception {
-        when(summary.summary()).thenReturn(new SummaryQueries.Summary(Map.of(), Map.of(), Map.of(), 0, 0, 0, Map.of(), 0, null));
+        when(summary.summary()).thenReturn(new SummaryQueries.Summary(Map.of(), Map.of(), Map.of(), Map.of(), 0, 0, 0, Map.of(), 0, null));
         mvc.perform(get("/api/v1/summary").header(HttpHeaders.ORIGIN, "http://localhost:3000")
                         .header(HttpHeaders.AUTHORIZATION, bearer(TestJwts.viewer())))
                 .andExpect(status().isOk())

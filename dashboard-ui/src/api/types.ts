@@ -61,6 +61,8 @@ export interface LastRun {
 export interface LayerSummary {
   bronzeByStatus: Record<string, number>;
   silver: Record<string, number>;
+  /** VALIDATED / PENDING_VALIDATION / NOT_TRACKED (seed rows) Silver patient counts */
+  silverByValidation: Record<string, number>;
   mastersByStatus: Record<string, number>;
   fhirResources: number;
   fhirUsCoreCompliant: number;
@@ -100,6 +102,7 @@ export interface MasterSummary {
   active: boolean;
   sourceSystems: string[] | null;
   updatedAt: string;
+  fhirResourceCount: number;
 }
 
 export interface SourceRecord {
@@ -476,6 +479,12 @@ export interface BronzeSummary {
   processedAt: string | null;
   /** MSH-9.1^9.2 from the raw header (e.g. "ORU^R01"); null for FHIR / claims and HL7 without a usable MSH-9. */
   hl7MessageType: string | null;
+  /** PID-5 as the message carries it ("LIAM NGUYEN"); null for FHIR / claims or an unreadable PID */
+  patientName: string | null;
+  /** PID-3.1, the patient's id in the sender's system */
+  patientMrn: string | null;
+  /** The Silver patient this message is about (PID-3.4 or MSH-4 + PID-3.1); null when not in Silver */
+  silverPatientId: number | null;
 }
 
 export interface LineageGraph {
@@ -488,7 +497,99 @@ export interface LineageGraph {
 export interface BronzeDetail {
   summary: BronzeSummary;
   rawPayload: string;
-  silverRows: { table: string; id: number }[];
+  /** Silver rows written from this message, each with the Silver patient it belongs to */
+  silverRows: { table: string; id: number; silverPatientId: number }[];
+}
+
+// ---- Silver (layer browser) --------------------------------------------------------------------
+
+export interface SilverPatientSummary {
+  id: number;
+  sourceSystem: string;
+  sourcePatientId: string;
+  mrn: string | null;
+  firstName: string | null;
+  lastName: string | null;
+  dateOfBirth: string | null;
+  gender: string | null;
+  /** VALIDATED | PENDING_VALIDATION | null (seed rows: not tracked) */
+  validationStatus: string | null;
+  validatedAt: string | null;
+  conditions: number;
+  observations: number;
+  medications: number;
+  allergies: number;
+  openFindings: number;
+  masterPatientId: number | null;
+  masterMatchStatus: string | null;
+  rawMessageId: number | null;
+  updatedAt: string;
+}
+
+export interface SilverSourceCount {
+  sourceSystem: string;
+  patients: number;
+}
+
+export type SilverRowKind = 'CONDITION' | 'OBSERVATION' | 'MEDICATION' | 'ALLERGY';
+
+export interface SilverRow {
+  kind: SilverRowKind;
+  id: number;
+  codeSystem: string | null;
+  code: string | null;
+  display: string | null;
+  status: string | null;
+  value: string | null;
+  date: string | null;
+  instant: string | null;
+  rawMessageId: number | null;
+  fhirResourceId: number | null;
+  fhirResourceType: string | null;
+  fhirId: string | null;
+  usCoreCompliant: boolean | null;
+}
+
+export interface SilverFinding {
+  id: number;
+  ruleCode: string;
+  severity: string;
+  entityType: string;
+  entityId: number | null;
+  message: string;
+  badValue: string | null;
+  suggestedValue: string | null;
+  resolved: boolean;
+  validatedAt: string | null;
+}
+
+export interface SilverPatientDetail {
+  summary: SilverPatientSummary;
+  addressLine1: string | null;
+  addressLine2: string | null;
+  city: string | null;
+  state: string | null;
+  postalCode: string | null;
+  phone: string | null;
+  validationError: string | null;
+  validationAttempts: number;
+  createdAt: string;
+  bronzeMessages: BronzeSummary[];
+  rows: SilverRow[];
+  findings: SilverFinding[];
+  gold: {
+    masterPatientId: number | null;
+    masterMatchStatus: string | null;
+    patientFhirResourceId: number | null;
+    patientFhirId: string | null;
+    patientUsCoreCompliant: boolean | null;
+  };
+}
+
+export interface SilverRowOwner {
+  table: string;
+  id: number;
+  silverPatientId: number;
 }
 
 export interface StepCount {

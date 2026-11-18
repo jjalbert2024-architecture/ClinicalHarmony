@@ -27,12 +27,12 @@ export function OverviewPage() {
         <QueryState query={summary} context="Loading the layer summary">
           {(s) => (
             <div className="layers">
-              <Layer title="Bronze" subtitle="raw messages" to="/lineage">
+              <Layer title="Bronze" subtitle="raw messages" to="/lineage?layer=bronze">
                 <Stat label="Messages" value={fmtNumber(sum(s.bronzeByStatus))} />
                 <StatusCounts counts={s.bronzeByStatus} />
               </Layer>
               <Arrow />
-              <Layer title="Silver" subtitle="parsed records" to="/patients">
+              <Layer title="Silver" subtitle="parsed records" to="/lineage?layer=silver">
                 <Stat label="Patients" value={fmtNumber(s.silver.patients)} />
                 <div className="mini">
                   {fmtNumber(s.silver.conditions)} conditions · {fmtNumber(s.silver.observations)} observations ·{' '}

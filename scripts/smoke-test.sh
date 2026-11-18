@@ -3,7 +3,8 @@
 # fhir-compliance-service, patient-index-service, api-gateway, dashboard-ui, (Phase 9a) the
 # MLLP → Kafka → bronze-listener-service path driven by data-generator, (Phase 9b) the
 # bronze.ingested → silver-transformer-service → silver.patient.changed path, and (Phase 9c) the
-# silver.patient.changed → gold-builder → Gold → gold.patient.changed → pmi-matcher path.
+# silver.patient.changed → gold-builder → Gold → gold.patient.changed → pmi-matcher path, plus the Data
+# Lineage layer browser's read models (section 21).
 # Assumes the stack is already up: `docker-compose up -d` from the repo root.
 # Usage: ./scripts/smoke-test.sh
 set -uo pipefail
@@ -1073,6 +1074,50 @@ for g in gold-builder pmi-matcher; do
   code="$(curl -s -o "$TMP/kafbat_$g.json" -w "%{http_code}" "$KAFBAT_URL/api/clusters/clinicalharmony/consumer-groups/$g")"
   [[ "$code" == "200" ]] && grep -q "\"groupId\":\"$g\"" "$TMP/kafbat_$g.json"; pass_if "Kafbat UI sees the $g consumer group" $? "HTTP $code"
 done
+
+section "21. Data Lineage layer browser — Silver list + patient, any-layer trace, links both ways"
+# Reuses section 19's hand-sent SMOKE_HOSPITAL patient ($SMRN, Silver id $SPID: an amoxicillin allergy + order).
+TOKEN="$(user_token dana)"
+check_http "Silver list: exact MRN $SMRN" GET "$GW/silver/patients?q=$SMRN" 200
+check_json "  → exactly that Silver patient, VALIDATED, on a Gold master" "$TMP/last_response.json" \
+  "(d['total'], d['items'][0]['id'], d['items'][0]['validationStatus'], d['items'][0]['masterPatientId'] is not None)" "(1, ${SPID:-0}, 'VALIDATED', True)"
+check_http "Silver list: a part of the MRN finds nothing" GET "$GW/silver/patients?q=SMK" 200
+check_json "  → 0" "$TMP/last_response.json" "sum(1 for i in d['items'] if i['sourcePatientId'] == '$SMRN')" "0"
+check_http "Silver patient page" GET "$GW/silver/patients/${SPID:-0}" 200
+check_json "  → its Bronze messages, the allergy linked to its Gold AllergyIntolerance, its master" "$TMP/last_response.json" \
+  "(len(d['bronzeMessages']) >= 2, [r['fhirResourceType'] for r in d['rows'] if r['kind'] == 'ALLERGY'], d['gold']['masterPatientId'] is not None, d['gold']['patientFhirId'])" \
+  "(True, ['AllergyIntolerance'], True, 'silver-patient-${SPID:-0}')"
+ALLERGY_ID="$(psql_id "SELECT id FROM silver.allergies WHERE patient_id = ${SPID:-0}")"
+check_http "lineage ref silver.allergies/$ALLERGY_ID resolves to its patient" GET "$GW/silver/rows/allergies/${ALLERGY_ID:-0}" 200
+check_json "  → Silver patient ${SPID:-0}" "$TMP/last_response.json" "d['silverPatientId']" "${SPID:-0}"
+check_http "trace from the Silver patient (Silver patient 681 used to 404 as a 'master id')" GET "$GW/lineage?silverPatientId=${SPID:-0}" 200
+check_json "  → its Gold lineage (patient + allergy + order …) and its Bronze messages" "$TMP/last_response.json" \
+  "(d['target'], len(d['records']) >= 3, 'allergies' in {r['sourceTable'] for r in d['records']}, len(d['bronzeMessages']) >= 2)" "('silver.patients', True, True, True)"
+ADMIT_ID="$(psql_id "SELECT id FROM bronze.raw_messages WHERE raw_payload LIKE '%|SMKA-$SEED|%'")"
+check_http "trace from the allergy admit's Bronze message #$ADMIT_ID" GET "$GW/lineage?bronzeMessageId=${ADMIT_ID:-0}" 200
+check_json "  → reaches the AllergyIntolerance built from it" "$TMP/last_response.json" \
+  "(d['target'], any(r['sourceTable'] == 'allergies' and r['details']['target'].startswith('AllergyIntolerance/') for r in d['records']))" "('bronze.raw_messages', True)"
+check_http "Bronze message page lists its Silver rows" GET "$GW/bronze/messages/${ADMIT_ID:-0}" 200
+check_json "  → each with its Silver patient (for the link)" "$TMP/last_response.json" \
+  "(len(d['silverRows']) >= 2, {r['silverPatientId'] for r in d['silverRows']})" "(True, {${SPID:-0}})"
+check_http "Gold tab: masters carry their FHIR resource count" GET "$GW/patients?q=$SMRN" 200
+check_json "  → as many as Gold has for that master" "$TMP/last_response.json" "d['items'][0]['fhirResourceCount']" \
+  "$(psql_id "SELECT count(*) FROM gold.fhir_resources WHERE master_patient_id = (SELECT master_patient_id FROM gold.patient_source_xref WHERE silver_patient_id = ${SPID:-0})")"
+check_http "layer cards: /summary counts Silver patients by validation status" GET "$GW/summary" 200
+check_json "  → they add up to all Silver patients" "$TMP/last_response.json" "sum(d['silverByValidation'].values()) == d['silver']['patients']" "True"
+check_http "Bronze search by the patient's MRN $SMRN" GET "$GW/bronze/messages?q=$SMRN&size=50" 200
+check_json "  → its admit + order (+ any repeats), each naming the patient from PID and linking Silver patient ${SPID:-0}" "$TMP/last_response.json" \
+  "(d['total'] >= 2, {(i['patientName'], i['patientMrn'], i['silverPatientId']) for i in d['items']})" \
+  "(True, {('ALLERGY SMOKE', '$SMRN', ${SPID:-0})})"
+check_http "Bronze search by name part (allergy smoke)" GET "$GW/bronze/messages?q=allergy%20smoke&size=200" 200
+check_json "  → finds them too" "$TMP/last_response.json" "any(i['patientMrn'] == '$SMRN' for i in d['items'])" "True"
+check_http "the unmappable ADT (no DOB) still shows its patient, not in Silver" GET "$GW/bronze/messages/${FAILED_ID:-0}" 200
+check_json "  → PID name + MRN, no Silver patient" "$TMP/last_response.json" \
+  "(d['summary']['patientName'], d['summary']['patientMrn'], d['summary']['silverPatientId'])" "('PATIENT NODOB', 'SMKF$SEED', None)"
+check_http "unknown Silver patient → 404" GET "$GW/silver/patients/999999999" 404
+check_http "unknown validation status → 400" GET "$GW/silver/patients?validationStatus=MAYBE" 400
+check_http "two trace targets at once → 400" GET "$GW/lineage?silverPatientId=1&bronzeMessageId=1" 400
+TOKEN=""
 
 echo
 echo "=== Summary: $PASS passed, $FAIL failed ==="

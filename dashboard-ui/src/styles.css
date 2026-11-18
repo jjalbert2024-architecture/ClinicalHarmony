@@ -1000,3 +1000,44 @@ details summary {
   gap: 8px;
   margin-top: 14px;
 }
+
+/* Data Lineage layer browser: the Overview's layer cards, as tabs */
+.layer-tabs {
+  margin-bottom: 14px;
+}
+button.layer-tab {
+  font: inherit;
+  text-align: left;
+  background: var(--surface);
+  cursor: pointer;
+}
+button.layer-tab.selected {
+  background: var(--surface-2);
+  box-shadow: 0 0 0 2px var(--link) inset;
+}
+.medallion-path {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+  align-items: center;
+  margin-bottom: 14px;
+}
+.path-step {
+  border: 1px solid var(--border);
+  border-left: 4px solid var(--muted);
+  border-radius: var(--radius);
+  padding: 4px 10px;
+  background: var(--surface);
+}
+.path-bronze {
+  border-left-color: var(--bronze);
+}
+.path-silver {
+  border-left-color: var(--silver);
+}
+.path-gold {
+  border-left-color: var(--gold);
+}
+tr.row-highlight td {
+  background: var(--surface-2);
+}

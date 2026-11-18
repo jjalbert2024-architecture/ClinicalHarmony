@@ -6,6 +6,7 @@ import { FhirPage } from '../views/fhir/FhirPage';
 import { FhirToolsPage } from '../views/fhir/FhirToolsPage';
 import { BronzeMessagePage } from '../views/lineage/BronzeMessagePage';
 import { LineagePage } from '../views/lineage/LineagePage';
+import { SilverPatientPage, SilverRowRedirect } from '../views/lineage/SilverPatientPage';
 import { OntologyPage } from '../views/ontology/OntologyPage';
 import { OverviewPage } from '../views/overview/OverviewPage';
 import { CandidatePage } from '../views/patients/CandidatePage';
@@ -50,6 +51,8 @@ export function AppRoutes() {
         <Route path="fhir/:type/:fhirId" element={<FhirResourcePage />} />
         <Route path="lineage" element={<LineagePage />} />
         <Route path="lineage/bronze/:messageId" element={<BronzeMessagePage />} />
+        <Route path="lineage/silver/:silverPatientId" element={<SilverPatientPage />} />
+        <Route path="lineage/silver/:table/:rowId" element={<SilverRowRedirect />} />
         <Route path="*" element={<NotFound />} />
       </Route>
     </Routes>

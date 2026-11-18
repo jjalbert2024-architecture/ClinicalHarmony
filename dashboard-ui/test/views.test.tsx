@@ -386,14 +386,15 @@ describe('Data Lineage', () => {
     const card = (await screen.findByRole('heading', { name: 'Bronze messages' })).closest('section')!;
     await waitFor(() => expect(within(card).getAllByRole('row').length).toBeGreaterThan(1));
     const headers = within(card).getAllByRole('columnheader').map((h) => h.textContent);
-    expect(headers).toEqual(['Message', 'Source', 'Format', 'HL7 type', 'Status', 'Bytes', 'Received']);
+    expect(headers).toEqual(['Message', 'Patient', 'Source', 'Format', 'HL7 type', 'Status', 'Bytes', 'Received']);
     const cells = (id: number) =>
       within(within(card).getByRole('link', { name: `#${id}` }).closest('tr')!)
         .getAllByRole('cell')
         .map((c) => c.textContent);
-    expect(cells(1279).slice(2, 4)).toEqual(['HL7 v2', 'ADT^A08']);
-    expect(cells(1275).slice(2, 4)).toEqual(['Claims CSV', '—']);
-    expect(cells(1270).slice(2, 4)).toEqual(['HL7 v2', '—']); // quarantined: no usable MSH-9
+    expect(cells(1279).slice(3, 5)).toEqual(['HL7 v2', 'ADT^A08']);
+    expect(cells(1275).slice(3, 5)).toEqual(['Claims CSV', '—']);
+    expect(cells(1270).slice(3, 5)).toEqual(['HL7 v2', '—']); // quarantined: no usable MSH-9
+    expect(cells(1270)[1]).toBe('—'); // …and no readable PID: no patient
     expect(within(card).getByLabelText('Payload format')).toHaveDisplayValue('Any payload format');
     expect(within(card).getByLabelText('HL7 message type')).toHaveDisplayValue('Any HL7 message type');
   });
@@ -429,21 +430,25 @@ describe('Data Lineage', () => {
     expect(screen.getByLabelText('HL7 message type')).toBeDisabled();
   });
 
-  it('lists the Silver rows a Bronze message produced, by table', async () => {
+  it('links each Silver row a Bronze message produced to its Silver patient', async () => {
     server.use(
       http.get(`${API}/bronze/messages/:id`, ({ request }) =>
         reply(request, {
           ...fixtures.bronzeMessage,
           silverRows: [
-            { table: 'silver.medications', id: 25 },
-            { table: 'silver.allergies', id: 7 },
+            { table: 'silver.patients', id: 40, silverPatientId: 40 },
+            { table: 'silver.allergies', id: 7, silverPatientId: 40 },
           ],
         }),
       ),
     );
     renderApp(`/lineage/bronze/${fixtures.bronzeMessage.summary.id}`);
-    expect(await screen.findByText('silver.medications #25')).toBeInTheDocument();
-    expect(screen.getByText('silver.allergies #7')).toBeInTheDocument();
+    expect(await screen.findByRole('link', { name: 'silver.patients #40' })).toHaveAttribute('href', '/lineage/silver/40');
+    expect(screen.getByRole('link', { name: 'silver.allergies #7' })).toHaveAttribute('href', '/lineage/silver/40#allergies-7');
+    expect(screen.getByRole('link', { name: 'Trace this message into Gold' })).toHaveAttribute(
+      'href',
+      `/lineage?bronzeMessageId=${fixtures.bronzeMessage.summary.id}`,
+    );
     expect(screen.queryByText(/silver\.silver\./)).not.toBeInTheDocument();
   });
 
@@ -453,5 +458,191 @@ describe('Data Lineage', () => {
     expect(screen.getByText(/HL7V2 ADT\^A01 from CITY_HOSPITAL/)).toBeInTheDocument();
     expect(displayPayload('HL7V2', 'MSH|a\rPID|b\r')).toBe('MSH|a\nPID|b\n');
     expect(displayPayload('FHIR_JSON', '{"a":1}')).toBe('{\n  "a": 1\n}');
+  });
+});
+
+describe('Data Lineage layer browser', () => {
+  const hugo = fixtures.silverPatient.summary;
+
+  it('shows the three layers as tabs and switches the list below', async () => {
+    renderApp('/lineage');
+    const tabs = await screen.findAllByRole('tab');
+    expect(tabs.map((t) => t.getAttribute('aria-selected'))).toEqual(['true', 'false', 'false']);
+    expect(await screen.findByRole('heading', { name: 'Bronze messages' })).toBeInTheDocument();
+
+    await userEvent.click(screen.getByRole('tab', { name: /Silver/ }));
+    expect(await screen.findByRole('heading', { name: 'Silver patients' })).toBeInTheDocument();
+    const first = fixtures.silverPatients.items[0]!;
+    expect(await screen.findByRole('link', { name: `#${first.id}` })).toHaveAttribute('href', `/lineage/silver/${first.id}`);
+    expect(screen.getByText(`${first.sourceSystem} · ${first.sourcePatientId}`)).toBeInTheDocument();
+
+    await userEvent.click(screen.getByRole('tab', { name: /Gold/ }));
+    expect(await screen.findByRole('heading', { name: 'Gold master patients' })).toBeInTheDocument();
+    await waitFor(() => expect(calls('/patients').length).toBeGreaterThan(0));
+    expect(screen.getByRole('tab', { name: /Gold/ })).toHaveAttribute('aria-selected', 'true');
+  });
+
+  it('filters Silver patients by MRN, source and validation status', async () => {
+    renderApp('/lineage?layer=silver');
+    await screen.findByRole('heading', { name: 'Silver patients' });
+    await userEvent.type(screen.getByLabelText('Silver patient search'), 'NC700343');
+    await userEvent.click(screen.getByRole('button', { name: 'Search' }));
+    await waitFor(() => expect(calls('/silver/patients').at(-1)!.query.get('q')).toBe('NC700343'));
+    const source = fixtures.silverSourceSystems[0]!.sourceSystem;
+    await screen.findByRole('option', { name: new RegExp(`^${source} \\(`) });
+    await userEvent.selectOptions(screen.getByLabelText('Silver source system'), source);
+    await waitFor(() => expect(calls('/silver/patients').at(-1)!.query.get('sourceSystem')).toBe(source));
+    await userEvent.selectOptions(screen.getByLabelText('Validation status'), 'NOT_TRACKED');
+    await waitFor(() => expect(calls('/silver/patients').at(-1)!.query.get('validationStatus')).toBe('NOT_TRACKED'));
+  });
+
+  it('traces from a Silver patient id, with every step ref a link', async () => {
+    renderApp(`/lineage?layer=silver&silverPatientId=${hugo.id}`);
+    expect(await screen.findByRole('link', { name: 'open Silver patient' })).toHaveAttribute('href', `/lineage/silver/${hugo.id}`);
+    expect(calls('/lineage').at(-1)!.query.get('silverPatientId')).toBe(String(hugo.id));
+    expect(screen.getByLabelText('Record kind')).toHaveDisplayValue('Silver patient id');
+    const allergy = fixtures.lineageSilver.records.find((r) => r.sourceTable === 'allergies')!;
+    expect(screen.getAllByRole('link', { name: `silver.allergies/${allergy.sourceId}` })[0]).toHaveAttribute(
+      'href',
+      `/lineage/silver/allergies/${allergy.sourceId}`,
+    );
+    const fhirTarget = allergy.details.target as string;
+    expect(screen.getAllByRole('link', { name: `gold.fhir_resources/${allergy.targetId}` })[0]).toHaveAttribute(
+      'href',
+      `/fhir/${fhirTarget.split('/')[0]}/${fhirTarget.split('/')[1]}`,
+    );
+  });
+
+  it('shows a Silver patient between its Bronze messages and its Gold master', async () => {
+    renderApp(`/lineage/silver/${hugo.id}`);
+    expect(await screen.findByRole('heading', { name: `Silver patient #${hugo.id} · ${hugo.firstName} ${hugo.lastName}` })).toBeInTheDocument();
+    const path = screen.getByRole('navigation', { name: 'Where this record sits' });
+    const bronzeId = fixtures.silverPatient.bronzeMessages[0]!.id;
+    expect(within(path).getByRole('link', { name: `#${bronzeId}` })).toHaveAttribute('href', `/lineage/bronze/${bronzeId}`);
+    const master = fixtures.silverPatient.gold.masterPatientId!;
+    expect(within(path).getByRole('link', { name: `#${master}` })).toHaveAttribute('href', `/patients/${master}`);
+    const allergy = fixtures.silverPatient.rows.find((r) => r.kind === 'ALLERGY')!;
+    expect(screen.getByRole('link', { name: `AllergyIntolerance/${allergy.fhirId}` })).toHaveAttribute(
+      'href',
+      `/fhir/AllergyIntolerance/${allergy.fhirId}`,
+    );
+    expect(screen.getByRole('heading', { name: /Allergies/ })).toBeInTheDocument();
+    expect(screen.getByRole('heading', { name: 'Validation findings' })).toBeInTheDocument();
+    const finding = fixtures.silverPatient.findings.find((f) => f.entityType === 'OBSERVATION' && f.entityId !== null)!;
+    expect(screen.getAllByRole('link', { name: `OBSERVATION #${finding.entityId}` })[0]).toHaveAttribute(
+      'href',
+      `/lineage/silver/${hugo.id}#observations-${finding.entityId}`,
+    );
+  });
+
+  it('opens a lineage ref like silver.allergies/165 on its Silver patient', async () => {
+    renderApp('/lineage/silver/allergies/165');
+    expect(await screen.findByRole('heading', { name: new RegExp(`^Silver patient #${hugo.id}`) })).toBeInTheDocument();
+    expect(calls('/silver/rows/allergies/165')).toHaveLength(1);
+  });
+
+  it('traces a patient by MRN from the trace box (exact match, one per source)', async () => {
+    server.use(
+      http.get(`${API}/silver/patients`, ({ request }) =>
+        reply(request, { items: [hugo], page: 0, size: 50, total: 1, totalPages: 1 }),
+      ),
+    );
+    renderApp('/lineage');
+    await userEvent.type(await screen.findByLabelText('Record id'), 'nc700343');
+    await userEvent.click(screen.getByRole('button', { name: 'Trace' }));
+    await waitFor(() => expect(calls('/lineage').at(-1)?.query.get('silverPatientId')).toBe(String(hugo.id)));
+    expect(calls('/silver/patients').at(-1)!.query.get('q')).toBe('nc700343');
+    expect(screen.getByRole('status')).toHaveTextContent(`${hugo.sourceSystem} · ${hugo.sourcePatientId}`);
+    expect(screen.getByLabelText('Record id')).toHaveValue(String(hugo.id));
+
+    // as a master patient: the same MRN traces that patient's master
+    await userEvent.selectOptions(screen.getByLabelText('Record kind'), 'masterPatientId');
+    await userEvent.clear(screen.getByLabelText('Record id'));
+    await userEvent.type(screen.getByLabelText('Record id'), 'NC700343');
+    await userEvent.click(screen.getByRole('button', { name: 'Trace' }));
+    await waitFor(() => expect(calls('/lineage').at(-1)?.query.get('masterPatientId')).toBe(String(hugo.masterPatientId)));
+  });
+
+  it('asks which one when an MRN exists at two sources, and says so when none matches', async () => {
+    const twin = { ...hugo, id: hugo.id + 1, sourceSystem: 'CITY_HOSPITAL' };
+    server.use(
+      http.get(`${API}/silver/patients`, ({ request }) => {
+        const q = new URL(request.url).searchParams.get('q');
+        const items = q === 'NC700343' ? [hugo, twin] : [{ ...hugo, sourcePatientId: 'OTHER', mrn: 'OTHER' }];
+        return reply(request, { items, page: 0, size: 50, total: items.length, totalPages: 1 });
+      }),
+    );
+    renderApp('/lineage');
+    await userEvent.type(await screen.findByLabelText('Record id'), 'NC700343');
+    await userEvent.click(screen.getByRole('button', { name: 'Trace' }));
+    expect(await screen.findByText(/is the MRN of 2 Silver patients/)).toBeInTheDocument();
+    await userEvent.click(screen.getByRole('button', { name: new RegExp(`^CITY_HOSPITAL · ${hugo.sourcePatientId}`) }));
+    await waitFor(() => expect(calls('/lineage').at(-1)?.query.get('silverPatientId')).toBe(String(twin.id)));
+
+    await userEvent.clear(screen.getByLabelText('Record id'));
+    await userEvent.type(screen.getByLabelText('Record id'), 'Patel');   // a name matches, but only an exact MRN counts
+    await userEvent.click(screen.getByRole('button', { name: 'Trace' }));
+    expect(await screen.findByText(/No Silver patient has MRN or source id "Patel"/)).toBeInTheDocument();
+  });
+
+  it('does not strip letters from a Bronze or FHIR id: it explains instead', async () => {
+    renderApp('/lineage');
+    await userEvent.selectOptions(await screen.findByLabelText('Record kind'), 'bronzeMessageId');
+    await userEvent.type(screen.getByLabelText('Record id'), 'NC700343');
+    await userEvent.click(screen.getByRole('button', { name: 'Trace' }));
+    expect(await screen.findByText(/A bronze message id is a number/)).toBeInTheDocument();
+    expect(calls('/lineage').filter((c) => c.query.has('bronzeMessageId'))).toHaveLength(0);
+  });
+
+  it('keeps Transformations in pipeline order, saying so, and sorts by date or records on click', async () => {
+    renderApp('/lineage');
+    expect(await screen.findByText(/In pipeline order, not by date/)).toBeInTheDocument();
+    const steps = () =>
+      within(screen.getByRole('heading', { name: 'Transformations recorded' }).closest('section')!)
+        .getAllByRole('row')
+        .slice(1)
+        .map((r) => r.querySelector('td')!.textContent);
+    await waitFor(() => expect(steps()).toEqual(fixtures.lineageSummary.map((r) => r.step)));
+    await userEvent.click(screen.getByRole('button', { name: /^Last/ }));
+    const byDate = [...fixtures.lineageSummary]
+      .sort((a, b) => new Date(b.lastTransformedAt!).getTime() - new Date(a.lastTransformedAt!).getTime())
+      .map((r) => r.step);
+    expect(steps()).toEqual(byDate);
+    expect(steps().at(-1)).toBe('SEED_LOAD'); // the oldest step goes to the bottom
+    await userEvent.click(screen.getByRole('button', { name: /^Records/ }));
+    expect(steps()[0]).toBe('FHIR_MAP');
+    await userEvent.click(screen.getByRole('button', { name: /^Step/ }));
+    expect(steps()).toEqual(fixtures.lineageSummary.map((r) => r.step));
+  });
+
+  it('shows who each Bronze message is about, linked to the Silver patient, and searches by it', async () => {
+    renderApp('/lineage');
+    const withPatient = fixtures.bronzeMessages.items.find((m) => m.silverPatientId !== null)!;
+    const link = (await screen.findAllByRole('link', { name: withPatient.patientName! }))[0]!;
+    expect(link).toHaveAttribute('href', `/lineage/silver/${withPatient.silverPatientId}`);
+    expect(within(link.closest('td')!).getByText(withPatient.patientMrn!)).toBeInTheDocument();
+
+    await userEvent.type(screen.getByLabelText('Bronze search'), 'NGUYEN');
+    await userEvent.click(within(screen.getByRole('heading', { name: 'Bronze messages' }).closest('section')!).getByRole('button', { name: 'Search' }));
+    await waitFor(() => expect(calls('/bronze/messages').at(-1)!.query.get('q')).toBe('NGUYEN'));
+  });
+
+  it('marks a Bronze patient who never reached Silver', async () => {
+    const m = { ...fixtures.bronzeMessages.items[0]!, id: 9001, patientName: 'ZED NOBODY', patientMrn: 'BRZ-404', silverPatientId: null };
+    server.use(
+      http.get(`${API}/bronze/messages`, ({ request }) => reply(request, { items: [m], page: 0, size: 15, total: 1, totalPages: 1 })),
+    );
+    renderApp('/lineage');
+    const cell = (await screen.findByText('ZED NOBODY')).closest('td')!;
+    expect(within(cell).getByText('not in Silver')).toBeInTheDocument();
+    expect(within(cell).queryByRole('link')).not.toBeInTheDocument();
+  });
+
+  it('names the patient at the top of a Bronze message page', async () => {
+    const detail = { ...fixtures.bronzeMessage, summary: { ...fixtures.bronzeMessage.summary, patientName: 'LIAM NGUYEN', patientMrn: 'CH799449', silverPatientId: 1849 } };
+    server.use(http.get(`${API}/bronze/messages/:id`, ({ request }) => reply(request, detail)));
+    renderApp(`/lineage/bronze/${detail.summary.id}`);
+    expect(await screen.findByText('LIAM NGUYEN')).toBeInTheDocument();
+    expect(screen.getByRole('link', { name: 'Silver patient #1849' })).toHaveAttribute('href', '/lineage/silver/1849');
   });
 });

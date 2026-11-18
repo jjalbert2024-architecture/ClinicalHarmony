@@ -13,6 +13,7 @@ import fhirTypes from './fixtures/fhir-types.json';
 import fhirValidate from './fixtures/fhir-validate.json';
 import health from './fixtures/health.json';
 import lineageFhir from './fixtures/lineage-fhir.json';
+import lineageSilver from './fixtures/lineage-silver.json';
 import lineageSummary from './fixtures/lineage-summary.json';
 import meDana from './fixtures/me-dana.json';
 import ontologyCoverage from './fixtures/ontology-coverage.json';
@@ -22,6 +23,9 @@ import pmiCandidate from './fixtures/pmi-candidate.json';
 import pmiCandidates from './fixtures/pmi-candidates.json';
 import pmiDecided from './fixtures/pmi-decided.json';
 import pmiRuns from './fixtures/pmi-runs.json';
+import silverPatient from './fixtures/silver-patient.json';
+import silverPatients from './fixtures/silver-patients.json';
+import silverSourceSystems from './fixtures/silver-source-systems.json';
 import summary from './fixtures/summary.json';
 import timeline from './fixtures/timeline.json';
 import validationFindings from './fixtures/validation-findings.json';
@@ -33,8 +37,8 @@ export const API = `${GATEWAY}/api/v1`;
 
 export const fixtures = {
   bronzeMessage, bronzeMessages, config, fhirResourceCondition, fhirResources, fhirSourceSystems, fhirTypes, fhirValidate, health,
-  lineageFhir, lineageSummary, meDana, ontologyCoverage, patientMerged, patients, pmiCandidate, pmiCandidates,
-  pmiDecided, pmiRuns, summary, timeline, validationFindings, validationRules, validationSummary,
+  lineageFhir, lineageSilver, lineageSummary, meDana, ontologyCoverage, patientMerged, patients, pmiCandidate, pmiCandidates,
+  pmiDecided, pmiRuns, silverPatient, silverPatients, silverSourceSystems, summary, timeline, validationFindings, validationRules, validationSummary,
 };
 
 export const meVic = {
@@ -113,7 +117,16 @@ export const defaultHandlers = [
   get('/fhir/resources', fixtures.fhirResources),
   get('/fhir/source-systems', fixtures.fhirSourceSystems),
   get('/fhir/resources/:type/:id', fixtures.fhirResourceCondition),
-  get('/lineage', fixtures.lineageFhir),
+  // a Silver-patient trace gets the Silver lineage fixture; every other trace the FHIR-resource one
+  http.get(`${API}/lineage`, ({ request }) =>
+    reply(request, new URL(request.url).searchParams.has('silverPatientId') ? fixtures.lineageSilver : fixtures.lineageFhir),
+  ),
+  get('/silver/patients', fixtures.silverPatients),
+  get('/silver/patients/:id', fixtures.silverPatient),
+  get('/silver/source-systems', fixtures.silverSourceSystems),
+  http.get(`${API}/silver/rows/:table/:id`, ({ request, params }) =>
+    reply(request, { table: params.table, id: Number(params.id), silverPatientId: fixtures.silverPatient.summary.id }),
+  ),
   get('/lineage/summary', fixtures.lineageSummary),
   get('/bronze/messages', fixtures.bronzeMessages),
   get('/bronze/messages/:id', fixtures.bronzeMessage),

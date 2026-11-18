@@ -1,0 +1,54 @@
+[
+    {
+        "sourceSystem": "CITY_HOSPITAL",
+        "patients": 223
+    },
+    {
+        "sourceSystem": "DEMO_CLAIMS",
+        "patients": 3
+    },
+    {
+        "sourceSystem": "DEMO_EPIC",
+        "patients": 6
+    },
+    {
+        "sourceSystem": "DEMO_LAB",
+        "patients": 3
+    },
+    {
+        "sourceSystem": "NORTH_CLINIC",
+        "patients": 270
+    },
+    {
+        "sourceSystem": "SEED_CERNER_FHIR",
+        "patients": 2
+    },
+    {
+        "sourceSystem": "SEED_CLAIMS_CSV",
+        "patients": 3
+    },
+    {
+        "sourceSystem": "SEED_EPIC_ADT",
+        "patients": 3
+    },
+    {
+        "sourceSystem": "SEED_LAB_LIS",
+        "patients": 1
+    },
+    {
+        "sourceSystem": "SMOKE_CLAIMS",
+        "patients": 27
+    },
+    {
+        "sourceSystem": "SMOKE_EPIC",
+        "patients": 104
+    },
+    {
+        "sourceSystem": "SMOKE_HOSPITAL",
+        "patients": 12
+    },
+    {
+        "sourceSystem": "SMOKE_LAB",
+        "patients": 27
+    }
+]

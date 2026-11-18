@@ -645,7 +645,7 @@ needs read models no service exposes, not routing). User decisions at Phase 7 sc
 - **Gotcha**: local `mvn package` fails offline (maven-jar-plugin 3.4.2's plexus-archiver etc. aren't in
   ~/.m2) — Docker builds download them in-container; locally run from `target/classes` +
   `dependency:build-classpath` if needed.
-- **Tests (50)**: `DownstreamClientTest` (JDK `HttpServer` stub with delays: token, correlation id,
+- **Tests (55)**: `DownstreamClientTest` (JDK `HttpServer` stub with delays: token, correlation id,
   401 retry, 4xx/5xx/timeout/down/Keycloak-down), `@WebMvcTest` `GatewayWebTest` with the real security
   chain (`@EnableConfigurationProperties(GatewayProperties)` + `@Import` security/CORS/`TestJwts`), and
   `ApiGatewayIntegrationTest` (Testcontainers, datasource = the read-only role, stubbed services,
@@ -682,7 +682,7 @@ scoping (all recommended):
   React StrictMode double-runs effects so the `/callback` exchange is memoized per attempt
   (`startBoot` in `main.tsx`); the Vite dev server needs port 3000 (the only registered redirect
   URI), so stop the compose container first.
-- **Tests (66, Vitest + jsdom + Testing Library + MSW)**: the MSW gateway stub serves REAL responses
+- **Tests (78, Vitest + jsdom + Testing Library + MSW)**: the MSW gateway stub serves REAL responses
   captured from the live gateway (`test/fixtures/`), and any unhandled request fails the test.
   No Playwright (2 GB image); instead smoke section 17 + `dashboard-ui/CHECKLIST.md` (12-step manual
   click-through, replaces a Postman collection for this phase).
@@ -841,6 +841,27 @@ Phases are meant to be fully complete before the next starts. Current state as o
     OWN branch after 9c. Kafka deps = Boot-managed spring-kafka 3.3.16 / kafka-clients 3.9.2, already in ~/.m2.
   - **9d** Full generator (FHIR / claims / C-CDA, cross-feed duplicates, defects, `--seed`/`--reset`/`--trickle`).
   - **9e** Observability: logs to Datadog or Splunk (undecided) + dashboards/alerts.
+  - **Data Lineage layer browser** (built, in review, 2026-11-18, branch `lineage-layer-browser`; the user's idea from 9b
+    testing, design agreed 2026-11-17: cards-as-tabs + one full-width list + linked detail pages, NOT 3 side-by-side tables).
+    Gateway: new `read/SilverQueries` (`/api/v1/silver/patients` list — newest first, `q` = name part / exact MRN or source
+    id / Silver id, `sourceSystem`, `validationStatus` VALIDATED|PENDING_VALIDATION|NOT_TRACKED; `/silver/patients/{id}` —
+    Bronze messages, every condition/observation/medication/allergy with its Gold FHIR resource via the FHIR_MAP lineage
+    row, findings, master; `/silver/source-systems`; `/silver/rows/{table}/{id}` → its patient), `/lineage` also takes
+    `silverPatientId` / `bronzeMessageId` (exactly one of four), Bronze detail `silverRows[].silverPatientId`, `/summary`
+    `silverByValidation` + `silver.allergies`, `MasterSummary.fhirResourceCount`. Gotcha: a Java text block strips leading
+    spaces, so SQL fragments concatenated after another (`FROM`, `LEFT JOIN LATERAL`) need an explicit `" " +`.
+    UI: `LineagePage` (trace with 4 kinds, `LayerTabs` from `/summary`, Bronze/Silver/Gold cards, `?layer=`),
+    `SilverPatientPage` (path strip, demographics, validation, Bronze messages, rows per kind with Bronze + FHIR links,
+    findings linking to their row `#<table>-<id>`), `SilverRowRedirect` (`/lineage/silver/:table/:rowId`), `refLink` links
+    silver.* and gold.fhir_resources refs, Bronze page Silver rows + "Trace this message", patient sources link to Silver,
+    Overview Bronze/Silver cards → the tabs. Follow-ups found by the user while testing: the trace box accepts an MRN for
+    the Silver / master kinds (exact match via `/silver/patients?q=`; several sources → pick one; it used to strip the
+    letters silently and 404 on the digits), and "Transformations recorded" says it's pipeline order (not by date) with
+    Records / Last sortable client-side; Bronze list gains a **Patient** column + search (`/bronze/messages?q=` = PID name part
+    or the Silver patient's, exact PID-3.1 MRN, or message id): `BronzeSummary.patientName/patientMrn/silverPatientId` parsed
+    from the PID segment in SQL (`BRONZE_FROM` lateral: first PID-3 repetition, source = PID-3.4 else MSH-4 — the
+    transformer's patient key), shown on the Bronze message page too. Tests: gateway 55, UI 78 (fixtures silver-patients / silver-patient /
+    silver-source-systems / lineage-silver new, summary re-captured), smoke 360/360 (twice) incl. new section 21, CHECKLIST rows 25–36 (18 reworded).
   - **Dashboard ordering fixes** (done, merged as PR #16 on 2026-11-17, branch `pmi-review-recent-decisions`):
     patient-index `MatchCandidateRepository.list(status, runId, limit)`: PENDING `score DESC, id`, every
     other view `COALESCE(reviewed_at, created_at) DESC, id DESC`; pseudo-statuses `DECIDED` (ACCEPTED +

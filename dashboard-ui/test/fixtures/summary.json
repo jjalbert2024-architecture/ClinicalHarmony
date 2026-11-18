@@ -1,30 +1,38 @@
 {
-  "bronzeByStatus": {
-    "PENDING": 118,
-    "QUARANTINED": 71
-  },
-  "silver": {
-    "patients": 41,
-    "conditions": 5,
-    "observations": 6,
-    "medications": 4
-  },
-  "mastersByStatus": {
-    "MATCHED": 32,
-    "MERGED": 9
-  },
-  "fhirResources": 77,
-  "fhirUsCoreCompliant": 73,
-  "lineageRecords": 158,
-  "openFindingsBySeverity": {
-    "ERROR": 164,
-    "WARNING": 158
-  },
-  "pendingReviews": 0,
-  "lastMatchRun": {
-    "id": 30,
-    "status": "COMPLETED",
-    "startedAt": "2026-11-13T07:51:18.944707Z",
-    "finishedAt": "2026-11-13T07:51:18.951213Z"
-  }
+    "bronzeByStatus": {
+        "FAILED": 32,
+        "PENDING": 202,
+        "PROCESSED": 1398,
+        "QUARANTINED": 281
+    },
+    "silver": {
+        "patients": 684,
+        "conditions": 970,
+        "observations": 1584,
+        "medications": 137,
+        "allergies": 150
+    },
+    "silverByValidation": {
+        "NOT_TRACKED": 179,
+        "VALIDATED": 505
+    },
+    "mastersByStatus": {
+        "MATCHED": 607,
+        "MERGED": 63,
+        "PROVISIONAL": 14
+    },
+    "fhirResources": 3546,
+    "fhirUsCoreCompliant": 3542,
+    "lineageRecords": 4880,
+    "openFindingsBySeverity": {
+        "ERROR": 204,
+        "WARNING": 695
+    },
+    "pendingReviews": 7,
+    "lastMatchRun": {
+        "id": 146,
+        "status": "COMPLETED",
+        "startedAt": "2026-11-18T14:25:28.732115Z",
+        "finishedAt": "2026-11-18T14:25:28.901198Z"
+    }
 }

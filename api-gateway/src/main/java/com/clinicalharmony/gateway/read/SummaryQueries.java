@@ -16,7 +16,9 @@ public class SummaryQueries {
     public record LastRun(long id, String status, OffsetDateTime startedAt, OffsetDateTime finishedAt) {
     }
 
-    public record Summary(Map<String, Long> bronzeByStatus, Map<String, Long> silver, Map<String, Long> mastersByStatus,
+    /** @param silverByValidation VALIDATED / PENDING_VALIDATION / NOT_TRACKED (seed rows) patient counts */
+    public record Summary(Map<String, Long> bronzeByStatus, Map<String, Long> silver, Map<String, Long> silverByValidation,
+                          Map<String, Long> mastersByStatus,
                           long fhirResources, long fhirUsCoreCompliant, long lineageRecords,
                           Map<String, Long> openFindingsBySeverity, long pendingReviews, LastRun lastMatchRun) {
     }
@@ -34,7 +36,8 @@ public class SummaryQueries {
         var silverRow = jdbc.queryForMap("""
                 SELECT (SELECT count(*) FROM silver.patients) AS patients, (SELECT count(*) FROM silver.conditions) AS conditions,
                        (SELECT count(*) FROM silver.observations) AS observations,
-                       (SELECT count(*) FROM silver.medications) AS medications
+                       (SELECT count(*) FROM silver.medications) AS medications,
+                       (SELECT count(*) FROM silver.allergies) AS allergies
                 """, none);
         silverRow.forEach((k, v) -> silver.put(k, ((Number) v).longValue()));
         Map<String, Long> masters = counts("SELECT match_status, count(*) FROM gold.master_patients GROUP BY 1 ORDER BY 1");
@@ -51,7 +54,9 @@ public class SummaryQueries {
         List<LastRun> runs = jdbc.query("SELECT id, status, started_at, finished_at FROM pmi.match_runs ORDER BY id DESC LIMIT 1",
                 none, (rs, i) -> new LastRun(rs.getLong("id"), rs.getString("status"), Sql.ts(rs, "started_at"),
                         Sql.ts(rs, "finished_at")));
-        return new Summary(bronze, silver, masters, num(gold.get("fhir")), num(gold.get("compliant")),
+        Map<String, Long> validation = counts(
+                "SELECT coalesce(validation_status, 'NOT_TRACKED'), count(*) FROM silver.patients GROUP BY 1 ORDER BY 1");
+        return new Summary(bronze, silver, validation, masters, num(gold.get("fhir")), num(gold.get("compliant")),
                 num(gold.get("lineage")), findings, num(gold.get("pending")), runs.isEmpty() ? null : runs.get(0));
     }
 

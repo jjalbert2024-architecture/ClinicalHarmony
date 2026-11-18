@@ -1,0 +1,641 @@
+{
+    "target": "silver.patients",
+    "targetId": 1181,
+    "records": [
+        {
+            "id": 51749,
+            "step": "PMI_PROVISIONAL",
+            "sourceSchema": "silver",
+            "sourceTable": "patients",
+            "sourceId": 1181,
+            "targetSchema": "gold",
+            "targetTable": "master_patients",
+            "targetId": 523,
+            "transformedAt": "2026-11-18T15:58:50.145782Z",
+            "details": {
+                "steps": [
+                    {
+                        "ref": "bronze.raw_messages/1866",
+                        "stage": "BRONZE",
+                        "timestamp": "2026-11-18T13:38:38.393015Z",
+                        "input_hash": "587979144456d97c6c554d453bfb71bd98f1dcd0631028871c0dd9722add0810",
+                        "transformer": "ingestion-service MLLP \u2192 Kafka \u2192 bronze-listener-service (HL7V2)"
+                    },
+                    {
+                        "ref": "silver.patients/1181",
+                        "stage": "SILVER",
+                        "timestamp": "2026-11-18T13:38:38.943755Z",
+                        "input_hash": "587979144456d97c6c554d453bfb71bd98f1dcd0631028871c0dd9722add0810",
+                        "transformer": "silver-transformer-service: Bronze \u2192 Silver parse (source_system=NORTH_CLINIC)"
+                    },
+                    {
+                        "ref": "gold.master_patients/523",
+                        "stage": "GOLD",
+                        "timestamp": "2026-11-18T15:58:50.145973135Z",
+                        "input_hash": "6296aa06479a58b3e134771539f33564dcf178c546c823802b69a16a8757d3cf",
+                        "transformer": "fhir-compliance-service GoldWriter: provisional 1:1 master (pre-PMI; Phase 6 patient-index-service matches/merges)"
+                    }
+                ],
+                "target": "gold.master_patients/523"
+            }
+        },
+        {
+            "id": 51753,
+            "step": "FHIR_MAP",
+            "sourceSchema": "silver",
+            "sourceTable": "patients",
+            "sourceId": 1181,
+            "targetSchema": "gold",
+            "targetTable": "fhir_resources",
+            "targetId": 42379,
+            "transformedAt": "2026-11-18T15:58:50.145782Z",
+            "details": {
+                "steps": [
+                    {
+                        "ref": "bronze.raw_messages/1866",
+                        "stage": "BRONZE",
+                        "timestamp": "2026-11-18T13:38:38.393015Z",
+                        "input_hash": "587979144456d97c6c554d453bfb71bd98f1dcd0631028871c0dd9722add0810",
+                        "transformer": "ingestion-service MLLP \u2192 Kafka \u2192 bronze-listener-service (HL7V2)"
+                    },
+                    {
+                        "ref": "silver.patients/1181",
+                        "stage": "SILVER",
+                        "timestamp": "2026-11-18T13:38:38.943755Z",
+                        "input_hash": "587979144456d97c6c554d453bfb71bd98f1dcd0631028871c0dd9722add0810",
+                        "transformer": "silver-transformer-service: Bronze \u2192 Silver parse (source_system=NORTH_CLINIC)"
+                    },
+                    {
+                        "ref": "gold.fhir_resources/42379",
+                        "stage": "GOLD",
+                        "timestamp": "2026-11-18T15:58:50.148809593Z",
+                        "input_hash": "6296aa06479a58b3e134771539f33564dcf178c546c823802b69a16a8757d3cf",
+                        "output_hash": "d204b633a0298929235e168143b3a0ee3ef4d3d7beaf5bdaf443d11fc4c04178",
+                        "transformer": "fhir-compliance-service PatientResourceBuilder + HL7 validator (http://hl7.org/fhir/us/core/StructureDefinition/us-core-patient)"
+                    }
+                ],
+                "target": "Patient/silver-patient-1181"
+            }
+        },
+        {
+            "id": 51754,
+            "step": "FHIR_MAP",
+            "sourceSchema": "silver",
+            "sourceTable": "conditions",
+            "sourceId": 711,
+            "targetSchema": "gold",
+            "targetTable": "fhir_resources",
+            "targetId": 42380,
+            "transformedAt": "2026-11-18T15:58:50.145782Z",
+            "details": {
+                "steps": [
+                    {
+                        "ref": "bronze.raw_messages/1866",
+                        "stage": "BRONZE",
+                        "timestamp": "2026-11-18T13:38:38.393015Z",
+                        "input_hash": "587979144456d97c6c554d453bfb71bd98f1dcd0631028871c0dd9722add0810",
+                        "transformer": "ingestion-service MLLP \u2192 Kafka \u2192 bronze-listener-service (HL7V2)"
+                    },
+                    {
+                        "ref": "silver.conditions/711",
+                        "stage": "SILVER",
+                        "timestamp": "2026-11-18T13:38:38.943755Z",
+                        "input_hash": "587979144456d97c6c554d453bfb71bd98f1dcd0631028871c0dd9722add0810",
+                        "transformer": "silver-transformer-service: Bronze \u2192 Silver parse (source_system=NORTH_CLINIC)"
+                    },
+                    {
+                        "ref": "gold.fhir_resources/42380",
+                        "stage": "GOLD",
+                        "timestamp": "2026-11-18T15:58:50.150023177Z",
+                        "input_hash": "40a319ab303d1137c1ffe6a949488fcf4b10e314818aa86fa4e4496481e07ccb",
+                        "output_hash": "2d8ac9ca4b084fea046714fc5d969a1b2fcf1567dcd5cfc8e22f4529a99c747b",
+                        "transformer": "fhir-compliance-service ConditionResourceBuilder + HL7 validator (http://hl7.org/fhir/us/core/StructureDefinition/us-core-condition-problems-health-concerns)"
+                    }
+                ],
+                "target": "Condition/silver-condition-711"
+            }
+        },
+        {
+            "id": 51755,
+            "step": "FHIR_MAP",
+            "sourceSchema": "silver",
+            "sourceTable": "conditions",
+            "sourceId": 712,
+            "targetSchema": "gold",
+            "targetTable": "fhir_resources",
+            "targetId": 42381,
+            "transformedAt": "2026-11-18T15:58:50.145782Z",
+            "details": {
+                "steps": [
+                    {
+                        "ref": "bronze.raw_messages/1866",
+                        "stage": "BRONZE",
+                        "timestamp": "2026-11-18T13:38:38.393015Z",
+                        "input_hash": "587979144456d97c6c554d453bfb71bd98f1dcd0631028871c0dd9722add0810",
+                        "transformer": "ingestion-service MLLP \u2192 Kafka \u2192 bronze-listener-service (HL7V2)"
+                    },
+                    {
+                        "ref": "silver.conditions/712",
+                        "stage": "SILVER",
+                        "timestamp": "2026-11-18T13:38:38.943755Z",
+                        "input_hash": "587979144456d97c6c554d453bfb71bd98f1dcd0631028871c0dd9722add0810",
+                        "transformer": "silver-transformer-service: Bronze \u2192 Silver parse (source_system=NORTH_CLINIC)"
+                    },
+                    {
+                        "ref": "gold.fhir_resources/42381",
+                        "stage": "GOLD",
+                        "timestamp": "2026-11-18T15:58:50.151200802Z",
+                        "input_hash": "0d99bdd4f6f0a08d64c005a8428dbdc3641d690aec7cfbe820a758d537e4c183",
+                        "output_hash": "60ebf8f5e13edd35be0da165e49b5c83ceca036d647a49fd96733b34a15787c4",
+                        "transformer": "fhir-compliance-service ConditionResourceBuilder + HL7 validator (http://hl7.org/fhir/us/core/StructureDefinition/us-core-condition-problems-health-concerns)"
+                    }
+                ],
+                "target": "Condition/silver-condition-712"
+            }
+        },
+        {
+            "id": 51758,
+            "step": "FHIR_MAP",
+            "sourceSchema": "silver",
+            "sourceTable": "observations",
+            "sourceId": 1192,
+            "targetSchema": "gold",
+            "targetTable": "fhir_resources",
+            "targetId": 42384,
+            "transformedAt": "2026-11-18T15:58:50.145782Z",
+            "details": {
+                "steps": [
+                    {
+                        "ref": "bronze.raw_messages/1870",
+                        "stage": "BRONZE",
+                        "timestamp": "2026-11-18T13:38:38.399382Z",
+                        "input_hash": "af221910c0bc8ba9687cdc27b5bcffbe271ececaad36685f503065baeb93afbb",
+                        "transformer": "ingestion-service MLLP \u2192 Kafka \u2192 bronze-listener-service (HL7V2)"
+                    },
+                    {
+                        "ref": "silver.observations/1192",
+                        "stage": "SILVER",
+                        "timestamp": "2026-11-18T13:38:38.966753Z",
+                        "input_hash": "af221910c0bc8ba9687cdc27b5bcffbe271ececaad36685f503065baeb93afbb",
+                        "transformer": "silver-transformer-service: Bronze \u2192 Silver parse (source_system=NORTH_CLINIC)"
+                    },
+                    {
+                        "ref": "gold.fhir_resources/42384",
+                        "stage": "GOLD",
+                        "timestamp": "2026-11-18T15:58:50.152641802Z",
+                        "input_hash": "484d88a5222766bd6ec03e71b0a5ac8d37b3a8f64245ffc4b3e7d46935dfd248",
+                        "output_hash": "3a6fe7f4c10e15f1cdf9518ef25714cfdb37048c6d1f847c171afe5c7a8bea8e",
+                        "transformer": "fhir-compliance-service ObservationResourceBuilder + HL7 validator (http://hl7.org/fhir/us/core/StructureDefinition/us-core-observation-lab)"
+                    }
+                ],
+                "target": "Observation/silver-observation-1192"
+            }
+        },
+        {
+            "id": 51765,
+            "step": "FHIR_MAP",
+            "sourceSchema": "silver",
+            "sourceTable": "observations",
+            "sourceId": 1193,
+            "targetSchema": "gold",
+            "targetTable": "fhir_resources",
+            "targetId": 42391,
+            "transformedAt": "2026-11-18T15:58:50.145782Z",
+            "details": {
+                "steps": [
+                    {
+                        "ref": "bronze.raw_messages/1870",
+                        "stage": "BRONZE",
+                        "timestamp": "2026-11-18T13:38:38.399382Z",
+                        "input_hash": "af221910c0bc8ba9687cdc27b5bcffbe271ececaad36685f503065baeb93afbb",
+                        "transformer": "ingestion-service MLLP \u2192 Kafka \u2192 bronze-listener-service (HL7V2)"
+                    },
+                    {
+                        "ref": "silver.observations/1193",
+                        "stage": "SILVER",
+                        "timestamp": "2026-11-18T13:38:38.966753Z",
+                        "input_hash": "af221910c0bc8ba9687cdc27b5bcffbe271ececaad36685f503065baeb93afbb",
+                        "transformer": "silver-transformer-service: Bronze \u2192 Silver parse (source_system=NORTH_CLINIC)"
+                    },
+                    {
+                        "ref": "gold.fhir_resources/42391",
+                        "stage": "GOLD",
+                        "timestamp": "2026-11-18T15:58:50.153984343Z",
+                        "input_hash": "02555222ac33bfb9c16103b372ae0ecfed1994c414887c46baa2cb3d3cce5215",
+                        "output_hash": "38b2041c82221f95703e300460ca3e51d8076e6b6641189c8f662e10a3928c37",
+                        "transformer": "fhir-compliance-service ObservationResourceBuilder + HL7 validator (http://hl7.org/fhir/us/core/StructureDefinition/us-core-observation-lab)"
+                    }
+                ],
+                "target": "Observation/silver-observation-1193"
+            }
+        },
+        {
+            "id": 51767,
+            "step": "FHIR_MAP",
+            "sourceSchema": "silver",
+            "sourceTable": "observations",
+            "sourceId": 1194,
+            "targetSchema": "gold",
+            "targetTable": "fhir_resources",
+            "targetId": 42393,
+            "transformedAt": "2026-11-18T15:58:50.145782Z",
+            "details": {
+                "steps": [
+                    {
+                        "ref": "bronze.raw_messages/1870",
+                        "stage": "BRONZE",
+                        "timestamp": "2026-11-18T13:38:38.399382Z",
+                        "input_hash": "af221910c0bc8ba9687cdc27b5bcffbe271ececaad36685f503065baeb93afbb",
+                        "transformer": "ingestion-service MLLP \u2192 Kafka \u2192 bronze-listener-service (HL7V2)"
+                    },
+                    {
+                        "ref": "silver.observations/1194",
+                        "stage": "SILVER",
+                        "timestamp": "2026-11-18T13:38:38.966753Z",
+                        "input_hash": "af221910c0bc8ba9687cdc27b5bcffbe271ececaad36685f503065baeb93afbb",
+                        "transformer": "silver-transformer-service: Bronze \u2192 Silver parse (source_system=NORTH_CLINIC)"
+                    },
+                    {
+                        "ref": "gold.fhir_resources/42393",
+                        "stage": "GOLD",
+                        "timestamp": "2026-11-18T15:58:50.155271427Z",
+                        "input_hash": "9b18d387a248e4b89700c992f06a0e1d6a1f772df63449a12e7e8d8980de2a49",
+                        "output_hash": "de9732cdda3881bec441d73ad94396a7bb40a17c0d9c2a1fa84f3a6fd65847a2",
+                        "transformer": "fhir-compliance-service ObservationResourceBuilder + HL7 validator (http://hl7.org/fhir/us/core/StructureDefinition/us-core-observation-lab)"
+                    }
+                ],
+                "target": "Observation/silver-observation-1194"
+            }
+        },
+        {
+            "id": 51769,
+            "step": "FHIR_MAP",
+            "sourceSchema": "silver",
+            "sourceTable": "observations",
+            "sourceId": 1208,
+            "targetSchema": "gold",
+            "targetTable": "fhir_resources",
+            "targetId": 42395,
+            "transformedAt": "2026-11-18T15:58:50.145782Z",
+            "details": {
+                "steps": [
+                    {
+                        "ref": "bronze.raw_messages/1883",
+                        "stage": "BRONZE",
+                        "timestamp": "2026-11-18T13:38:38.465193Z",
+                        "input_hash": "d665994ffd4536183a7637c5f273624cdac4c0fc8c154a4623c4bcd519e0ea49",
+                        "transformer": "ingestion-service MLLP \u2192 Kafka \u2192 bronze-listener-service (HL7V2)"
+                    },
+                    {
+                        "ref": "silver.observations/1208",
+                        "stage": "SILVER",
+                        "timestamp": "2026-11-18T13:38:39.050403Z",
+                        "input_hash": "d665994ffd4536183a7637c5f273624cdac4c0fc8c154a4623c4bcd519e0ea49",
+                        "transformer": "silver-transformer-service: Bronze \u2192 Silver parse (source_system=NORTH_CLINIC)"
+                    },
+                    {
+                        "ref": "gold.fhir_resources/42395",
+                        "stage": "GOLD",
+                        "timestamp": "2026-11-18T15:58:50.157713427Z",
+                        "input_hash": "57424f8eaa7f9a16577725d1b77a280ed8294dc9a75e2e596c1716a648c67ed6",
+                        "output_hash": "bbc18e80630c0a1c55b508f02edb176fd6af14b8ad4e5118f672656aa6ecb422",
+                        "transformer": "fhir-compliance-service ObservationResourceBuilder + HL7 validator (http://hl7.org/fhir/us/core/StructureDefinition/us-core-observation-lab)"
+                    }
+                ],
+                "target": "Observation/silver-observation-1208"
+            }
+        },
+        {
+            "id": 51772,
+            "step": "FHIR_MAP",
+            "sourceSchema": "silver",
+            "sourceTable": "observations",
+            "sourceId": 1209,
+            "targetSchema": "gold",
+            "targetTable": "fhir_resources",
+            "targetId": 42397,
+            "transformedAt": "2026-11-18T15:58:50.145782Z",
+            "details": {
+                "steps": [
+                    {
+                        "ref": "bronze.raw_messages/1883",
+                        "stage": "BRONZE",
+                        "timestamp": "2026-11-18T13:38:38.465193Z",
+                        "input_hash": "d665994ffd4536183a7637c5f273624cdac4c0fc8c154a4623c4bcd519e0ea49",
+                        "transformer": "ingestion-service MLLP \u2192 Kafka \u2192 bronze-listener-service (HL7V2)"
+                    },
+                    {
+                        "ref": "silver.observations/1209",
+                        "stage": "SILVER",
+                        "timestamp": "2026-11-18T13:38:39.050403Z",
+                        "input_hash": "d665994ffd4536183a7637c5f273624cdac4c0fc8c154a4623c4bcd519e0ea49",
+                        "transformer": "silver-transformer-service: Bronze \u2192 Silver parse (source_system=NORTH_CLINIC)"
+                    },
+                    {
+                        "ref": "gold.fhir_resources/42397",
+                        "stage": "GOLD",
+                        "timestamp": "2026-11-18T15:58:50.159587093Z",
+                        "input_hash": "bb411cc0fb5cc30795a257f26adaa23cd6169938bf200b8180fa7dd6725595a9",
+                        "output_hash": "08ff24575c51fcafa68f84b0146a9ce73d7a7e90d810dacd19aba1e8914bc70c",
+                        "transformer": "fhir-compliance-service ObservationResourceBuilder + HL7 validator (http://hl7.org/fhir/us/core/StructureDefinition/us-core-observation-lab)"
+                    }
+                ],
+                "target": "Observation/silver-observation-1209"
+            }
+        },
+        {
+            "id": 51774,
+            "step": "FHIR_MAP",
+            "sourceSchema": "silver",
+            "sourceTable": "observations",
+            "sourceId": 1210,
+            "targetSchema": "gold",
+            "targetTable": "fhir_resources",
+            "targetId": 42399,
+            "transformedAt": "2026-11-18T15:58:50.145782Z",
+            "details": {
+                "steps": [
+                    {
+                        "ref": "bronze.raw_messages/1883",
+                        "stage": "BRONZE",
+                        "timestamp": "2026-11-18T13:38:38.465193Z",
+                        "input_hash": "d665994ffd4536183a7637c5f273624cdac4c0fc8c154a4623c4bcd519e0ea49",
+                        "transformer": "ingestion-service MLLP \u2192 Kafka \u2192 bronze-listener-service (HL7V2)"
+                    },
+                    {
+                        "ref": "silver.observations/1210",
+                        "stage": "SILVER",
+                        "timestamp": "2026-11-18T13:38:39.050403Z",
+                        "input_hash": "d665994ffd4536183a7637c5f273624cdac4c0fc8c154a4623c4bcd519e0ea49",
+                        "transformer": "silver-transformer-service: Bronze \u2192 Silver parse (source_system=NORTH_CLINIC)"
+                    },
+                    {
+                        "ref": "gold.fhir_resources/42399",
+                        "stage": "GOLD",
+                        "timestamp": "2026-11-18T15:58:50.161175385Z",
+                        "input_hash": "dbf566e8a82cc6658d5cc5598c398ba12274da59ca1025eebca1250932d262df",
+                        "output_hash": "f28bb37fb786af9ced7d5dd5c7404c2dcb7094d55eee3c1cd47dba17dff0f418",
+                        "transformer": "fhir-compliance-service ObservationResourceBuilder + HL7 validator (http://hl7.org/fhir/us/core/StructureDefinition/us-core-observation-lab)"
+                    }
+                ],
+                "target": "Observation/silver-observation-1210"
+            }
+        },
+        {
+            "id": 51778,
+            "step": "FHIR_MAP",
+            "sourceSchema": "silver",
+            "sourceTable": "allergies",
+            "sourceId": 165,
+            "targetSchema": "gold",
+            "targetTable": "fhir_resources",
+            "targetId": 42403,
+            "transformedAt": "2026-11-18T15:58:50.145782Z",
+            "details": {
+                "steps": [
+                    {
+                        "ref": "bronze.raw_messages/1866",
+                        "stage": "BRONZE",
+                        "timestamp": "2026-11-18T13:38:38.393015Z",
+                        "input_hash": "587979144456d97c6c554d453bfb71bd98f1dcd0631028871c0dd9722add0810",
+                        "transformer": "ingestion-service MLLP \u2192 Kafka \u2192 bronze-listener-service (HL7V2)"
+                    },
+                    {
+                        "ref": "silver.allergies/165",
+                        "stage": "SILVER",
+                        "timestamp": "2026-11-18T13:38:38.943755Z",
+                        "input_hash": "587979144456d97c6c554d453bfb71bd98f1dcd0631028871c0dd9722add0810",
+                        "transformer": "silver-transformer-service: Bronze \u2192 Silver parse (source_system=NORTH_CLINIC)"
+                    },
+                    {
+                        "ref": "gold.fhir_resources/42403",
+                        "stage": "GOLD",
+                        "timestamp": "2026-11-18T15:58:50.170188677Z",
+                        "input_hash": "32ac3dbf2957aaa5b533ef7b7a1e134dfc63adb15f322763e9abb88af803b81f",
+                        "output_hash": "098c70f09cfd7a671df8bc2b66a159673e02b224e265c8caf81579ffe641cd70",
+                        "transformer": "fhir-compliance-service AllergyIntoleranceResourceBuilder + HL7 validator (http://hl7.org/fhir/us/core/StructureDefinition/us-core-allergyintolerance)"
+                    }
+                ],
+                "target": "AllergyIntolerance/silver-allergy-165"
+            }
+        },
+        {
+            "id": 52438,
+            "step": "FHIR_MAP",
+            "sourceSchema": "silver",
+            "sourceTable": "observations",
+            "sourceId": 1287,
+            "targetSchema": "gold",
+            "targetTable": "fhir_resources",
+            "targetId": 42988,
+            "transformedAt": "2026-11-18T15:58:50.145782Z",
+            "details": {
+                "steps": [
+                    {
+                        "ref": "bronze.raw_messages/1952",
+                        "stage": "BRONZE",
+                        "timestamp": "2026-11-18T13:38:38.729721Z",
+                        "input_hash": "55fb35eed03235e67ea013e52ba5183cd96b0e2a9c6634740fee343b361590d9",
+                        "transformer": "ingestion-service MLLP \u2192 Kafka \u2192 bronze-listener-service (HL7V2)"
+                    },
+                    {
+                        "ref": "silver.observations/1287",
+                        "stage": "SILVER",
+                        "timestamp": "2026-11-18T13:38:39.916420Z",
+                        "input_hash": "55fb35eed03235e67ea013e52ba5183cd96b0e2a9c6634740fee343b361590d9",
+                        "transformer": "silver-transformer-service: Bronze \u2192 Silver parse (source_system=NORTH_CLINIC)"
+                    },
+                    {
+                        "ref": "gold.fhir_resources/42988",
+                        "stage": "GOLD",
+                        "timestamp": "2026-11-18T15:58:50.164932677Z",
+                        "input_hash": "bba760fd8ba72a295409c196966674caf8e349ea8c8970530f8f76ea7b99a399",
+                        "output_hash": "e984f667bfa456dc4370d3a779e6971b6e1921b7762cb729fbc84c2f22ba3463",
+                        "transformer": "fhir-compliance-service ObservationResourceBuilder + HL7 validator (http://hl7.org/fhir/us/core/StructureDefinition/us-core-observation-lab)"
+                    }
+                ],
+                "target": "Observation/silver-observation-1287"
+            }
+        },
+        {
+            "id": 52439,
+            "step": "FHIR_MAP",
+            "sourceSchema": "silver",
+            "sourceTable": "observations",
+            "sourceId": 1288,
+            "targetSchema": "gold",
+            "targetTable": "fhir_resources",
+            "targetId": 42989,
+            "transformedAt": "2026-11-18T15:58:50.145782Z",
+            "details": {
+                "steps": [
+                    {
+                        "ref": "bronze.raw_messages/1952",
+                        "stage": "BRONZE",
+                        "timestamp": "2026-11-18T13:38:38.729721Z",
+                        "input_hash": "55fb35eed03235e67ea013e52ba5183cd96b0e2a9c6634740fee343b361590d9",
+                        "transformer": "ingestion-service MLLP \u2192 Kafka \u2192 bronze-listener-service (HL7V2)"
+                    },
+                    {
+                        "ref": "silver.observations/1288",
+                        "stage": "SILVER",
+                        "timestamp": "2026-11-18T13:38:39.916420Z",
+                        "input_hash": "55fb35eed03235e67ea013e52ba5183cd96b0e2a9c6634740fee343b361590d9",
+                        "transformer": "silver-transformer-service: Bronze \u2192 Silver parse (source_system=NORTH_CLINIC)"
+                    },
+                    {
+                        "ref": "gold.fhir_resources/42989",
+                        "stage": "GOLD",
+                        "timestamp": "2026-11-18T15:58:50.166392135Z",
+                        "input_hash": "f95b0940c2bf21924b179d24b701bafba344e9f02f2047da290d74f3b8c5e6cb",
+                        "output_hash": "cdef51a886d2b20b5fe2238e55631073526cabd92351e508b1dddf87e581358b",
+                        "transformer": "fhir-compliance-service ObservationResourceBuilder + HL7 validator (http://hl7.org/fhir/us/core/StructureDefinition/us-core-observation-lab)"
+                    }
+                ],
+                "target": "Observation/silver-observation-1288"
+            }
+        },
+        {
+            "id": 52440,
+            "step": "FHIR_MAP",
+            "sourceSchema": "silver",
+            "sourceTable": "observations",
+            "sourceId": 1289,
+            "targetSchema": "gold",
+            "targetTable": "fhir_resources",
+            "targetId": 42990,
+            "transformedAt": "2026-11-18T15:58:50.145782Z",
+            "details": {
+                "steps": [
+                    {
+                        "ref": "bronze.raw_messages/1952",
+                        "stage": "BRONZE",
+                        "timestamp": "2026-11-18T13:38:38.729721Z",
+                        "input_hash": "55fb35eed03235e67ea013e52ba5183cd96b0e2a9c6634740fee343b361590d9",
+                        "transformer": "ingestion-service MLLP \u2192 Kafka \u2192 bronze-listener-service (HL7V2)"
+                    },
+                    {
+                        "ref": "silver.observations/1289",
+                        "stage": "SILVER",
+                        "timestamp": "2026-11-18T13:38:39.916420Z",
+                        "input_hash": "55fb35eed03235e67ea013e52ba5183cd96b0e2a9c6634740fee343b361590d9",
+                        "transformer": "silver-transformer-service: Bronze \u2192 Silver parse (source_system=NORTH_CLINIC)"
+                    },
+                    {
+                        "ref": "gold.fhir_resources/42990",
+                        "stage": "GOLD",
+                        "timestamp": "2026-11-18T15:58:50.167800218Z",
+                        "input_hash": "db023d3545d185749c5748c48a3adecaac7529215b093b3312ae49c2fdb53594",
+                        "output_hash": "219949b18744714028989b711a066c6fc538afc6e0d3712dd9f20a8050cc515f",
+                        "transformer": "fhir-compliance-service ObservationResourceBuilder + HL7 validator (http://hl7.org/fhir/us/core/StructureDefinition/us-core-observation-lab)"
+                    }
+                ],
+                "target": "Observation/silver-observation-1289"
+            }
+        },
+        {
+            "id": 52441,
+            "step": "FHIR_MAP",
+            "sourceSchema": "silver",
+            "sourceTable": "observations",
+            "sourceId": 1290,
+            "targetSchema": "gold",
+            "targetTable": "fhir_resources",
+            "targetId": 42991,
+            "transformedAt": "2026-11-18T15:58:50.145782Z",
+            "details": {
+                "steps": [
+                    {
+                        "ref": "bronze.raw_messages/1952",
+                        "stage": "BRONZE",
+                        "timestamp": "2026-11-18T13:38:38.729721Z",
+                        "input_hash": "55fb35eed03235e67ea013e52ba5183cd96b0e2a9c6634740fee343b361590d9",
+                        "transformer": "ingestion-service MLLP \u2192 Kafka \u2192 bronze-listener-service (HL7V2)"
+                    },
+                    {
+                        "ref": "silver.observations/1290",
+                        "stage": "SILVER",
+                        "timestamp": "2026-11-18T13:38:39.916420Z",
+                        "input_hash": "55fb35eed03235e67ea013e52ba5183cd96b0e2a9c6634740fee343b361590d9",
+                        "transformer": "silver-transformer-service: Bronze \u2192 Silver parse (source_system=NORTH_CLINIC)"
+                    },
+                    {
+                        "ref": "gold.fhir_resources/42991",
+                        "stage": "GOLD",
+                        "timestamp": "2026-11-18T15:58:50.169147635Z",
+                        "input_hash": "dffce006c6ee21be69e91ba71f95cf552db8958f9c1baf96ef53c73ea79dcfc2",
+                        "output_hash": "3d447be74bccf62f9f505c494f1e29de8dad8eb0f147b20fd6f498c34b7f426a",
+                        "transformer": "fhir-compliance-service ObservationResourceBuilder + HL7 validator (http://hl7.org/fhir/us/core/StructureDefinition/us-core-observation-lab)"
+                    }
+                ],
+                "target": "Observation/silver-observation-1290"
+            }
+        }
+    ],
+    "bronzeMessages": [
+        {
+            "id": 1866,
+            "sourceSystem": "NORTH_CLINIC",
+            "messageType": "HL7V2",
+            "messageFormat": "TEXT",
+            "processingStatus": "PROCESSED",
+            "payloadChecksum": "587979144456d97c6c554d453bfb71bd98f1dcd0631028871c0dd9722add0810",
+            "payloadLength": 498,
+            "errorMessage": null,
+            "receivedAt": "2026-11-18T13:38:38.393015Z",
+            "processedAt": "2026-11-18T13:38:38.943755Z",
+            "hl7MessageType": "ADT^A04",
+            "patientName": "HUGO PATEL",
+            "patientMrn": "NC700343",
+            "silverPatientId": 1181
+        },
+        {
+            "id": 1870,
+            "sourceSystem": "REGIONAL_LAB",
+            "messageType": "HL7V2",
+            "messageFormat": "TEXT",
+            "processingStatus": "PROCESSED",
+            "payloadChecksum": "af221910c0bc8ba9687cdc27b5bcffbe271ececaad36685f503065baeb93afbb",
+            "payloadLength": 547,
+            "errorMessage": null,
+            "receivedAt": "2026-11-18T13:38:38.399382Z",
+            "processedAt": "2026-11-18T13:38:38.966753Z",
+            "hl7MessageType": "ORU^R01",
+            "patientName": "HUGO PATEL",
+            "patientMrn": "NC700343",
+            "silverPatientId": 1181
+        },
+        {
+            "id": 1883,
+            "sourceSystem": "REGIONAL_LAB",
+            "messageType": "HL7V2",
+            "messageFormat": "TEXT",
+            "processingStatus": "PROCESSED",
+            "payloadChecksum": "d665994ffd4536183a7637c5f273624cdac4c0fc8c154a4623c4bcd519e0ea49",
+            "payloadLength": 546,
+            "errorMessage": null,
+            "receivedAt": "2026-11-18T13:38:38.465193Z",
+            "processedAt": "2026-11-18T13:38:39.050403Z",
+            "hl7MessageType": "ORU^R01",
+            "patientName": "HUGO PATEL",
+            "patientMrn": "NC700343",
+            "silverPatientId": 1181
+        },
+        {
+            "id": 1952,
+            "sourceSystem": "NORTH_CLINIC",
+            "messageType": "HL7V2",
+            "messageFormat": "TEXT",
+            "processingStatus": "PROCESSED",
+            "payloadChecksum": "55fb35eed03235e67ea013e52ba5183cd96b0e2a9c6634740fee343b361590d9",
+            "payloadLength": 627,
+            "errorMessage": null,
+            "receivedAt": "2026-11-18T13:38:38.729721Z",
+            "processedAt": "2026-11-18T13:38:39.91642Z",
+            "hl7MessageType": "ORU^R01",
+            "patientName": "HUGO PATEL",
+            "patientMrn": "NC700343",
+            "silverPatientId": 1181
+        }
+    ]
+}

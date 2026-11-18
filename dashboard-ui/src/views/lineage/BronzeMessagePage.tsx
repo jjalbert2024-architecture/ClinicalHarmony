@@ -44,6 +44,22 @@ export function BronzeMessagePage() {
               </Link>
             }
           />
+          {(d.summary.patientName || d.summary.patientMrn) && (
+            <p className="medallion-path">
+              <span className="path-step path-bronze">
+                <strong>Patient</strong> {d.summary.patientName ?? '—'}
+                {d.summary.patientMrn && <span className="muted"> · {d.summary.patientMrn}</span>}
+              </span>
+              <span aria-hidden="true"> → </span>
+              <span className="path-step path-silver">
+                {d.summary.silverPatientId ? (
+                  <Link to={`/lineage/silver/${d.summary.silverPatientId}`}>Silver patient #{d.summary.silverPatientId}</Link>
+                ) : (
+                  <span className="muted">not in Silver</span>
+                )}
+              </span>
+            </p>
+          )}
           {d.summary.errorMessage && (
             <div className="banner banner-bad">
               <strong>Quarantine reason:</strong> {d.summary.errorMessage}
@@ -77,13 +93,21 @@ export function BronzeMessagePage() {
                       : 'Quarantined and failed messages never reach Silver; the reason is shown above.'}
                 </Empty>
               ) : (
-                <ul className="plain">
-                  {d.silverRows.map((r) => (
-                    <li key={`${r.table}-${r.id}`}>
-                      {r.table} #{r.id}
-                    </li>
-                  ))}
-                </ul>
+                <>
+                  <ul className="plain">
+                    {d.silverRows.map((r) => (
+                      <li key={`${r.table}-${r.id}`}>
+                        <Link to={r.table === 'silver.patients' ? `/lineage/silver/${r.id}` : `/lineage/silver/${r.silverPatientId}#${r.table.replace('silver.', '')}-${r.id}`}>
+                          {r.table} #{r.id}
+                        </Link>
+                        {r.table !== 'silver.patients' && <span className="muted small"> · Silver patient #{r.silverPatientId}</span>}
+                      </li>
+                    ))}
+                  </ul>
+                  <p className="muted small">
+                    <Link to={`/lineage?bronzeMessageId=${d.summary.id}`}>Trace this message into Gold</Link>
+                  </p>
+                </>
               )}
             </section>
           </div>

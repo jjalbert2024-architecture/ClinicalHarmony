@@ -52,6 +52,12 @@ public class MetaController {
         Map<String, Object> body = new LinkedHashMap<>();
         body.put("apiVersion", "v1");
         body.put("auth", auth);
+        String splunk = properties.ui().splunkUrl();
+        if (splunk != null && !splunk.isBlank()) {
+            // Observability links (9e): the Trace dashboard of the clinicalharmony app, filled by ?form.cid=<id>.
+            body.put("observability", Map.of("splunkTraceUrl",
+                    splunk.replaceAll("/+$", "") + "/en-US/app/clinicalharmony/clinicalharmony_trace"));
+        }
         return body;
     }
 

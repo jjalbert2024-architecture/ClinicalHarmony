@@ -52,6 +52,18 @@ class SilverLineageTest {
     }
 
     @Test
+    void restFedSilverRowNamesTheRestDoor() {
+        when(repository.find(SilverTable.PATIENTS, 13L)).thenReturn(Optional.of(new SilverProvenance(
+                OffsetDateTime.parse("2026-11-19T09:00:02Z"), "CITY_HOSPITAL", 502L, "e".repeat(64),
+                OffsetDateTime.parse("2026-11-19T09:00:00Z"), "HL7V2", "REST_KAFKA")));
+
+        List<LineageStep> steps = lineage.stepsFor(SilverTable.PATIENTS, 13L);
+
+        assertThat(steps.get(0).transformer()).isEqualTo("ingestion-service REST → Kafka → bronze-listener-service (HL7V2)");
+        assertThat(steps.get(1).transformer()).startsWith("silver-transformer-service: Bronze → Silver parse");
+    }
+
+    @Test
     void silverRowWithoutBronzeLinkStartsAtSilverWithNoInputHash() {
         when(repository.find(SilverTable.PATIENTS, 1L)).thenReturn(Optional.of(new SilverProvenance(
                 OffsetDateTime.parse("2026-11-01T10:00:05Z"), "SEED_EPIC_ADT", null, null, null, null, null)));

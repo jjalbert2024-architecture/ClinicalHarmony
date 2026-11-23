@@ -1,0 +1,69 @@
+# Phase 9e — OpenTelemetry Collector (contrib 0.164.0). Every metric ends up in Splunk's clinicalharmony_metrics
+# index through HEC:
+#   * otlp        — the services' Micrometer meters (micrometer-registry-otlp, every 15 s)
+#   * kafkametrics — Kafka consumer lag per group / topic (no separate lag exporter)
+#   * httpcheck   — each service's /actuator/health every 15 s (the "service down" alert)
+# Logs do NOT go through here: Docker's splunk log driver sends container stdout straight to HEC.
+
+receivers:
+  otlp:
+    protocols:
+      http:
+        endpoint: 0.0.0.0:4318
+
+  kafkametrics:
+    brokers: ["kafka:29092"]
+    protocol_version: 3.6.0   # cp-kafka 7.6.1 = Apache Kafka 3.6
+    collection_interval: 15s
+    scrapers: [consumers, topics]
+
+  httpcheck:
+    collection_interval: 15s
+    targets:
+      - endpoint: http://ingestion-service:8081/actuator/health
+      - endpoint: http://bronze-listener-service:8086/actuator/health
+      - endpoint: http://silver-transformer-service:8087/actuator/health
+      - endpoint: http://ontology-service:8082/actuator/health
+      - endpoint: http://rules-engine-service:8083/actuator/health
+      - endpoint: http://fhir-compliance-service:8084/actuator/health
+      - endpoint: http://patient-index-service:8085/actuator/health
+      - endpoint: http://api-gateway:8080/actuator/health
+
+processors:
+  batch:
+    timeout: 5s
+  resource:
+    attributes:
+      - key: deployment.environment
+        value: dev
+        action: upsert
+
+exporters:
+  splunk_hec/metrics:
+    # DEV-ONLY token (observability/splunk/apps/clinicalharmony/default/inputs.conf).
+    token: ${env:SPLUNK_HEC_TOKEN}
+    endpoint: https://splunk:8088/services/collector
+    index: clinicalharmony_metrics
+    source: otel-collector
+    sourcetype: otel:metrics
+    tls:
+      insecure_skip_verify: true   # Splunk's self-signed certificate (dev)
+    retry_on_failure:
+      enabled: true
+    sending_queue:
+      enabled: true
+
+extensions:
+  health_check:
+    endpoint: 0.0.0.0:13133
+
+service:
+  extensions: [health_check]
+  telemetry:
+    logs:
+      level: info
+  pipelines:
+    metrics:
+      receivers: [otlp, kafkametrics, httpcheck]
+      processors: [resource, batch]
+      exporters: [splunk_hec/metrics]

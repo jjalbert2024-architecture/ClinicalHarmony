@@ -49,6 +49,18 @@ management:
     web:
       exposure:
         include: health,info,metrics
+  # Phase 9e: Micrometer meters → OTLP/HTTP → OpenTelemetry Collector → Splunk (metrics index). Off unless
+  # OTLP_METRICS_ENABLED=true (docker-compose sets it), so tests and `mvn spring-boot:run` export nothing.
+  otlp:
+    metrics:
+      export:
+        enabled: ${OTLP_METRICS_ENABLED:false}
+        url: ${OTLP_METRICS_URL:http://localhost:4318/v1/metrics}
+        step: 15s
+  opentelemetry:
+    resource-attributes:
+      service.name: ${spring.application.name}
+      deployment.environment: ${DEPLOYMENT_ENVIRONMENT:dev}
 
 # One JSON object per log line (Logstash layout): MDC + SLF4J key/values become top-level fields.
 logging:

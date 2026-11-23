@@ -1,0 +1,6 @@
+<nav search_view="search" color="#1b6b8f">
+  <view name="clinicalharmony_pipeline" default="true"/>
+  <view name="clinicalharmony_trace"/>
+  <view name="search"/>
+  <a href="/app/clinicalharmony/alerts">Alerts</a>
+</nav>

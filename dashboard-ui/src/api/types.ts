@@ -39,6 +39,8 @@ export interface GatewayConfig {
     scope: string;
     roles: { viewer: string; steward: string };
   };
+  /** 9e: Splunk's Trace dashboard, as the browser sees it; absent = no link. */
+  observability?: { splunkTraceUrl: string };
 }
 
 export interface Me {
@@ -499,6 +501,10 @@ export interface BronzeDetail {
   rawPayload: string;
   /** Silver rows written from this message, each with the Silver patient it belongs to */
   silverRows: { table: string; id: number; silverPatientId: number }[];
+  /** MLLP_KAFKA | REST_KAFKA | REST (legacy direct write, before Phase 9d) */
+  intakeChannel?: string | null;
+  /** The id every service logged this payload under (Kafka intake only) — its trace in Splunk */
+  correlationId?: string | null;
 }
 
 // ---- Silver (layer browser) --------------------------------------------------------------------
@@ -531,7 +537,7 @@ export interface SilverSourceCount {
   patients: number;
 }
 
-export type SilverRowKind = 'CONDITION' | 'OBSERVATION' | 'MEDICATION' | 'ALLERGY';
+export type SilverRowKind = 'CONDITION' | 'OBSERVATION' | 'MEDICATION' | 'ALLERGY' | 'CLAIM';
 
 export interface SilverRow {
   kind: SilverRowKind;
@@ -548,6 +554,30 @@ export interface SilverRow {
   fhirResourceType: string | null;
   fhirId: string | null;
   usCoreCompliant: boolean | null;
+  /** CLAIM rows only (null otherwise): the claim's payer, lifecycle and who it's waiting on. */
+  claim?: ClaimDetail | null;
+}
+
+export type ClaimStatus =
+  | 'SUBMITTED' | 'ACCEPTED' | 'PENDED' | 'PAID' | 'PARTIALLY_PAID' | 'DENIED' | 'REJECTED' | 'APPEALED' | 'VOIDED';
+export type ClaimWaitingOn = 'PAYER' | 'PROVIDER' | 'PATIENT' | 'NOBODY';
+
+/** A claim line's lifecycle (migration 28); every lifecycle field is null for a pre-lifecycle claims file. */
+export interface ClaimDetail {
+  claimId: string;
+  payerId: string | null;
+  payerName: string | null;
+  status: ClaimStatus | null;
+  statusReason: string | null;
+  billedAmount: number;
+  allowedAmount: number | null;
+  paidAmount: number | null;
+  patientResponsibility: number | null;
+  serviceDate: string;
+  submittedDate: string | null;
+  statusDate: string | null;
+  waitingOn: ClaimWaitingOn | null;
+  waitingSince: string | null;
 }
 
 export interface SilverFinding {

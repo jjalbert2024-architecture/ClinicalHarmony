@@ -33,11 +33,15 @@ public class SilverQueries {
     /**
      * One Silver clinical row of any kind, with the Gold FHIR resource mapped from it (null when not built yet).
      *
-     * @param kind CONDITION | OBSERVATION | MEDICATION | ALLERGY
+     * @param kind  CONDITION | OBSERVATION | MEDICATION | ALLERGY | CLAIM (9d: a claims line — code = its ICD-10
+     *              diagnosis, display = the claim id, value = the billed amount, status = the claim status;
+     *              claims are never built into Gold)
+     * @param claim only for CLAIM rows: payer, lifecycle, amounts and who it's waiting on (migration 28)
      */
     public record SilverRow(String kind, long id, String codeSystem, String code, String display, String status,
                             String value, LocalDate date, OffsetDateTime instant, Long rawMessageId,
-                            Long fhirResourceId, String fhirResourceType, String fhirId, Boolean usCoreCompliant) {
+                            Long fhirResourceId, String fhirResourceType, String fhirId, Boolean usCoreCompliant,
+                            ClaimLifecycle.ClaimDetail claim) {
     }
 
     public record Finding(long id, String ruleCode, String severity, String entityType, Long entityId, String message,
@@ -164,6 +168,15 @@ public class SilverQueries {
                        g.id AS fid, g.resource_type, g.fhir_id, g.is_us_core_compliant
                 FROM silver.allergies s""" + FHIR_OF.formatted("allergies") + " WHERE s.patient_id = :id ORDER BY s.id",
                 p, (rs, i) -> row("ALLERGY", rs)));
+        rows.addAll(jdbc.query("""
+                SELECT s.id, 'ICD-10' AS code_system, s.icd10_code AS code, 'Claim ' || s.claim_id AS display,
+                       s.claim_status AS status, 'billed ' || to_char(s.billed_amount, 'FM999999999990.00') AS value,
+                       s.service_date AS d, NULL::timestamptz AS t, s.raw_message_id,
+                       NULL::bigint AS fid, NULL AS resource_type, NULL AS fhir_id, NULL::boolean AS is_us_core_compliant,
+                       s.claim_id, s.payer_id, s.payer_name, s.status_reason, s.billed_amount, s.allowed_amount,
+                       s.paid_amount, s.patient_responsibility, s.submitted_date, s.status_date
+                FROM silver.claims s WHERE s.patient_id = :id ORDER BY s.service_date, s.id
+                """, p, (rs, i) -> claimRow(rs)));
 
         java.util.Set<Long> bronzeIds = new java.util.TreeSet<>();
         if (d.summary().rawMessageId() != null) {
@@ -214,7 +227,19 @@ public class SilverQueries {
                 rs.getString("display"), rs.getString("status"), rs.getString("value"), Sql.date(rs, "d"),
                 Sql.ts(rs, "t"), Sql.longOrNull(rs, "raw_message_id"), Sql.longOrNull(rs, "fid"),
                 rs.getString("resource_type"), rs.getString("fhir_id"),
-                rs.getObject("is_us_core_compliant") == null ? null : rs.getBoolean("is_us_core_compliant"));
+                rs.getObject("is_us_core_compliant") == null ? null : rs.getBoolean("is_us_core_compliant"), null);
+    }
+
+    private static SilverRow claimRow(java.sql.ResultSet rs) throws java.sql.SQLException {
+        SilverRow r = row("CLAIM", rs);
+        ClaimLifecycle.ClaimDetail claim = ClaimLifecycle.detail(rs.getString("claim_id"), rs.getString("payer_id"),
+                rs.getString("payer_name"), rs.getString("status"), rs.getString("status_reason"),
+                rs.getBigDecimal("billed_amount"), rs.getBigDecimal("allowed_amount"), rs.getBigDecimal("paid_amount"),
+                rs.getBigDecimal("patient_responsibility"), r.date(), Sql.date(rs, "submitted_date"),
+                Sql.date(rs, "status_date"));
+        return new SilverRow(r.kind(), r.id(), r.codeSystem(), r.code(), r.display(), r.status(), r.value(), r.date(),
+                r.instant(), r.rawMessageId(), r.fhirResourceId(), r.fhirResourceType(), r.fhirId(), r.usCoreCompliant(),
+                claim);
     }
 
     private static SilverPatientSummary summary(java.sql.ResultSet rs) throws java.sql.SQLException {

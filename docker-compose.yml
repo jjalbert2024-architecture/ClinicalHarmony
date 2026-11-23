@@ -1,3 +1,26 @@
+# Phase 9e: every application service logs one JSON object per line; Docker's built-in splunk log driver sends
+# stdout to Splunk's HTTP Event Collector (published on the Docker host's localhost:8088, which is where the Docker
+# daemon itself connects from). Non-blocking with a buffer, so a service starts and runs even while Splunk is down
+# or still booting; `docker logs` keeps working (Docker's dual logging). DEV-ONLY HEC token.
+x-splunk-logging: &splunk-logging
+  driver: splunk
+  options:
+    splunk-url: https://localhost:8088
+    splunk-token: 9e0c1a7c-0000-4c1f-9e00-c11a1c4a7d0e
+    splunk-index: clinicalharmony
+    splunk-sourcetype: clinicalharmony:json
+    splunk-format: raw
+    splunk-insecureskipverify: "true"
+    splunk-verify-connection: "false"
+    mode: non-blocking
+    max-buffer-size: 4m
+    tag: "{{.Name}}"
+
+# Phase 9e: Micrometer meters → OTLP → otel-collector → Splunk metrics index.
+x-otlp-env: &otlp-env
+  OTLP_METRICS_ENABLED: "true"
+  OTLP_METRICS_URL: http://otel-collector:4318/v1/metrics
+
 services:
 
   # ---------------------------------------------------------------------
@@ -129,21 +152,17 @@ services:
       context: ./ingestion-service
       dockerfile: Dockerfile
     container_name: clinicalharmony-ingestion-service
+    logging: *splunk-logging
     environment:
-      DB_HOST: postgres
-      DB_PORT: 5432
-      DB_NAME: clinicalharmony
-      DB_USER: clinicalharmony
-      DB_PASSWORD: clinicalharmony
+      <<: *otlp-env
       HL7_MLLP_PORT: 8887
       HL7_DEFAULT_SOURCE_SYSTEM: UNKNOWN_HL7_SOURCE
       FHIR_DEFAULT_SOURCE_SYSTEM: UNKNOWN_FHIR_SOURCE
       CLAIMS_DEFAULT_SOURCE_SYSTEM: UNKNOWN_CLAIMS_SOURCE
-      # Phase 9a: MLLP messages go to Kafka (ACK only after acks=all), not straight to Bronze.
+      CCDA_DEFAULT_SOURCE_SYSTEM: UNKNOWN_CCDA_SOURCE
+      # MLLP (9a) and REST (9d) both publish to Kafka (answer only after acks=all); no database since 9d.
       KAFKA_BOOTSTRAP_SERVERS: kafka:29092
     depends_on:
-      postgres:
-        condition: service_healthy
       kafka:
         condition: service_healthy
     ports:
@@ -159,7 +178,9 @@ services:
       context: ./bronze-listener-service
       dockerfile: Dockerfile
     container_name: clinicalharmony-bronze-listener-service
+    logging: *splunk-logging
     environment:
+      <<: *otlp-env
       SPRING_PROFILES_ACTIVE: docker
       DB_HOST: postgres
       DB_PORT: 5432
@@ -185,7 +206,9 @@ services:
       context: ./silver-transformer-service
       dockerfile: Dockerfile
     container_name: clinicalharmony-silver-transformer-service
+    logging: *splunk-logging
     environment:
+      <<: *otlp-env
       SPRING_PROFILES_ACTIVE: docker
       DB_HOST: postgres
       DB_PORT: 5432
@@ -209,7 +232,9 @@ services:
       context: ./ontology-service
       dockerfile: Dockerfile
     container_name: clinicalharmony-ontology-service
+    logging: *splunk-logging
     environment:
+      <<: *otlp-env
       SPRING_PROFILES_ACTIVE: docker
       DB_HOST: postgres
       DB_PORT: 5432
@@ -229,7 +254,9 @@ services:
       context: ./fhir-compliance-service
       dockerfile: Dockerfile
     container_name: clinicalharmony-fhir-compliance-service
+    logging: *splunk-logging
     environment:
+      <<: *otlp-env
       SPRING_PROFILES_ACTIVE: docker
       DB_HOST: postgres
       DB_PORT: 5432
@@ -259,7 +286,9 @@ services:
       context: ./patient-index-service
       dockerfile: Dockerfile
     container_name: clinicalharmony-patient-index-service
+    logging: *splunk-logging
     environment:
+      <<: *otlp-env
       SPRING_PROFILES_ACTIVE: docker
       DB_HOST: postgres
       DB_PORT: 5432
@@ -295,7 +324,9 @@ services:
       context: ./rules-engine-service
       dockerfile: Dockerfile
     container_name: clinicalharmony-rules-engine-service
+    logging: *splunk-logging
     environment:
+      <<: *otlp-env
       SPRING_PROFILES_ACTIVE: docker
       DB_HOST: postgres
       DB_PORT: 5432
@@ -319,7 +350,9 @@ services:
       context: ./api-gateway
       dockerfile: Dockerfile
     container_name: clinicalharmony-api-gateway
+    logging: *splunk-logging
     environment:
+      <<: *otlp-env
       SPRING_PROFILES_ACTIVE: docker
       DB_HOST: postgres
       DB_PORT: 5432
@@ -335,6 +368,7 @@ services:
       GATEWAY_CLIENT_ID: api-gateway
       GATEWAY_CLIENT_SECRET: api-gateway-secret  # DEV-ONLY, from keycloak/realm-clinicalharmony.json
       CORS_ALLOWED_ORIGINS: http://localhost:3000
+      SPLUNK_WEB_URL: http://localhost:8000   # as the BROWSER sees it: the Bronze page's "Open trace in Splunk"
       INGESTION_BASE_URL: http://ingestion-service:8081
       ONTOLOGY_BASE_URL: http://ontology-service:8082
       RULES_ENGINE_BASE_URL: http://rules-engine-service:8083
@@ -382,6 +416,53 @@ services:
     networks:
       - clinicalharmony-net
 
+  # ---------------------------------------------------------------------
+  # Observability (Phase 9e)
+  # ---------------------------------------------------------------------
+
+  # Splunk Enterprise 10.4.5 (amd64 only: runs under x86 emulation on Apple Silicon — turn on Rosetta in Docker
+  # Desktop). Web UI localhost:8000 (admin / the DEV-ONLY password below), HEC 8088, management API 8089. The
+  # clinicalharmony app (indexes, HEC token, JSON field extraction, dashboards, alerts) is mounted from the repo. Trial
+  # license (60 days, with alerting); recreate the container to start a new trial.
+  splunk:
+    image: splunk/splunk:10.4.5
+    platform: linux/amd64
+    container_name: clinicalharmony-splunk
+    environment:
+      SPLUNK_START_ARGS: --accept-license
+      SPLUNK_GENERAL_TERMS: --accept-sgt-current-at-splunk-com
+      SPLUNK_PASSWORD: clinicalharmony-splunk-dev   # DEV-ONLY
+    volumes:
+      # Read-write: the image's provisioning chowns everything under /opt/splunk (a :ro mount fails it). Splunk only
+      # writes local/ and metadata/local.meta here (UI edits), which are git-ignored.
+      - ./observability/splunk/apps/clinicalharmony:/opt/splunk/etc/apps/clinicalharmony
+      - splunk-var:/opt/splunk/var
+    ports:
+      - "8000:8000"   # Splunk Web
+      - "8088:8088"   # HTTP Event Collector
+      - "8089:8089"   # management REST API (smoke test)
+    networks:
+      - clinicalharmony-net
+
+  # OpenTelemetry Collector (contrib 0.164.0): the services' OTLP metrics, Kafka consumer lag and service health
+  # checks → Splunk HEC (clinicalharmony_metrics). Config: observability/otel-collector/config.yaml.
+  otel-collector:
+    image: otel/opentelemetry-collector-contrib:0.164.0
+    container_name: clinicalharmony-otel-collector
+    command: ["--config=/etc/otelcol/config.yaml"]
+    environment:
+      SPLUNK_HEC_TOKEN: 9e0c1a7c-0000-4c1f-9e00-c11a1c4a7d0e   # DEV-ONLY
+    volumes:
+      - ./observability/otel-collector/config.yaml:/etc/otelcol/config.yaml:ro
+    depends_on:
+      kafka:
+        condition: service_healthy
+    ports:
+      - "4318:4318"     # OTLP/HTTP (services, or a host-run service with OTLP_METRICS_URL=http://localhost:4318/v1/metrics)
+      - "13133:13133"   # collector health
+    networks:
+      - clinicalharmony-net
+
 networks:
   clinicalharmony-net:
     driver: bridge
@@ -389,3 +470,4 @@ networks:
 volumes:
   postgres-data:
   kafka-data:
+  splunk-var:

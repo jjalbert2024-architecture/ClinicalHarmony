@@ -71,6 +71,7 @@ public class BronzeIngestedListener {
                         .addKeyValue("observations", result.counts().observations())
                         .addKeyValue("medications", result.counts().medications())
                         .addKeyValue("allergies", result.counts().allergies())
+                        .addKeyValue("claims", result.counts().claims())
                         .addKeyValue("outboxEventId", result.outboxEventId());
                 case FAILED -> log.atWarn().addKeyValue("event", "silver.failed").addKeyValue("reason", result.error());
                 case SKIPPED -> log.atInfo().addKeyValue("event", "silver.skipped")
@@ -85,8 +86,8 @@ public class BronzeIngestedListener {
                     .addKeyValue("offset", record.offset())
                     .addKeyValue("durationMs", (System.nanoTime() - start) / 1_000_000)
                     .log(switch (result.outcome()) {
-                        case TRANSFORMED -> "HL7 message mapped to Silver; Bronze row PROCESSED";
-                        case FAILED -> "HL7 message could not be mapped to Silver; Bronze row FAILED";
+                        case TRANSFORMED -> result.messageType() + " mapped to Silver; Bronze row PROCESSED";
+                        case FAILED -> "Bronze message could not be mapped to Silver; Bronze row FAILED";
                         case SKIPPED -> "Bronze row already " + result.bronzeStatus() + ", skipped";
                     });
             meters.counter("clinicalharmony.silver.messages", "outcome", result.outcome().name().toLowerCase()).increment();

@@ -14,7 +14,7 @@ export function refLink(ref: string | undefined, fhirTarget?: string) {
   if (bronze) return <Link to={`/lineage/bronze/${bronze[1]}`}>{ref}</Link>;
   const silverPatient = /^silver\.patients\/(\d+)$/.exec(ref);
   if (silverPatient) return <Link to={`/lineage/silver/${silverPatient[1]}`}>{ref}</Link>;
-  const silverRow = /^silver\.(conditions|observations|medications|allergies)\/(\d+)$/.exec(ref);
+  const silverRow = /^silver\.(conditions|observations|medications|allergies|claims)\/(\d+)$/.exec(ref);
   if (silverRow) return <Link to={`/lineage/silver/${silverRow[1]}/${silverRow[2]}`}>{ref}</Link>;
   const master = /^gold\.master_patients\/(\d+)$/.exec(ref);
   if (master) return <Link to={`/patients/${master[1]}`}>{ref}</Link>;

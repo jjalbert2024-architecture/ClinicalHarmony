@@ -23,10 +23,10 @@ import java.nio.charset.StandardCharsets;
  * Topics this service owns, and what happens when a record can't be processed.
  *
  * <ul>
- *   <li><b>Bad data</b> (an HL7 message that won't parse) is NOT an error here: it's stored as
- *       QUARANTINED and the offset moves on.</li>
+ *   <li><b>Bad data</b> (HL7 that won't parse, FHIR without resourceType, a ragged claims file, XML that
+ *       isn't a ClinicalDocument) is NOT an error here: it's stored as QUARANTINED and the offset moves on.</li>
  *   <li><b>Technical failure</b> (database down, …): {@code bronze.retry.max-retries} retries with
- *       exponential backoff, then the record goes to {@value Topics#HL7V2_RAW_DLT}, same partition.</li>
+ *       exponential backoff, then the record goes to {@code <its topic>.dlt}, same partition.</li>
  *   <li><b>A broken event</b> (not JSON, no rawPayload): retrying can't fix it, so straight to the DLT.</li>
  * </ul>
  * Boot's auto-configured listener container factory picks the {@link DefaultErrorHandler} bean up.
@@ -39,6 +39,21 @@ public class KafkaConfig {
     @Bean
     NewTopic hl7v2RawDltTopic(BronzeProperties props) {
         return TopicBuilder.name(Topics.HL7V2_RAW_DLT).partitions(props.partitions()).replicas(1).build();
+    }
+
+    @Bean
+    NewTopic fhirRawDltTopic(BronzeProperties props) {
+        return TopicBuilder.name(Topics.FHIR_RAW_DLT).partitions(props.partitions()).replicas(1).build();
+    }
+
+    @Bean
+    NewTopic claimsRawDltTopic(BronzeProperties props) {
+        return TopicBuilder.name(Topics.CLAIMS_RAW_DLT).partitions(props.partitions()).replicas(1).build();
+    }
+
+    @Bean
+    NewTopic ccdaRawDltTopic(BronzeProperties props) {
+        return TopicBuilder.name(Topics.CCDA_RAW_DLT).partitions(props.partitions()).replicas(1).build();
     }
 
     @Bean
@@ -61,7 +76,9 @@ public class KafkaConfig {
                     .addKeyValue("dltTopic", record.topic() + ".dlt")
                     .addKeyValue("reason", cause.getClass().getSimpleName() + ": " + cause.getMessage())
                     .log("Record sent to dead-letter topic");
-            meters.counter("clinicalharmony.bronze.messages", "outcome", "deadlettered").increment();
+            // Same tag keys as the listener's counter (one meter name, one tag set).
+            meters.counter("clinicalharmony.bronze.messages", "outcome", "deadlettered", "format", formatTag(record.topic()),
+                    "channel", "unknown").increment();
             dlt.accept(record, ex);
         };
 
@@ -78,6 +95,14 @@ public class KafkaConfig {
                 .addKeyValue("reason", rootCause(ex).getMessage())
                 .log("Failed to store record (retried with backoff unless non-retryable, then dead-lettered)"));
         return handler;
+    }
+
+    static String formatTag(String topic) {
+        try {
+            return com.clinicalharmony.bronze.inspect.BronzeFormat.ofTopic(topic).name().toLowerCase();
+        } catch (IllegalArgumentException e) {
+            return "unknown";
+        }
     }
 
     static Throwable rootCause(Throwable t) {

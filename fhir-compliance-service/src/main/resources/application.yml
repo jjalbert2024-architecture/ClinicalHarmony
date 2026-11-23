@@ -75,11 +75,33 @@ management:
     web:
       exposure:
         include: health,info,metrics
+  # Phase 9e: Micrometer meters → OTLP/HTTP → OpenTelemetry Collector → Splunk (metrics index). Off unless
+  # OTLP_METRICS_ENABLED=true (docker-compose sets it), so tests and `mvn spring-boot:run` export nothing.
+  otlp:
+    metrics:
+      export:
+        enabled: ${OTLP_METRICS_ENABLED:false}
+        url: ${OTLP_METRICS_URL:http://localhost:4318/v1/metrics}
+        step: 15s
+  opentelemetry:
+    resource-attributes:
+      service.name: ${spring.application.name}
+      deployment.environment: ${DEPLOYMENT_ENVIRONMENT:dev}
+  metrics:
+    distribution:
+      # Latency percentiles exported as gauges (p50 / p95 / p99) for the 9e dashboards.
+      percentiles:
+        clinicalharmony.gold.end_to_end.latency: 0.5, 0.95, 0.99
 
+# Phase 9e: one JSON object per log line (Logstash layout), like every other service — MDC (requestId = the
+# correlation id) and SLF4J key/values (event, masterPatientId, …) become top-level fields in Splunk.
 logging:
-  pattern:
-    # %kvp: the SLF4J key/values of the Phase 9c log events (event=gold.built masterPatientId=… …).
-    console: "%d{yyyy-MM-dd HH:mm:ss.SSS} %-5level [%X{requestId}] %logger{36} - %msg %kvp%n"
+  structured:
+    format:
+      console: logstash
+    json:
+      add:
+        service: ${spring.application.name}
 
 ---
 # Local profile: for running via `mvn spring-boot:run` on the host machine,

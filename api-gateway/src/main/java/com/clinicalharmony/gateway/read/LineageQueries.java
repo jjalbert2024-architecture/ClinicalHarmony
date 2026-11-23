@@ -47,7 +47,12 @@ public class LineageQueries {
     public record DownstreamRow(String table, long id, long silverPatientId) {
     }
 
-    public record BronzeDetail(BronzeSummary summary, String rawPayload, List<DownstreamRow> silverRows) {
+    /**
+     * @param correlationId the id every service logged this payload under (Kafka intake only; null for legacy direct
+     *                      REST rows) — the key to its trace in Splunk
+     */
+    public record BronzeDetail(BronzeSummary summary, String rawPayload, List<DownstreamRow> silverRows,
+                               String intakeChannel, String correlationId) {
     }
 
     public record StepCount(String step, String sourceSchema, String targetTable, long count,
@@ -55,7 +60,9 @@ public class LineageQueries {
     }
 
     /** Silver tables that carry raw_message_id (constants — safe to interpolate). */
-    static final List<String> SILVER_TABLES = List.of("patients", "conditions", "observations", "medications", "allergies");
+    /** Every Silver table with a raw_message_id / patient_id; {@code claims} since 9d part 2 (never mapped to Gold). */
+    static final List<String> SILVER_TABLES = List.of("patients", "conditions", "observations", "medications", "allergies",
+            "claims");
 
     private static final String RECORD_COLUMNS = """
             l.id, l.transformation_step, l.source_schema, l.source_table, l.source_id, l.target_schema,
@@ -201,9 +208,10 @@ public class LineageQueries {
 
     public BronzeDetail bronzeMessage(long id) {
         MapSqlParameterSource params = new MapSqlParameterSource("id", id);
-        List<BronzeDetail> found = jdbc.query("SELECT " + BRONZE_SUMMARY_COLUMNS + ", b.raw_payload" + BRONZE_FROM
+        List<BronzeDetail> found = jdbc.query("SELECT " + BRONZE_SUMMARY_COLUMNS
+                + ", b.raw_payload, b.intake_channel, b.correlation_id" + BRONZE_FROM
                 + " WHERE b.id = :id", params, (rs, i) -> new BronzeDetail(bronzeSummary(rs), rs.getString("raw_payload"),
-                List.of()));
+                List.of(), rs.getString("intake_channel"), rs.getString("correlation_id")));
         if (found.isEmpty()) {
             throw new NotFoundException("No Bronze message " + id);
         }
@@ -215,7 +223,8 @@ public class LineageQueries {
                     .forEach(silver::add);
         }
         BronzeDetail detail = found.get(0);
-        return new BronzeDetail(detail.summary(), detail.rawPayload(), silver);
+        return new BronzeDetail(detail.summary(), detail.rawPayload(), silver, detail.intakeChannel(),
+                detail.correlationId());
     }
 
     /**

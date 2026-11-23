@@ -480,6 +480,71 @@ class ApiGatewayIntegrationTest {
     }
 
     @Test
+    void claimLinesShowOnTheSilverPatientAndTheirBronzeMessage() throws Exception {
+        JdbcTemplate admin = new JdbcTemplate(new DriverManagerDataSource(POSTGRES.getJdbcUrl(), "clinicalharmony",
+                "clinicalharmony"));
+        long member = admin.queryForObject("""
+                INSERT INTO silver.patients (source_system, source_patient_id, first_name, last_name, date_of_birth, gender)
+                VALUES ('CLAIMS_VENDOR_A', 'MBR-GW-1', 'Robert', 'Smith', '1955-07-01', 'male') RETURNING id""", Long.class);
+        long bronze = admin.queryForObject("""
+                INSERT INTO bronze.raw_messages (source_system, message_type, message_format, raw_payload, processing_status,
+                    intake_channel, correlation_id)
+                VALUES ('CLAIMS_VENDOR_A', 'CLAIMS_CSV', 'CSV', 'claim_id,member_id\nCLM-GW-1,MBR-GW-1', 'PROCESSED', 'REST_KAFKA',
+                    'rest-0123456789ab')
+                RETURNING id""", Long.class);
+        long claim = admin.queryForObject("""
+                INSERT INTO silver.claims (patient_id, claim_id, service_date, icd10_code, billed_amount, raw_message_id)
+                VALUES (?, 'CLM-GW-1', '2026-11-01', 'E11.9', 150.00, ?) RETURNING id""", Long.class, member, bronze);
+
+        JsonNode detail = getJson("/api/v1/silver/patients/" + member);
+        JsonNode row = null;
+        for (JsonNode r : detail.get("rows")) {
+            if ("CLAIM".equals(r.get("kind").asText())) {
+                row = r;
+            }
+        }
+        assertThat(row).isNotNull();
+        assertThat(row.get("id").asLong()).isEqualTo(claim);
+        assertThat(row.get("code").asText()).isEqualTo("E11.9");
+        assertThat(row.get("display").asText()).isEqualTo("Claim CLM-GW-1");
+        assertThat(row.get("value").asText()).isEqualTo("billed 150.00");
+        assertThat(row.get("date").asText()).isEqualTo("2026-11-01");
+        assertThat(row.get("fhirId").isNull()).isTrue();
+        // A pre-lifecycle line: claim detail present, lifecycle unknown.
+        assertThat(row.get("claim").get("claimId").asText()).isEqualTo("CLM-GW-1");
+        assertThat(row.get("claim").get("status").isNull()).isTrue();
+        assertThat(row.get("claim").get("waitingOn").isNull()).isTrue();
+
+        // Migration 28: a denied claim is waiting on the provider since its status date.
+        admin.update("""
+                INSERT INTO silver.claims (patient_id, claim_id, service_date, icd10_code, billed_amount, payer_id, payer_name,
+                    claim_status, submitted_date, status_date, allowed_amount, paid_amount, patient_responsibility, status_reason)
+                VALUES (?, 'CLM-GW-2', '2026-11-02', 'I10', 95.50, '60054', 'AETNA', 'DENIED', '2026-11-03', '2026-11-20',
+                    0, 0, 0, 'CO-50')""", member);
+        JsonNode denied = null;
+        for (JsonNode r : getJson("/api/v1/silver/patients/" + member).get("rows")) {
+            if ("Claim CLM-GW-2".equals(r.path("display").asText())) {
+                denied = r;
+            }
+        }
+        assertThat(denied).isNotNull();
+        assertThat(denied.get("status").asText()).isEqualTo("DENIED");
+        JsonNode c = denied.get("claim");
+        assertThat(c.get("payerName").asText()).isEqualTo("AETNA");
+        assertThat(c.get("statusReason").asText()).isEqualTo("CO-50");
+        assertThat(c.get("paidAmount").decimalValue()).isEqualByComparingTo("0");
+        assertThat(c.get("waitingOn").asText()).isEqualTo("PROVIDER");
+        assertThat(c.get("waitingSince").asText()).isEqualTo("2026-11-20");
+
+        JsonNode message = getJson("/api/v1/bronze/messages/" + bronze);
+        assertThat(message.get("silverRows").toString()).contains("\"silver.claims\"");
+        // 9e: the id it was logged under everywhere — the UI's link to its Splunk trace
+        assertThat(message.get("correlationId").asText()).isEqualTo("rest-0123456789ab");
+        assertThat(message.get("intakeChannel").asText()).isEqualTo("REST_KAFKA");
+        assertThat(getJson("/api/v1/silver/rows/claims/" + claim).get("silverPatientId").asLong()).isEqualTo(member);
+    }
+
+    @Test
     void unknownSilverPatientOrRowIs404() throws Exception {
         assertThat(status("/api/v1/silver/patients/999999999")).isEqualTo(404);
         assertThat(status("/api/v1/silver/rows/allergies/999999999")).isEqualTo(404);

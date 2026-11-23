@@ -13,5 +13,8 @@
       "viewer": "dashboard-viewer",
       "steward": "data-steward"
     }
+  },
+  "observability": {
+    "splunkTraceUrl": "http://localhost:8000/en-US/app/clinicalharmony/clinicalharmony_trace"
   }
 }

@@ -1,0 +1,136 @@
+<form version="1.1" refresh="30" theme="light">
+  <label>ClinicalHarmony — Pipeline</label>
+  <description>Bronze → Silver → Gold over Kafka: what came in, what each layer did with it, how far behind each consumer is, what was quarantined or dead-lettered, how long a payload takes to reach Gold, and whether every service is up. Logs: index=clinicalharmony; metrics: index=clinicalharmony_metrics. Counts here are LOG EVENTS since Splunk started (Phase 9e); the ClinicalHarmony dashboard counts DATABASE ROWS ever stored — "Built into Gold" is builds (a patient is rebuilt on every Silver change), "Patients built" the distinct patients; Dead letters leaves out the smoke test's deliberate ones (correlation id smoke-…, tagged since 2026-11-23); p95 includes the smoke test's 3-minute bronze-listener outage, p50 is the normal path. Open any correlation id in Trace by correlation id; its Bronze / Silver / master ids link back to the dashboard.</description>
+  <fieldset submitButton="false" autoRun="true">
+    <input type="time" token="t">
+      <label>Time range</label>
+      <default><earliest>-60m@m</earliest><latest>now</latest></default>
+    </input>
+  </fieldset>
+
+  <row>
+    <panel>
+      <title>Payloads in (last range)</title>
+      <single>
+        <search><query>index=clinicalharmony event IN ("hl7.published","rest.published") | stats count</query><earliest>$t.earliest$</earliest><latest>$t.latest$</latest></search>
+        <option name="underLabel">MLLP + REST, confirmed by Kafka</option>
+      </single>
+    </panel>
+    <panel>
+      <title>Built into Gold</title>
+      <single>
+        <search><query>index=clinicalharmony event="gold.built" | stats count</query><earliest>$t.earliest$</earliest><latest>$t.latest$</latest></search>
+        <option name="underLabel">builds (one per Silver change)</option>
+      </single>
+    </panel>
+    <panel>
+      <title>Patients built</title>
+      <single>
+        <search><query>index=clinicalharmony event="gold.built" | stats dc(silverPatientId) AS patients</query><earliest>$t.earliest$</earliest><latest>$t.latest$</latest></search>
+        <option name="underLabel">distinct patients</option>
+      </single>
+    </panel>
+    <panel>
+      <title>Quarantine rate</title>
+      <single>
+        <search><query>index=clinicalharmony event IN ("bronze.stored","bronze.quarantined") | stats count(eval(event="bronze.quarantined")) AS q count AS n | eval rate=if(n=0,0,round(100*q/n,1)) | fields rate</query><earliest>$t.earliest$</earliest><latest>$t.latest$</latest></search>
+        <option name="unit">%</option>
+        <option name="underLabel">of payloads stored in Bronze</option>
+      </single>
+    </panel>
+    <panel>
+      <title>Dead letters</title>
+      <single>
+        <search><query>index=clinicalharmony event="*.deadlettered" NOT correlationId="smoke-*" | stats count</query><earliest>$t.earliest$</earliest><latest>$t.latest$</latest></search>
+        <option name="rangeColors">["0x53a051","0xdc4e41"]</option>
+        <option name="rangeValues">[0]</option>
+        <option name="useColors">1</option>
+        <option name="underLabel">excl. smoke tests</option>
+      </single>
+    </panel>
+    <panel>
+      <title>End-to-end p50 (intake → Gold)</title>
+      <single>
+        <search><query>index=clinicalharmony event="gold.built" endToEndMs=* | stats perc50(endToEndMs) AS p50 | eval p50=round(p50/1000,1)</query><earliest>$t.earliest$</earliest><latest>$t.latest$</latest></search>
+        <option name="unit">s</option>
+        <option name="underLabel">typical payload</option>
+        <option name="numberPrecision">0.0</option>
+      </single>
+    </panel>
+    <panel>
+      <title>End-to-end p95 (intake → Gold)</title>
+      <single>
+        <search><query>index=clinicalharmony event="gold.built" endToEndMs=* | stats perc95(endToEndMs) AS p95 | eval p95=round(p95/1000,1)</query><earliest>$t.earliest$</earliest><latest>$t.latest$</latest></search>
+        <option name="unit">s</option>
+        <option name="underLabel">incl. test outages</option>
+        <option name="numberPrecision">0.0</option>
+      </single>
+    </panel>
+  </row>
+
+  <row>
+    <panel>
+      <title>Throughput by layer (per minute)</title>
+      <chart>
+        <search><query>index=clinicalharmony event IN ("hl7.published","rest.published","bronze.stored","silver.mapped","gold.built","pmi.run") | eval layer=case(event IN ("hl7.published","rest.published"),"1 intake",event="bronze.stored","2 Bronze",event="silver.mapped","3 Silver",event="gold.built","4 Gold",event="pmi.run","5 PMI runs") | timechart span=1m count BY layer</query><earliest>$t.earliest$</earliest><latest>$t.latest$</latest></search>
+        <option name="charting.chart">line</option>
+        <option name="charting.legend.placement">bottom</option>
+      </chart>
+    </panel>
+    <panel>
+      <title>Consumer lag by group (messages behind)</title>
+      <chart>
+        <search><query>| mstats max(kafka.consumer_group.lag_sum) AS lag WHERE index=clinicalharmony_metrics span=30s BY group | timechart span=30s max(lag) BY group</query><earliest>$t.earliest$</earliest><latest>$t.latest$</latest></search>
+        <option name="charting.chart">line</option>
+        <option name="charting.legend.placement">bottom</option>
+      </chart>
+    </panel>
+  </row>
+
+  <row>
+    <panel>
+      <title>Bronze outcomes (stored / quarantined / duplicate) and Silver failures</title>
+      <chart>
+        <search><query>index=clinicalharmony event IN ("bronze.stored","bronze.quarantined","bronze.duplicate","silver.failed") | timechart span=5m count BY event</query><earliest>$t.earliest$</earliest><latest>$t.latest$</latest></search>
+        <option name="charting.chart">column</option>
+        <option name="charting.chart.stackMode">stacked</option>
+        <option name="charting.legend.placement">bottom</option>
+      </chart>
+    </panel>
+    <panel>
+      <title>Dead letters by service (smoke-test records shown apart)</title>
+      <chart>
+        <search><query>index=clinicalharmony event="*.deadlettered" | eval origin=if(like(correlationId,"smoke-%"),"smoke test",service) | timechart span=5m count BY origin</query><earliest>$t.earliest$</earliest><latest>$t.latest$</latest></search>
+        <option name="charting.chart">column</option>
+        <option name="charting.legend.placement">bottom</option>
+      </chart>
+    </panel>
+  </row>
+
+  <row>
+    <panel>
+      <title>End-to-end latency, intake → Gold (seconds)</title>
+      <chart>
+        <search><query>index=clinicalharmony event="gold.built" endToEndMs=* | eval s=endToEndMs/1000 | timechart span=5m perc50(s) AS p50 perc95(s) AS p95 max(s) AS max</query><earliest>$t.earliest$</earliest><latest>$t.latest$</latest></search>
+        <option name="charting.chart">line</option>
+        <option name="charting.legend.placement">bottom</option>
+      </chart>
+    </panel>
+    <panel>
+      <title>Service health (/actuator/health every 15 s)</title>
+      <table>
+        <search><query>| mstats max(httpcheck.status) AS up WHERE index=clinicalharmony_metrics AND http.status_class="2xx" earliest=-2m BY http.url | append [| mstats sum(httpcheck.error) AS errors WHERE index=clinicalharmony_metrics earliest=-2m BY http.url] | stats max(up) AS up sum(errors) AS errors BY http.url | rex field=http.url "//(?&lt;service&gt;[^:/]+)" | eval status=if(up=1 AND (isnull(errors) OR errors=0),"UP","DOWN") | table service status http.url | sort service</query></search>
+        <format type="color" field="status"><colorPalette type="map">{"UP":#53A051,"DOWN":#DC4E41}</colorPalette></format>
+      </table>
+    </panel>
+  </row>
+
+  <row>
+    <panel>
+      <title>Triggered alerts (last 24 h)</title>
+      <table>
+        <search><query>| rest /servicesNS/-/clinicalharmony/alerts/fired_alerts/- splunk_server=local | eval fired=strftime(trigger_time,"%Y-%m-%d %H:%M:%S") | table fired savedsearch_name severity | sort - fired</query></search>
+      </table>
+    </panel>
+  </row>
+</form>

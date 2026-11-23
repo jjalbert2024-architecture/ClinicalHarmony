@@ -5,7 +5,7 @@ import java.time.OffsetDateTime;
 /**
  * Where a Silver row came from: when it was written, its patient's source system, and — when it
  * links back to Bronze via raw_message_id — that Bronze row's checksum, arrival time and type.
- * {@code bronzeIntakeChannel} is REST or MLLP_KAFKA (migration 23). The bronze* fields are all null when there's no Bronze link (e.g. migration 17's seed rows).
+ * {@code bronzeIntakeChannel} is REST (pre-9d direct write), MLLP_KAFKA (migration 23) or REST_KAFKA (migration 26). The bronze* fields are all null when there's no Bronze link (e.g. migration 17's seed rows).
  */
 public record SilverProvenance(
         OffsetDateTime silverCreatedAt,
@@ -18,9 +18,16 @@ public record SilverProvenance(
 ) {
     /** Bronze row written by the Phase 9a Kafka path (MLLP → Kafka → bronze-listener-service). */
     public static final String MLLP_KAFKA = "MLLP_KAFKA";
+    /** Bronze row written by the Phase 9d Kafka path (REST → Kafka → bronze-listener-service). */
+    public static final String REST_KAFKA = "REST_KAFKA";
 
     public boolean viaKafka() {
-        return MLLP_KAFKA.equals(bronzeIntakeChannel);
+        return MLLP_KAFKA.equals(bronzeIntakeChannel) || REST_KAFKA.equals(bronzeIntakeChannel);
+    }
+
+    /** "MLLP" or "REST" for a Kafka-fed row, else null. */
+    public String kafkaDoor() {
+        return MLLP_KAFKA.equals(bronzeIntakeChannel) ? "MLLP" : REST_KAFKA.equals(bronzeIntakeChannel) ? "REST" : null;
     }
 
     public boolean hasBronzeLink() {

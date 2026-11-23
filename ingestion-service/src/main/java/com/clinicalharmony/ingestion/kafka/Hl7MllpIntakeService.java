@@ -19,7 +19,7 @@ import java.util.concurrent.ThreadLocalRandom;
  * {@value KafkaTopics#HL7V2_RAW} → ACK {@code AA} only once Kafka confirms (acks=all), {@code AE} if it
  * can't. Nothing is written to Postgres here; bronze-listener-service does that.
  *
- * <p>The REST path ({@code POST /api/ingestion/hl7}) is unchanged in 9a and still lands in Bronze directly.
+ * <p>Since 9d the REST paths publish to Kafka too ({@code intake.RestIntakeService}).
  */
 @Service
 public class Hl7MllpIntakeService {
@@ -80,7 +80,7 @@ public class Hl7MllpIntakeService {
                         .log("HL7 message published to Kafka, ACK AA");
                 accepted.increment();
                 return new Outcome(true, Hl7AckBuilder.accept(envelope, ackControlId), correlationId, published);
-            } catch (Hl7RawPublisher.PublishFailedException e) {
+            } catch (PublishFailedException e) {
                 long durationMs = (System.nanoTime() - start) / 1_000_000;
                 log.atError().addKeyValue("event", "hl7.publish_failed")
                         .addKeyValue("topic", KafkaTopics.HL7V2_RAW)

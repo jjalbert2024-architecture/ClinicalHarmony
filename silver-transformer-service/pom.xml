@@ -36,6 +36,18 @@
             <groupId>org.springframework.boot</groupId>
             <artifactId>spring-boot-starter-actuator</artifactId>
         </dependency>
+
+        <!-- Phase 9e: Micrometer → OTLP (OpenTelemetry Collector → Splunk). Version from the Boot BOM (Micrometer
+             1.15.12); protobuf-java pinned to 4.29.3 (opentelemetry-proto asks for 4.28.3). -->
+        <dependency>
+            <groupId>io.micrometer</groupId>
+            <artifactId>micrometer-registry-otlp</artifactId>
+        </dependency>
+        <dependency>
+            <groupId>com.google.protobuf</groupId>
+            <artifactId>protobuf-java</artifactId>
+            <version>4.29.3</version>
+        </dependency>
         <!-- Version managed by Boot 3.5.16: spring-kafka 3.3.16 / kafka-clients 3.9.2 -->
         <dependency>
             <groupId>org.springframework.kafka</groupId>
@@ -57,6 +69,13 @@
             <groupId>ca.uhn.hapi</groupId>
             <artifactId>hapi-structures-v25</artifactId>
             <version>${hapi.version}</version>
+        </dependency>
+
+        <!-- Claims CSV lines → Silver (9d part 2): same version as ingestion / bronze-listener -->
+        <dependency>
+            <groupId>org.apache.commons</groupId>
+            <artifactId>commons-csv</artifactId>
+            <version>1.10.0</version>
         </dependency>
 
         <!-- Test -->

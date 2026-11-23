@@ -377,7 +377,7 @@ public class Hl7SilverMapper {
         }
     }
 
-    static Instant timestamp(String value, String where) {
+    public static Instant timestamp(String value, String where) {
         if (value == null) {
             return null;
         }

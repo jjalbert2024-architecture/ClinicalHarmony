@@ -18,7 +18,11 @@ public record GatewayProperties(Cors cors, Ui ui, ServiceToken serviceToken, Map
     }
 
     /** Public login settings for the SPA: Keycloak issuer + the public PKCE client id. */
-    public record Ui(String issuer, String clientId) {
+    /**
+     * @param splunkUrl Splunk Web as the BROWSER sees it (9e) — the UI links a Bronze message's correlation id to the
+     *                  Trace dashboard there; blank = no link
+     */
+    public record Ui(String issuer, String clientId, String splunkUrl) {
     }
 
     /** The gateway's own confidential client (client_credentials) for calling downstream services. */

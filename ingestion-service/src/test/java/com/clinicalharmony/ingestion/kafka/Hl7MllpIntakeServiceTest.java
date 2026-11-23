@@ -50,7 +50,7 @@ class Hl7MllpIntakeServiceTest {
     @Test
     void naksAeWhenKafkaDoesNotConfirm() {
         when(publisher.publish(any(), any(), any(), any(), any(), any()))
-                .thenThrow(new Hl7RawPublisher.PublishFailedException("Kafka did not confirm within 10000 ms", null));
+                .thenThrow(new PublishFailedException("Kafka did not confirm within 10000 ms", null));
 
         Hl7MllpIntakeService.Outcome outcome = service.handle(Hl7SampleMessages.ORU_R01);
 

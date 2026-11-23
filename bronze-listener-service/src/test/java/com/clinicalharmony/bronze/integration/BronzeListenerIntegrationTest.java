@@ -49,9 +49,9 @@ import java.util.function.BooleanSupplier;
 import static org.assertj.core.api.Assertions.assertThat;
 
 /**
- * bronze-listener-service end to end: real Postgres initialized from docs/db-init (incl. migration 23)
+ * bronze-listener-service end to end: real Postgres initialized from docs/db-init (incl. migrations 23 + 26)
  * and a real Kafka broker (cp-kafka 7.6.1, KRaft — the compose image). Records are produced exactly as
- * ingestion-service's Hl7RawPublisher produces them.
+ * ingestion-service produces them (MLLP since 9a; REST HL7 / FHIR / claims / C-CDA since 9d).
  */
 @SpringBootTest(properties = {
         "bronze.retry.initial-interval=100ms",
@@ -85,6 +85,21 @@ class BronzeListenerIntegrationTest {
         @Bean
         NewTopic hl7v2Raw() {
             return TopicBuilder.name(Topics.HL7V2_RAW).partitions(3).replicas(1).build();
+        }
+
+        @Bean
+        NewTopic fhirRaw() {
+            return TopicBuilder.name(Topics.FHIR_RAW).partitions(3).replicas(1).build();
+        }
+
+        @Bean
+        NewTopic claimsRaw() {
+            return TopicBuilder.name(Topics.CLAIMS_RAW).partitions(3).replicas(1).build();
+        }
+
+        @Bean
+        NewTopic ccdaRaw() {
+            return TopicBuilder.name(Topics.CCDA_RAW).partitions(3).replicas(1).build();
         }
     }
 
@@ -122,7 +137,8 @@ class BronzeListenerIntegrationTest {
                     ConsumerConfig.VALUE_DESERIALIZER_CLASS_CONFIG, StringDeserializer.class,
                     ConsumerConfig.METADATA_MAX_AGE_CONFIG, 1000);
             try (KafkaConsumer<String, String> c = new KafkaConsumer<>(props)) {
-                c.subscribe(List.of(Topics.BRONZE_INGESTED, Topics.HL7V2_RAW_DLT));
+                c.subscribe(List.of(Topics.BRONZE_INGESTED, Topics.HL7V2_RAW_DLT, Topics.FHIR_RAW_DLT,
+                        Topics.CLAIMS_RAW_DLT, Topics.CCDA_RAW_DLT));
                 while (tailing) {
                     if (!c.assignment().isEmpty()) {
                         tailReady = true;
@@ -260,7 +276,121 @@ class BronzeListenerIntegrationTest {
                 sha256(raw))).isZero();
     }
 
+    @Test
+    void restHl7IsStoredAsRestKafkaAndTheSameMessageThroughMllpIsADuplicate() throws Exception {
+        String raw = unique(Hl7Samples.ADT_A01, "T8");
+        Map<String, Object> rest = event(raw, "CITY_HOSPITAL");
+        rest.put("intakeChannel", "REST");
+        produce(Topics.HL7V2_RAW, mapper.writeValueAsString(rest), "corr-t8a", "CITY_HOSPITAL|MRN100234");
+        Map<String, Object> row = awaitRow(raw);
+        assertThat(row.get("intake_channel")).isEqualTo("REST_KAFKA");
+        assertThat(row.get("message_type")).isEqualTo("HL7V2");
+        long id = ((Number) row.get("id")).longValue();
+        assertThat(mapper.readTree(awaitIngested(id).value()).get("intakeChannel").asText()).isEqualTo("REST_KAFKA");
+
+        send(raw, "CITY_HOSPITAL", "corr-t8b");   // same bytes, other door
+        String marker = unique(Hl7Samples.ADT_A01, "T8-after");
+        send(marker, "CITY_HOSPITAL", "corr-t8c");
+        awaitRow(marker);
+        assertThat(jdbc.queryForObject("SELECT count(*) FROM bronze.raw_messages WHERE payload_checksum = ?", Long.class,
+                sha256(raw))).isEqualTo(1);
+    }
+
+    @Test
+    void fhirIsStoredAsJsonAndAnnouncedWithItsResourceType() throws Exception {
+        String raw = "{\"resourceType\":\"Patient\",\"id\":\"" + UUID.randomUUID() + "\"}";
+        produce(Topics.FHIR_RAW, mapper.writeValueAsString(restEvent(raw, "PARTNER_CLINIC", "FHIR_JSON")), "corr-t9",
+                "PARTNER_CLINIC|p");
+        Map<String, Object> row = awaitRow(raw);
+        assertThat(row).containsEntry("message_type", "FHIR_JSON").containsEntry("message_format", "JSON")
+                .containsEntry("processing_status", "PENDING").containsEntry("intake_channel", "REST_KAFKA")
+                .containsEntry("kafka_topic", Topics.FHIR_RAW).containsEntry("source_system", "PARTNER_CLINIC");
+        JsonNode value = mapper.readTree(awaitIngested(((Number) row.get("id")).longValue()).value());
+        assertThat(value.get("messageType").asText()).isEqualTo("FHIR_JSON");
+        assertThat(value.get("fhirResourceType").asText()).isEqualTo("Patient");
+        assertThat(value.has("hl7MessageType")).isFalse();
+    }
+
+    @Test
+    void fhirWithoutResourceTypeIsQuarantined() throws Exception {
+        String raw = "{\"notFhir\":\"" + UUID.randomUUID() + "\"}";
+        produce(Topics.FHIR_RAW, mapper.writeValueAsString(restEvent(raw, "PARTNER_CLINIC", "FHIR_JSON")), "corr-t10", "k10");
+        Map<String, Object> row = awaitRow(raw);
+        assertThat(row.get("processing_status")).isEqualTo("QUARANTINED");
+        assertThat((String) row.get("error_message")).contains("no resourceType");
+    }
+
+    @Test
+    void claimsFileIsSplitIntoOneAnnouncedRowPerLineAndAResendIsADuplicate() throws Exception {
+        String tag = UUID.randomUUID().toString().substring(0, 8);
+        String header = "claim_id,member_id,service_date,icd10_code,billed_amount";
+        String line1 = "CLM-" + tag + "-1,MBR-1,2026-06-01,E11.9,150.00";
+        String line2 = "CLM-" + tag + "-2,MBR-2,2026-06-02,I10,95.50";
+        String file = header + "\n" + line1 + "\n" + line2 + "\n";
+        produce(Topics.CLAIMS_RAW, mapper.writeValueAsString(restEvent(file, "CLAIMS_VENDOR_A", "CLAIMS_CSV")), "corr-t11a", "k11");
+
+        Map<String, Object> row1 = awaitRow(header + "\n" + line1);
+        Map<String, Object> row2 = awaitRow(header + "\n" + line2);
+        for (Map<String, Object> row : List.of(row1, row2)) {
+            assertThat(row).containsEntry("message_type", "CLAIMS_CSV").containsEntry("message_format", "CSV")
+                    .containsEntry("processing_status", "PENDING").containsEntry("correlation_id", "corr-t11a");
+        }
+        JsonNode e2 = mapper.readTree(awaitIngested(((Number) row2.get("id")).longValue()).value());
+        assertThat(e2.get("claimLine").asInt()).isEqualTo(2);
+        assertThat(e2.get("claimLines").asInt()).isEqualTo(2);
+        assertThat(e2.get("payloadChecksum").asText()).isEqualTo(sha256(header + "\n" + line2));
+        // The whole file is never stored, only its lines.
+        assertThat(jdbc.queryForObject("SELECT count(*) FROM bronze.raw_messages WHERE payload_checksum = ?", Long.class,
+                sha256(file))).isZero();
+
+        produce(Topics.CLAIMS_RAW, mapper.writeValueAsString(restEvent(file, "CLAIMS_VENDOR_A", "CLAIMS_CSV")), "corr-t11b", "k11");
+        String marker = header + "\nCLM-" + tag + "-3,MBR-3,2026-06-03,I10,10.00\n";
+        produce(Topics.CLAIMS_RAW, mapper.writeValueAsString(restEvent(marker, "CLAIMS_VENDOR_A", "CLAIMS_CSV")), "corr-t11c", "k11");
+        awaitRow(marker.strip());
+        assertThat(jdbc.queryForObject("SELECT count(*) FROM bronze.raw_messages WHERE raw_payload LIKE ?", Long.class,
+                "%CLM-" + tag + "-%")).isEqualTo(3);
+    }
+
+    @Test
+    void raggedClaimsFileIsQuarantinedWhole() throws Exception {
+        String file = "claim_id,member_id,billed_amount\nCLM-" + UUID.randomUUID() + ",MBR-1\n";
+        produce(Topics.CLAIMS_RAW, mapper.writeValueAsString(restEvent(file, "CLAIMS_VENDOR_A", "CLAIMS_CSV")), "corr-t12", "k12");
+        Map<String, Object> row = awaitRow(file);
+        assertThat(row.get("processing_status")).isEqualTo("QUARANTINED");
+        assertThat((String) row.get("error_message")).isEqualTo("Row 1 has 2 columns, header has 3");
+    }
+
+    @Test
+    void ccdaIsStoredAsXml() throws Exception {
+        String raw = "<ClinicalDocument xmlns=\"urn:hl7-org:v3\"><id root=\"1.2.3\" extension=\"" + UUID.randomUUID()
+                + "\"/><recordTarget><patientRole><id extension=\"MRN-1\"/></patientRole></recordTarget></ClinicalDocument>";
+        produce(Topics.CCDA_RAW, mapper.writeValueAsString(restEvent(raw, "NORTH_CLINIC", "CCDA_XML")), "corr-t13", "NORTH_CLINIC|MRN-1");
+        Map<String, Object> row = awaitRow(raw);
+        assertThat(row).containsEntry("message_type", "CCDA_XML").containsEntry("message_format", "XML")
+                .containsEntry("processing_status", "PENDING");
+        JsonNode value = mapper.readTree(awaitIngested(((Number) row.get("id")).longValue()).value());
+        assertThat(value.get("ccdaDocumentId").asText()).startsWith("1.2.3^");
+    }
+
+    @Test
+    void brokenFhirEventGoesToTheFhirDeadLetterTopic() {
+        produce(Topics.FHIR_RAW, "{not json", "corr-t14", "k14");
+        ConsumerRecord<String, String> dead = awaitDlt("corr-t14");
+        assertThat(dead.topic()).isEqualTo(Topics.FHIR_RAW_DLT);
+    }
+
     // ---------------------------------------------------------------------------------------------
+
+    private Map<String, Object> restEvent(String raw, String source, String messageType) {
+        Map<String, Object> v = new LinkedHashMap<>();
+        v.put("sourceSystem", source);
+        v.put("payloadChecksum", sha256(raw));
+        v.put("receivedAt", Instant.now().toString());
+        v.put("intakeChannel", "REST");
+        v.put("messageType", messageType);
+        v.put("rawPayload", raw);
+        return v;
+    }
 
     /** Make each test's payload unique so tests don't dedupe against each other. */
     private static String unique(String hl7, String tag) {
@@ -288,8 +418,12 @@ class BronzeListenerIntegrationTest {
     }
 
     private String produce(String value, String correlationId, String key) {
+        return produce(Topics.HL7V2_RAW, value, correlationId, key);
+    }
+
+    private String produce(String topic, String value, String correlationId, String key) {
         String eventId = UUID.randomUUID().toString();
-        ProducerRecord<String, String> record = new ProducerRecord<>(Topics.HL7V2_RAW, key, value);
+        ProducerRecord<String, String> record = new ProducerRecord<>(topic, key, value);
         record.headers().add(new RecordHeader("event-id", eventId.getBytes(StandardCharsets.UTF_8)));
         record.headers().add(new RecordHeader("event-type", "hl7v2.raw".getBytes(StandardCharsets.UTF_8)));
         record.headers().add(new RecordHeader("correlation-id", correlationId.getBytes(StandardCharsets.UTF_8)));
@@ -328,10 +462,17 @@ class BronzeListenerIntegrationTest {
     }
 
     private ConsumerRecord<String, String> dlt(String correlationId) {
-        List<ConsumerRecord<String, String>> all = SEEN.getOrDefault(Topics.HL7V2_RAW_DLT, List.of());
-        synchronized (all) {
-            return all.stream().filter(r -> correlationId.equals(header(r, "correlation-id"))).findFirst().orElse(null);
+        for (String topic : List.of(Topics.HL7V2_RAW_DLT, Topics.FHIR_RAW_DLT, Topics.CLAIMS_RAW_DLT, Topics.CCDA_RAW_DLT)) {
+            List<ConsumerRecord<String, String>> all = SEEN.getOrDefault(topic, List.of());
+            synchronized (all) {
+                ConsumerRecord<String, String> hit = all.stream()
+                        .filter(r -> correlationId.equals(header(r, "correlation-id"))).findFirst().orElse(null);
+                if (hit != null) {
+                    return hit;
+                }
+            }
         }
+        return null;
     }
 
     private static void await(BooleanSupplier condition, String what) {

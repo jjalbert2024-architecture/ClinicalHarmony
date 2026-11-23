@@ -12,6 +12,7 @@ import org.springframework.boot.autoconfigure.condition.ConditionalOnProperty;
 import org.springframework.kafka.annotation.KafkaListener;
 import org.springframework.stereotype.Component;
 
+import java.time.Duration;
 import java.time.Instant;
 
 /**
@@ -37,7 +38,7 @@ public class SilverPatientChangedListener {
         this.mapper = mapper;
         this.meters = meters;
         this.endToEnd = Timer.builder("clinicalharmony.gold.end_to_end.latency")
-                .description("MLLP receipt of the raw HL7 message → its patient's Gold build committed")
+                .description("Intake (MLLP or REST) of the raw payload → its patient's Gold build committed")
                 .register(meters);
     }
 
@@ -64,6 +65,15 @@ public class SilverPatientChangedListener {
                     new KafkaSource(record.topic(), record.partition(), record.offset(), record.key(), eventId, correlationId));
             SilverPatientBuildResult build = result.build();
 
+            // MLLP / REST receipt of the raw payload (Bronze received_at) → this Gold build: the end-to-end latency, as a
+            // timer (metrics) and on the log line (so Splunk can also compute exact percentiles from the logs).
+            Long endToEndMs = builder.bronzeReceivedAt(event.rawMessageId())
+                    .map(received -> {
+                        Duration latency = GoldBuilder.since(received, Instant.now());
+                        endToEnd.record(latency);
+                        return latency.toMillis();
+                    })
+                    .orElse(null);
             log.atInfo().addKeyValue("event", "gold.built")
                     .addKeyValue("silverPatientId", build.silverPatientId())
                     .addKeyValue("masterPatientId", build.masterPatientId())
@@ -73,6 +83,7 @@ public class SilverPatientChangedListener {
                     .addKeyValue("nonCompliant", build.resourceCount() - build.compliantCount())
                     .addKeyValue("outboxEventId", result.outboxEventId())
                     .addKeyValue("durationMs", (System.nanoTime() - start) / 1_000_000)
+                    .addKeyValue("endToEndMs", endToEndMs)
                     .log("Silver patient built into Gold (resources, master and BRONZE → SILVER → GOLD lineage)");
             log.atDebug().addKeyValue("event", "gold.lineage.written")
                     .addKeyValue("masterPatientId", build.masterPatientId())
@@ -82,8 +93,6 @@ public class SilverPatientChangedListener {
             meters.counter("clinicalharmony.gold.resources", "compliant", "true").increment(build.compliantCount());
             meters.counter("clinicalharmony.gold.resources", "compliant", "false")
                     .increment(build.resourceCount() - build.compliantCount());
-            builder.bronzeReceivedAt(event.rawMessageId())
-                    .ifPresent(received -> endToEnd.record(GoldBuilder.since(received, Instant.now())));
         } finally {
             MDC.remove("correlationId");
             MDC.remove("causationId");

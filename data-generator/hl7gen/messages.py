@@ -33,6 +33,10 @@ class Patient:
     allergy: Optional[tuple] = None
     admitted: bool = False
     twin: Optional["Patient"] = None   # the same person registered at the other facility (9c)
+    # 9d bookkeeping (never touches the random stream, so HL7 bytes are unchanged):
+    phone_changed: bool = False        # an A08 gave this patient a new phone during the run
+    adt_corrupted: bool = False        # one of this patient's ADTs was sent malformed
+    first_adt_index: Optional[int] = None   # send position (1-based) of the first ADT
 
 
 DUPLICATE_KINDS = ("IDENTICAL", "FUZZY")
@@ -274,8 +278,15 @@ def generate(count: int = 100, seed: int = 42, malformed_rate: float = 0.10,
     return generate_run(count, seed, malformed_rate, duplicate_rate)[0]
 
 
+def with_namespace(mrn: str, namespace: int) -> str:
+    """--reset (9d): namespace k > 0 inserts k after the 2-letter prefix (CH123456 → CH3123456), so the same seed
+    makes new patients instead of being deduplicated. Namespace 0 keeps 9a–9c identifiers byte for byte."""
+    return mrn if namespace == 0 else mrn[:2] + str(namespace) + mrn[2:]
+
+
 def generate_run(count: int = 100, seed: int = 42, malformed_rate: float = 0.10,
-                 duplicate_rate: float = 0.10) -> Tuple[List[GeneratedMessage], List[Duplicate]]:
+                 duplicate_rate: float = 0.10, namespace: int = 0,
+                 patients_out: Optional[list] = None) -> Tuple[List[GeneratedMessage], List[Duplicate]]:
     """The messages plus the cross-facility duplicates planted among their patients (9c).
 
     A duplicate's registration (A01 at CITY_HOSPITAL / A04 at NORTH_CLINIC) is sent right after the
@@ -289,6 +300,14 @@ def generate_run(count: int = 100, seed: int = 42, malformed_rate: float = 0.10,
     rng = random.Random(seed)
     patients = make_patients(rng, max(1, count // 3))
     duplicates = make_duplicates(rng, patients, duplicate_rate)
+    if namespace:
+        for p in patients:
+            p.mrn = with_namespace(p.mrn, namespace)
+        for d in duplicates:
+            d.original_mrn = with_namespace(d.original_mrn, namespace)
+            d.twin_mrn = with_namespace(d.twin_mrn, namespace)
+    if patients_out is not None:
+        patients_out.extend(patients)
     twins = {id(p.twin) for p in patients if p.twin is not None}
     # Twins only arrive via their original (below); later messages may be for either registration.
     first_pick = [p for p in patients if id(p) not in twins]
@@ -303,7 +322,7 @@ def generate_run(count: int = 100, seed: int = 42, malformed_rate: float = 0.10,
     bad_seen = 0
     for i in range(count):
         when += timedelta(minutes=rng.randrange(2, 15), seconds=rng.randrange(0, 60))
-        control_id = "S%d-%05d" % (seed, i + 1)
+        control_id = ("S%d-%05d" % (seed, i + 1)) if namespace == 0 else ("S%dN%d-%05d" % (seed, namespace, i + 1))
         if queued:
             p = queued.pop(0)
         else:
@@ -315,6 +334,7 @@ def generate_run(count: int = 100, seed: int = 42, malformed_rate: float = 0.10,
                 queued.append(p.twin)
             msg = build_adt(rng, p, "A01" if p.facility == "CITY_HOSPITAL" else "A04", when, control_id)
             p.admitted = True
+            p.first_adt_index = i + 1
         else:
             r = rng.random()
             if r < 0.55:
@@ -324,10 +344,13 @@ def generate_run(count: int = 100, seed: int = 42, malformed_rate: float = 0.10,
             else:
                 if rng.random() < 0.5:
                     p.phone = "555%07d" % rng.randrange(0, 9999999)
+                    p.phone_changed = True
                 msg = build_adt(rng, p, "A08", when, control_id)
         msg.index = i + 1
         if i in bad_positions:
             msg = corrupt(rng, msg, kinds[bad_seen % len(kinds)])
             bad_seen += 1
+            if msg.message_type.startswith("ADT"):
+                p.adt_corrupted = True
         messages.append(msg)
     return messages, duplicates

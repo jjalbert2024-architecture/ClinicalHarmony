@@ -6,6 +6,9 @@ import com.clinicalharmony.silver.hl7.MappingException;
 import com.clinicalharmony.silver.hl7.SilverRecord;
 import com.clinicalharmony.silver.listener.BronzeIngestedEvent;
 import com.clinicalharmony.silver.listener.InvalidEventException;
+import com.clinicalharmony.silver.map.CcdaSilverMapper;
+import com.clinicalharmony.silver.map.ClaimsSilverMapper;
+import com.clinicalharmony.silver.map.FhirSilverMapper;
 import com.clinicalharmony.silver.outbox.OutboxRepository;
 import org.springframework.jdbc.core.JdbcTemplate;
 import org.springframework.stereotype.Service;
@@ -19,7 +22,8 @@ import java.util.Map;
 import java.util.UUID;
 
 /**
- * One transaction per {@code clinicalharmony.bronze.ingested} record: the Bronze row is locked, mapped,
+ * One transaction per {@code clinicalharmony.bronze.ingested} record (or backlog-swept Bronze row): the Bronze row
+ * is locked, mapped by its format's mapper (HL7 v2, FHIR JSON, claims CSV line, C-CDA — 9d part 2),
  * written to {@code silver.*}, marked PROCESSED, and the {@code clinicalharmony.silver.patient.changed}
  * outbox event is inserted — all or nothing. A message that can't be mapped makes the Bronze row FAILED
  * (with the reason) and writes nothing to Silver.
@@ -32,7 +36,9 @@ import java.util.UUID;
  *   <li>conditions (DG1) and allergies (AL1) are patient-level lists every ADT repeats, so they are
  *       matched on (patient, code system, code) — a repeat refreshes the row, it doesn't add one;</li>
  *   <li>observations (OBX) and medications (RXE/RXO) are events owned by their message
- *       ({@code raw_message_id}): replaced as a set.</li>
+ *       ({@code raw_message_id}): replaced as a set;</li>
+ *   <li>a claim line is upserted on (patient, claim_id) (migration 27), with its lifecycle (migration 28) — the
+ *       newest status_date wins.</li>
  * </ul>
  */
 @Service
@@ -42,7 +48,7 @@ public class SilverWriter {
 
     public enum Change { CREATED, UPDATED }
 
-    public record Counts(int conditions, int observations, int medications, int allergies) {
+    public record Counts(int conditions, int observations, int medications, int allergies, int claims) {
     }
 
     public record Result(Outcome outcome, long rawMessageId, Long silverPatientId, Change change, String messageType,
@@ -51,12 +57,30 @@ public class SilverWriter {
 
     private final JdbcTemplate jdbc;
     private final Hl7SilverMapper mapper;
+    private final FhirSilverMapper fhir;
+    private final ClaimsSilverMapper claims;
+    private final CcdaSilverMapper ccda;
     private final OutboxRepository outbox;
 
-    public SilverWriter(JdbcTemplate jdbc, Hl7SilverMapper mapper, OutboxRepository outbox) {
+    public SilverWriter(JdbcTemplate jdbc, Hl7SilverMapper mapper, FhirSilverMapper fhir, ClaimsSilverMapper claims,
+                        CcdaSilverMapper ccda, OutboxRepository outbox) {
         this.jdbc = jdbc;
         this.mapper = mapper;
+        this.fhir = fhir;
+        this.claims = claims;
+        this.ccda = ccda;
         this.outbox = outbox;
+    }
+
+    /** The Bronze row's format decides the mapper; every one returns the same SilverRecord shape. */
+    SilverRecord map(String messageType, String raw, String sourceSystem) {
+        return switch (messageType) {
+            case "HL7V2" -> mapper.map(raw, sourceSystem);
+            case "FHIR_JSON" -> fhir.map(raw, sourceSystem);
+            case "CLAIMS_CSV" -> claims.map(raw, sourceSystem);
+            case "CCDA_XML" -> ccda.map(raw, sourceSystem);
+            default -> throw new MappingException("Bronze message_type " + messageType + " has no Silver mapper");
+        };
     }
 
     @Transactional
@@ -77,10 +101,8 @@ public class SilverWriter {
 
         SilverRecord record;
         try {
-            if (!"HL7V2".equals(bronze.get("message_type"))) {
-                throw new MappingException("Bronze message_type " + bronze.get("message_type") + " is not HL7V2");
-            }
-            record = mapper.map((String) bronze.get("raw_payload"), (String) bronze.get("source_system"));
+            record = map((String) bronze.get("message_type"), (String) bronze.get("raw_payload"),
+                    (String) bronze.get("source_system"));
         } catch (MappingException e) {
             jdbc.update("""
                     UPDATE bronze.raw_messages
@@ -116,6 +138,29 @@ public class SilverWriter {
                     """, patient.id(), m.rxnormCode(), m.display(), m.dosageText(), m.status(), Date.valueOf(m.startDate()),
                     rawId);
         }
+        for (SilverRecord.Claim c : record.claims()) {
+            SilverRecord.Lifecycle l = c.lifecycle();
+            // A resent line moves the claim forward; one whose status_date is OLDER than the stored one (a late
+            // arrival, e.g. via the backlog sweeper) is ignored, so a PAID claim can't fall back to PENDED.
+            jdbc.update("""
+                    INSERT INTO silver.claims (patient_id, claim_id, service_date, icd10_code, billed_amount, raw_message_id,
+                        payer_id, payer_name, claim_status, submitted_date, status_date, allowed_amount, paid_amount,
+                        patient_responsibility, status_reason)
+                    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                    ON CONFLICT (patient_id, claim_id) DO UPDATE SET
+                        service_date = EXCLUDED.service_date, icd10_code = EXCLUDED.icd10_code,
+                        billed_amount = EXCLUDED.billed_amount, raw_message_id = EXCLUDED.raw_message_id,
+                        payer_id = EXCLUDED.payer_id, payer_name = EXCLUDED.payer_name,
+                        claim_status = EXCLUDED.claim_status, submitted_date = EXCLUDED.submitted_date,
+                        status_date = EXCLUDED.status_date, allowed_amount = EXCLUDED.allowed_amount,
+                        paid_amount = EXCLUDED.paid_amount, patient_responsibility = EXCLUDED.patient_responsibility,
+                        status_reason = EXCLUDED.status_reason, updated_at = now()
+                    WHERE silver.claims.status_date IS NULL OR EXCLUDED.status_date IS NULL
+                       OR EXCLUDED.status_date >= silver.claims.status_date
+                    """, patient.id(), c.claimId(), Date.valueOf(c.serviceDate()), c.icd10Code(), c.billedAmount(), rawId,
+                    l.payerId(), l.payerName(), l.status(), sqlDate(l.submittedDate()), sqlDate(l.statusDate()),
+                    l.allowedAmount(), l.paidAmount(), l.patientResponsibility(), l.statusReason());
+        }
         jdbc.update("""
                 UPDATE silver.patients
                 SET validation_status = 'PENDING_VALIDATION', validation_requested_at = now(), validation_error = NULL
@@ -127,7 +172,7 @@ public class SilverWriter {
                 """, rawId);
 
         Counts counts = new Counts(record.conditions().size(), record.observations().size(), record.medications().size(),
-                record.allergies().size());
+                record.allergies().size(), record.claims().size());
         Change change = patient.created() ? Change.CREATED : Change.UPDATED;
 
         Map<String, Object> payload = new LinkedHashMap<>();
@@ -135,11 +180,12 @@ public class SilverWriter {
         payload.put("sourceSystem", record.patient().sourceSystem());
         payload.put("sourcePatientId", record.patient().sourcePatientId());
         payload.put("rawMessageId", rawId);
+        payload.put("messageType", bronze.get("message_type"));
         payload.put("hl7MessageType", record.messageType());
         payload.put("controlId", record.controlId());
         payload.put("change", change.name());
         payload.put("counts", Map.of("conditions", counts.conditions(), "observations", counts.observations(),
-                "medications", counts.medications(), "allergies", counts.allergies()));
+                "medications", counts.medications(), "allergies", counts.allergies(), "claims", counts.claims()));
 
         Map<String, String> headers = new LinkedHashMap<>();
         headers.put("event-type", "silver.patient.changed");
@@ -221,5 +267,9 @@ public class SilverWriter {
                     severity = COALESCE(EXCLUDED.severity, silver.allergies.severity),
                     reaction = COALESCE(EXCLUDED.reaction, silver.allergies.reaction)
                 """, patientId, a.codeSystem(), a.code(), a.display(), a.allergyType(), a.severity(), a.reaction(), rawId);
+    }
+
+    private static Date sqlDate(java.time.LocalDate d) {
+        return d == null ? null : Date.valueOf(d);
     }
 }

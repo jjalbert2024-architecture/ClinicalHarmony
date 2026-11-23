@@ -1,0 +1,354 @@
+{
+  "info": {
+    "name": "ClinicalHarmony · Phase 9e — Observability in Splunk",
+    "description": "Happy-path walkthrough (7 requests) of Phase 9e through Splunk's REST API: HEC health, every service's logs, a trace by correlation id, consumer lag and end-to-end latency from the metric index, the three scheduled alerts and what fired. Splunk uses a self-signed certificate: turn OFF Settings → General → SSL certificate verification in Postman. DEV-ONLY credentials. The dashboards themselves are at http://localhost:8000 (app ClinicalHarmony). Firing each alert is covered by scripts/smoke-test.sh section 24.",
+    "schema": "https://schema.getpostman.com/json/collection/v2.1.0/collection.json"
+  },
+  "variable": [
+    {
+      "key": "splunk_api",
+      "value": "https://localhost:8089"
+    },
+    {
+      "key": "splunk_hec",
+      "value": "https://localhost:8088"
+    },
+    {
+      "key": "splunk_password",
+      "value": "clinicalharmony-splunk-dev"
+    },
+    {
+      "key": "correlation_id",
+      "value": ""
+    }
+  ],
+  "item": [
+    {
+      "name": "1. HEC is healthy",
+      "event": [
+        {
+          "listen": "test",
+          "script": {
+            "type": "text/javascript",
+            "exec": [
+              "pm.test('HEC healthy', () => { pm.response.to.have.status(200); pm.expect(pm.response.json().text).to.eql('HEC is healthy'); });"
+            ]
+          }
+        }
+      ],
+      "request": {
+        "method": "GET",
+        "auth": {
+          "type": "noauth"
+        },
+        "header": [],
+        "url": "{{splunk_hec}}/services/collector/health",
+        "description": "Splunk's HTTP Event Collector, where Docker's splunk log driver (logs) and the OpenTelemetry Collector (metrics) send everything."
+      }
+    },
+    {
+      "name": "2. Logs from every service",
+      "event": [
+        {
+          "listen": "test",
+          "script": {
+            "type": "text/javascript",
+            "exec": [
+              "pm.test('200', () => pm.response.to.have.status(200));",
+              "const rows = pm.response.text().split('\\n').filter(l => l.includes('\"result\"')).map(l => JSON.parse(l).result);",
+              "pm.test('8 services', () => pm.expect(rows.length).to.eql(8));"
+            ]
+          }
+        }
+      ],
+      "request": {
+        "method": "POST",
+        "auth": {
+          "type": "basic",
+          "basic": [
+            {
+              "key": "username",
+              "value": "admin",
+              "type": "string"
+            },
+            {
+              "key": "password",
+              "value": "{{splunk_password}}",
+              "type": "string"
+            }
+          ]
+        },
+        "header": [],
+        "url": "{{splunk_api}}/services/search/jobs/export",
+        "body": {
+          "mode": "urlencoded",
+          "urlencoded": [
+            {
+              "key": "search",
+              "value": "search index=clinicalharmony | stats count BY service"
+            },
+            {
+              "key": "output_mode",
+              "value": "json"
+            },
+            {
+              "key": "earliest_time",
+              "value": "-24h"
+            },
+            {
+              "key": "latest_time",
+              "value": "now"
+            }
+          ]
+        },
+        "description": "One JSON line per log event from each of the 8 services (Docker splunk log driver → HEC)."
+      }
+    },
+    {
+      "name": "3. Trace one payload by correlation id",
+      "event": [
+        {
+          "listen": "test",
+          "script": {
+            "type": "text/javascript",
+            "exec": [
+              "pm.test('200', () => pm.response.to.have.status(200));",
+              "const rows = pm.response.text().split('\\n').filter(l => l.includes('\"result\"')).map(l => JSON.parse(l).result);",
+              "pm.test('seen by several services', () => pm.expect(new Set(rows.map(r => r.service)).size).to.be.at.least(3));"
+            ]
+          }
+        }
+      ],
+      "request": {
+        "method": "POST",
+        "auth": {
+          "type": "basic",
+          "basic": [
+            {
+              "key": "username",
+              "value": "admin",
+              "type": "string"
+            },
+            {
+              "key": "password",
+              "value": "{{splunk_password}}",
+              "type": "string"
+            }
+          ]
+        },
+        "header": [],
+        "url": "{{splunk_api}}/services/search/jobs/export",
+        "body": {
+          "mode": "urlencoded",
+          "urlencoded": [
+            {
+              "key": "search",
+              "value": "search index=clinicalharmony correlationId=\"{{correlation_id}}\" | sort _time | table _time service event message rawMessageId silverPatientId masterPatientId"
+            },
+            {
+              "key": "output_mode",
+              "value": "json"
+            },
+            {
+              "key": "earliest_time",
+              "value": "-24h"
+            },
+            {
+              "key": "latest_time",
+              "value": "now"
+            }
+          ]
+        },
+        "description": "Set the collection variable correlation_id first — e.g. the X-Correlation-Id a REST intake answered with (rest-…), an MLLP one (mllp-…) from ingestion-service's log, or gen-… from the data-generator. Lists the payload's path: ingestion → bronze-listener → silver-transformer → fhir-compliance (gold.built) …"
+      }
+    },
+    {
+      "name": "4. Consumer lag by group (metrics)",
+      "event": [
+        {
+          "listen": "test",
+          "script": {
+            "type": "text/javascript",
+            "exec": [
+              "pm.test('200', () => pm.response.to.have.status(200));",
+              "const rows = pm.response.text().split('\\n').filter(l => l.includes('\"result\"')).map(l => JSON.parse(l).result);",
+              "pm.test('bronze-writer / silver-transformer / gold-builder / pmi-matcher', () => pm.expect(rows.map(r => r.group)).to.include.members(['bronze-writer','silver-transformer','gold-builder','pmi-matcher']));"
+            ]
+          }
+        }
+      ],
+      "request": {
+        "method": "POST",
+        "auth": {
+          "type": "basic",
+          "basic": [
+            {
+              "key": "username",
+              "value": "admin",
+              "type": "string"
+            },
+            {
+              "key": "password",
+              "value": "{{splunk_password}}",
+              "type": "string"
+            }
+          ]
+        },
+        "header": [],
+        "url": "{{splunk_api}}/services/search/jobs/export",
+        "body": {
+          "mode": "urlencoded",
+          "urlencoded": [
+            {
+              "key": "search",
+              "value": "| mstats max(kafka.consumer_group.lag_sum) AS lag WHERE index=clinicalharmony_metrics BY group"
+            },
+            {
+              "key": "output_mode",
+              "value": "json"
+            },
+            {
+              "key": "earliest_time",
+              "value": "-5m"
+            },
+            {
+              "key": "latest_time",
+              "value": "now"
+            }
+          ]
+        },
+        "description": "Collected by the OpenTelemetry Collector's kafkametrics receiver every 15 s. 0 = caught up."
+      }
+    },
+    {
+      "name": "5. End-to-end latency, intake → Gold (metrics)",
+      "event": [
+        {
+          "listen": "test",
+          "script": {
+            "type": "text/javascript",
+            "exec": [
+              "pm.test('200', () => pm.response.to.have.status(200));",
+              "const rows = pm.response.text().split('\\n').filter(l => l.includes('\"result\"')).map(l => JSON.parse(l).result);",
+              "pm.test('a p95 value', () => pm.expect(rows[0]).to.have.property('p95'));"
+            ]
+          }
+        }
+      ],
+      "request": {
+        "method": "POST",
+        "auth": {
+          "type": "basic",
+          "basic": [
+            {
+              "key": "username",
+              "value": "admin",
+              "type": "string"
+            },
+            {
+              "key": "password",
+              "value": "{{splunk_password}}",
+              "type": "string"
+            }
+          ]
+        },
+        "header": [],
+        "url": "{{splunk_api}}/services/search/jobs/export",
+        "body": {
+          "mode": "urlencoded",
+          "urlencoded": [
+            {
+              "key": "search",
+              "value": "| mstats max(clinicalharmony.gold.end_to_end.latency_0.95) AS p95 max(clinicalharmony.gold.end_to_end.latency_0.5) AS p50 WHERE index=clinicalharmony_metrics"
+            },
+            {
+              "key": "output_mode",
+              "value": "json"
+            },
+            {
+              "key": "earliest_time",
+              "value": "-60m"
+            },
+            {
+              "key": "latest_time",
+              "value": "now"
+            }
+          ]
+        },
+        "description": "Micrometer timer in fhir-compliance-service's gold-builder, exported over OTLP with p50 / p95 / p99 (seconds). Needs some traffic in the last hour (e.g. run the data-generator)."
+      }
+    },
+    {
+      "name": "6. The three alerts are scheduled",
+      "event": [
+        {
+          "listen": "test",
+          "script": {
+            "type": "text/javascript",
+            "exec": [
+              "pm.test('200', () => pm.response.to.have.status(200));",
+              "const names = pm.response.json().entry.map(e => e.name);",
+              "pm.test('lag, dead letters, service down', () => pm.expect(names).to.include.members(['ClinicalHarmony - Consumer lag high','ClinicalHarmony - Dead letters','ClinicalHarmony - Service down']));"
+            ]
+          }
+        }
+      ],
+      "request": {
+        "method": "GET",
+        "auth": {
+          "type": "basic",
+          "basic": [
+            {
+              "key": "username",
+              "value": "admin",
+              "type": "string"
+            },
+            {
+              "key": "password",
+              "value": "{{splunk_password}}",
+              "type": "string"
+            }
+          ]
+        },
+        "header": [],
+        "url": "{{splunk_api}}/servicesNS/nobody/clinicalharmony/saved/searches?output_mode=json&search=ClinicalHarmony",
+        "description": "Saved searches from observability/splunk/apps/clinicalharmony/default/savedsearches.conf, each every minute with alert.track on."
+      }
+    },
+    {
+      "name": "7. Triggered alerts",
+      "event": [
+        {
+          "listen": "test",
+          "script": {
+            "type": "text/javascript",
+            "exec": [
+              "pm.test('200', () => pm.response.to.have.status(200));"
+            ]
+          }
+        }
+      ],
+      "request": {
+        "method": "GET",
+        "auth": {
+          "type": "basic",
+          "basic": [
+            {
+              "key": "username",
+              "value": "admin",
+              "type": "string"
+            },
+            {
+              "key": "password",
+              "value": "{{splunk_password}}",
+              "type": "string"
+            }
+          ]
+        },
+        "header": [],
+        "url": "{{splunk_api}}/servicesNS/-/clinicalharmony/alerts/fired_alerts?output_mode=json",
+        "description": "What fired and how often (Splunk UI: Activity → Triggered Alerts, or the Pipeline dashboard's last panel). To see one fire: docker stop clinicalharmony-bronze-listener-service for ~3 minutes (Service down), then start it again."
+      }
+    }
+  ]
+}

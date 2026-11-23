@@ -4,14 +4,9 @@ server:
 spring:
   application:
     name: ingestion-service
-  datasource:
-    url: jdbc:postgresql://${DB_HOST:localhost}:${DB_PORT:5432}/${DB_NAME:clinicalharmony}
-    username: ${DB_USER:clinicalharmony}
-    password: ${DB_PASSWORD:clinicalharmony}
-    hikari:
-      schema: bronze
-  # Phase 9a: MLLP intake → clinicalharmony.bronze.hl7v2.raw. acks=all + idempotent producer; the route
-  # blocks on the send (ingestion.kafka.send-timeout) and only then ACKs AA.
+  # No datasource since 9d: every intake path (MLLP since 9a, REST since 9d) publishes to
+  # clinicalharmony.bronze.<format>.raw and bronze-listener-service writes Bronze. acks=all + idempotent
+  # producer; intake blocks on the send (ingestion.kafka.send-timeout) and only then ACKs AA / answers 202.
   kafka:
     bootstrap-servers: ${KAFKA_BOOTSTRAP_SERVERS:localhost:19092}
     producer:
@@ -37,15 +32,37 @@ ingestion:
     default-source-system: ${FHIR_DEFAULT_SOURCE_SYSTEM:UNKNOWN_FHIR_SOURCE}
   claims:
     default-source-system: ${CLAIMS_DEFAULT_SOURCE_SYSTEM:UNKNOWN_CLAIMS_SOURCE}
+  ccda:
+    default-source-system: ${CCDA_DEFAULT_SOURCE_SYSTEM:UNKNOWN_CCDA_SOURCE}
   kafka:
     send-timeout: 10s
     partitions: 3
+    # One Kafka record per payload: the JSON-wrapped event must stay under the producer's max.request.size
+    # (1 MiB default) and the broker's message.max.bytes. Bigger REST payloads get 413.
+    max-event-bytes: 1000000
 
 management:
   endpoints:
     web:
       exposure:
         include: health,info,metrics
+  # Phase 9e: Micrometer meters → OTLP/HTTP → OpenTelemetry Collector → Splunk (metrics index). Off unless
+  # OTLP_METRICS_ENABLED=true (docker-compose sets it), so tests and `mvn spring-boot:run` export nothing.
+  otlp:
+    metrics:
+      export:
+        enabled: ${OTLP_METRICS_ENABLED:false}
+        url: ${OTLP_METRICS_URL:http://localhost:4318/v1/metrics}
+        step: 15s
+  opentelemetry:
+    resource-attributes:
+      service.name: ${spring.application.name}
+      deployment.environment: ${DEPLOYMENT_ENVIRONMENT:dev}
+  metrics:
+    distribution:
+      # Latency percentiles exported as gauges (p50 / p95 / p99) for the 9e dashboards.
+      percentiles:
+        clinicalharmony.hl7.mllp.ack.latency: 0.5, 0.95, 0.99
 
 # Phase 9a: one JSON object per log line (Logstash layout): MDC (correlationId) and SLF4J key/values
 # (event, topic, partition, offset, durationMs…) become top-level fields for Datadog / Splunk in 9e.

@@ -52,12 +52,32 @@ silver:
     base-url: http://localhost:8083
     connect-timeout: 2s
     read-timeout: 10s
+  backlog:
+    # 9d part 2: Kafka-fed Bronze rows (MLLP_KAFKA / REST_KAFKA) still PENDING after min-age — never announced
+    # (e.g. FHIR / claims / C-CDA stored during 9d part 1) or whose event was lost — are transformed here, oldest
+    # first, at startup and every interval. Legacy REST rows (pre-9d) are never touched.
+    enabled: true
+    interval: 60s
+    min-age: 2m
+    batch-size: 50
 
 management:
   endpoints:
     web:
       exposure:
         include: health,info,metrics
+  # Phase 9e: Micrometer meters → OTLP/HTTP → OpenTelemetry Collector → Splunk (metrics index). Off unless
+  # OTLP_METRICS_ENABLED=true (docker-compose sets it), so tests and `mvn spring-boot:run` export nothing.
+  otlp:
+    metrics:
+      export:
+        enabled: ${OTLP_METRICS_ENABLED:false}
+        url: ${OTLP_METRICS_URL:http://localhost:4318/v1/metrics}
+        step: 15s
+  opentelemetry:
+    resource-attributes:
+      service.name: ${spring.application.name}
+      deployment.environment: ${DEPLOYMENT_ENVIRONMENT:dev}
 
 # One JSON object per log line (Logstash layout): MDC + SLF4J key/values become top-level fields.
 logging:

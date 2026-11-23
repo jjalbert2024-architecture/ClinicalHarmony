@@ -600,7 +600,12 @@ function StepSummaryCard() {
 }
 
 /** Bronze payload formats (`message_type`), labelled as the filter shows them. */
-export const PAYLOAD_FORMATS: Record<string, string> = { HL7V2: 'HL7 v2', FHIR_JSON: 'FHIR JSON', CLAIMS_CSV: 'Claims CSV' };
+export const PAYLOAD_FORMATS: Record<string, string> = {
+  HL7V2: 'HL7 v2',
+  FHIR_JSON: 'FHIR JSON',
+  CLAIMS_CSV: 'Claims CSV',
+  CCDA_XML: 'C-CDA XML',
+};
 
 /** HL7 v2 message codes (MSH-9.1) the pipeline receives. */
 export const HL7_TYPES: Record<string, string> = {

@@ -1,6 +1,6 @@
 import { useQuery } from '@tanstack/react-query';
 import { Link, useParams } from 'react-router';
-import type { BronzeDetail } from '../../api/types';
+import type { BronzeDetail, GatewayConfig } from '../../api/types';
 import { useApi } from '../../app/context';
 import { Badge, Empty, PageHeader, QueryState } from '../../components/common';
 import { fmtDateTime, fmtNumber } from '../../format';
@@ -18,6 +18,24 @@ export function displayPayload(type: string, raw: string): string {
   return raw;
 }
 
+const INTAKE: Record<string, string> = {
+  MLLP_KAFKA: 'MLLP → Kafka',
+  REST_KAFKA: 'REST → Kafka',
+  REST: 'REST, written directly (before Phase 9d)',
+};
+
+/**
+ * The Splunk Trace dashboard for one correlation id, its time range opened an hour before the payload arrived (the
+ * dashboard's default is the last 24 h, which would miss an older message).
+ */
+export function splunkTraceLink(traceUrl: string, correlationId: string, receivedAt: string | null): string {
+  const q = new URLSearchParams({ 'form.cid': correlationId });
+  const t = receivedAt ? Date.parse(receivedAt) : NaN;
+  q.set('form.t.earliest', Number.isNaN(t) ? '-7d@d' : String(Math.floor(t / 1000) - 3600));
+  q.set('form.t.latest', 'now');
+  return `${traceUrl}?${q.toString()}`;
+}
+
 export function BronzeMessagePage() {
   const { messageId = '' } = useParams();
   const api = useApi();
@@ -25,6 +43,13 @@ export function BronzeMessagePage() {
     queryKey: ['bronze', 'message', messageId],
     queryFn: ({ signal }) => api.get<BronzeDetail>(`/bronze/messages/${encodeURIComponent(messageId)}`, undefined, signal),
   });
+  // Public and cached for the session: where Splunk's Trace dashboard is (9e), if configured.
+  const config = useQuery({
+    queryKey: ['config'],
+    queryFn: () => api.request<GatewayConfig>('GET', '/config', { anonymous: true }),
+    staleTime: Infinity,
+  });
+  const traceUrl = config.data?.observability?.splunkTraceUrl;
   return (
     <QueryState query={detail} context={`Loading Bronze message #${messageId}`}>
       {(d) => (
@@ -62,7 +87,7 @@ export function BronzeMessagePage() {
           )}
           {d.summary.errorMessage && (
             <div className="banner banner-bad">
-              <strong>Quarantine reason:</strong> {d.summary.errorMessage}
+              <strong>{d.summary.processingStatus === 'QUARANTINED' ? 'Quarantine reason:' : 'Why it failed:'}</strong> {d.summary.errorMessage}
             </div>
           )}
           <div className="grid-2">
@@ -79,6 +104,26 @@ export function BronzeMessagePage() {
                 <dd>{d.summary.messageFormat}</dd>
                 <dt>Processed</dt>
                 <dd>{fmtDateTime(d.summary.processedAt)}</dd>
+                <dt>Intake</dt>
+                <dd>{INTAKE[d.intakeChannel ?? ''] ?? d.intakeChannel ?? '—'}</dd>
+                <dt>Correlation id</dt>
+                <dd>
+                  {d.correlationId ? (
+                    <>
+                      <code>{d.correlationId}</code>
+                      {traceUrl && (
+                        <>
+                          {' · '}
+                          <a href={splunkTraceLink(traceUrl, d.correlationId, d.summary.receivedAt)} target="_blank" rel="noreferrer">
+                            Open trace in Splunk
+                          </a>
+                        </>
+                      )}
+                    </>
+                  ) : (
+                    <span className="muted">none — written straight to Bronze before Phase 9a/9d, so never logged with one</span>
+                  )}
+                </dd>
               </dl>
             </section>
             <section className="card">
@@ -87,7 +132,7 @@ export function BronzeMessagePage() {
                 <Empty>
                   None.{' '}
                   {d.summary.processingStatus === 'PENDING'
-                    ? 'Waiting for the silver transformer (REST-intake messages stay here until Phase 9d moves REST onto Kafka).'
+                    ? 'Waiting for the silver transformer (a row still pending after 2 minutes is picked up by its backlog sweep).'
                     : d.summary.processingStatus === 'PROCESSED'
                       ? 'This message added nothing new: everything in it was already in Silver.'
                       : 'Quarantined and failed messages never reach Silver; the reason is shown above.'}

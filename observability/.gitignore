@@ -1,0 +1,3 @@
+# Written by Splunk when something is edited in its UI; the app's source of truth is default/.
+splunk/apps/clinicalharmony/local/
+splunk/apps/clinicalharmony/metadata/local.meta

@@ -6,6 +6,8 @@ import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.springframework.jdbc.core.JdbcTemplate;
 import org.springframework.stereotype.Component;
+import org.springframework.transaction.PlatformTransactionManager;
+import org.springframework.transaction.support.TransactionTemplate;
 
 import java.sql.Timestamp;
 import java.time.Instant;
@@ -20,7 +22,12 @@ import java.util.Map;
  * (every condition, observation, medication and allergy from every source message), so rules that
  * compare entities — medication vs allergy, pregnancy vs gender — see the full picture.
  *
- * <p>Runs outside any database transaction (no row locks held over HTTP). Outcomes:
+ * <p>ONE validation per patient at a time: a transaction holding only a Postgres advisory lock on the patient
+ * ({@link #LOCK_CLASS}, patient id) — no row locks — wraps the call. Two Silver messages for the same patient
+ * can arrive on different partitions (e.g. a hospital ADT and a pharmacy RDE, keyed by different sources) and
+ * be transformed in the same millisecond; validated in parallel, neither run saw the other's findings, so both
+ * stayed open (found by smoke section 19, 2026-11-23). Serialized, the second run starts after the first wrote
+ * its findings and retires them. The advisory lock also serializes several transformer instances. Outcomes:
  * <ul>
  *   <li>rules-engine answered and ontology-service was reachable → VALIDATED, and this patient's older
  *       open findings are marked resolved: the latest evaluation is the patient's current state (a
@@ -39,23 +46,40 @@ public class PatientValidator {
 
     private static final Logger log = LoggerFactory.getLogger(PatientValidator.class);
 
+    /** Advisory-lock namespace (first key) for "validating Silver patient <id>" — 0x5117 ≈ "SILV". */
+    static final int LOCK_CLASS = 0x5117;
+
     private final JdbcTemplate jdbc;
     private final RulesEngineClient rulesEngine;
     private final MeterRegistry meters;
+    private final TransactionTemplate tx;
 
-    public PatientValidator(JdbcTemplate jdbc, RulesEngineClient rulesEngine, MeterRegistry meters) {
+    public PatientValidator(JdbcTemplate jdbc, RulesEngineClient rulesEngine, MeterRegistry meters,
+                            PlatformTransactionManager transactions) {
         this.jdbc = jdbc;
         this.rulesEngine = rulesEngine;
         this.meters = meters;
+        this.tx = new TransactionTemplate(transactions);
     }
 
     public Result validate(long patientId) {
+        return tx.execute(status -> {
+            // Waits while another thread / instance validates this patient; released at commit.
+            jdbc.queryForObject("SELECT pg_advisory_xact_lock(?, ?)::text", String.class, LOCK_CLASS,
+                    Math.toIntExact(patientId));
+            return validateLocked(patientId);
+        });
+    }
+
+    private Result validateLocked(long patientId) {
         long start = System.nanoTime();
         Map<String, Object> request = load(patientId);
         if (request == null) {
             return new Result(Outcome.PENDING, 0, "patient not found");
         }
-        Instant asOf = jdbc.queryForObject("SELECT now()", Timestamp.class).toInstant();
+        // clock_timestamp(), not now(): inside this transaction now() is frozen at its start — before the lock wait —
+        // and would miss the findings the run we waited for just wrote.
+        Instant asOf = jdbc.queryForObject("SELECT clock_timestamp()", Timestamp.class).toInstant();
         JsonNode report;
         try {
             report = rulesEngine.evaluate(request);

@@ -80,6 +80,7 @@ class Hl7RawPublisherKafkaTest {
         assertThat(header(record, "schema-version")).isEqualTo("1");
         assertThat(header(record, "producer")).isEqualTo("ingestion-service");
         assertThat(header(record, "correlation-id")).isEqualTo("mllp-abcdef012345");
+        assertThat(value.get("intakeChannel").asText()).isEqualTo("MLLP");
         assertThat(header(record, "produced-at")).isNotBlank();
     }
 
@@ -101,10 +102,29 @@ class Hl7RawPublisherKafkaTest {
             Hl7RawPublisher publisher = new Hl7RawPublisher(dead, mapper, Duration.ofSeconds(3));
             String raw = Hl7SampleMessages.ADT_A01;
             assertThatThrownBy(() -> publisher.publish(raw, "CITY_HOSPITAL", "x", Hl7Envelope.peek(raw), "c", Instant.now()))
-                    .isInstanceOf(Hl7RawPublisher.PublishFailedException.class);
+                    .isInstanceOf(PublishFailedException.class);
         } finally {
             dead.destroy();
         }
+    }
+
+    @Test
+    void restHl7IsMarkedRestOnTheSameTopic() throws Exception {
+        Hl7RawPublisher publisher = new Hl7RawPublisher(template, mapper, Duration.ofSeconds(10));
+        String raw = Hl7SampleMessages.ORU_R01;
+        Hl7RawPublisher.Published published = publisher.publish(raw, "REGIONAL_LAB", Checksums.sha256(raw),
+                Hl7Envelope.peek(raw), "rest-abcdef012345", Instant.now(), Hl7RawPublisher.CHANNEL_REST);
+        JsonNode value = mapper.readTree(readOne(published.partition(), published.offset()).value());
+        assertThat(value.get("intakeChannel").asText()).isEqualTo("REST");
+    }
+
+    @Test
+    void oversizedEventIsRefusedBeforeSending() {
+        RawEventPublisher publisher = new RawEventPublisher(template, mapper, Duration.ofSeconds(10), 1_000);
+        assertThatThrownBy(() -> publisher.publish(KafkaTopics.FHIR_RAW, "fhir.raw", "k",
+                Map.of("rawPayload", "x".repeat(2_000)), "c"))
+                .isInstanceOf(PayloadTooLargeException.class)
+                .hasMessageContaining("over the 1000-byte limit");
     }
 
     private static Map<String, Object> producerProps(String bootstrap) {

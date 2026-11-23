@@ -23,7 +23,8 @@ import java.util.List;
 public class SilverLineage {
 
     static final String INGESTION_TRANSFORMER = "ingestion-service";
-    static final String KAFKA_INGESTION_TRANSFORMER = "ingestion-service MLLP → Kafka → bronze-listener-service";
+    /** {@code %s} = MLLP or REST, the door the payload came through. */
+    static final String KAFKA_INGESTION_TRANSFORMER = "ingestion-service %s → Kafka → bronze-listener-service";
     static final String KAFKA_SILVER_TRANSFORMER = "silver-transformer-service";
 
     private final SilverProvenanceRepository provenanceRepository;
@@ -42,7 +43,7 @@ public class SilverLineage {
         List<LineageStep> steps = new ArrayList<>(2);
         if (p.hasBronzeLink()) {
             steps.add(new LineageStep(LineageStep.BRONZE, iso(p.bronzeReceivedAt()),
-                    (p.viaKafka() ? KAFKA_INGESTION_TRANSFORMER : INGESTION_TRANSFORMER)
+                    (p.viaKafka() ? KAFKA_INGESTION_TRANSFORMER.formatted(p.kafkaDoor()) : INGESTION_TRANSFORMER)
                             + " (" + p.bronzeMessageType() + ")",
                     p.bronzePayloadChecksum(), null, "bronze.raw_messages/" + p.rawMessageId()));
             steps.add(new LineageStep(LineageStep.SILVER, iso(p.silverCreatedAt()),

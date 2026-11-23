@@ -4,7 +4,10 @@
 # MLLP → Kafka → bronze-listener-service path driven by data-generator, (Phase 9b) the
 # bronze.ingested → silver-transformer-service → silver.patient.changed path, and (Phase 9c) the
 # silver.patient.changed → gold-builder → Gold → gold.patient.changed → pmi-matcher path, plus the Data
-# Lineage layer browser's read models (section 21).
+# Lineage layer browser's read models (section 21), (Phase 9d part 1) REST intake over Kafka for
+# HL7 v2 / FHIR JSON / claims CSV / C-CDA (section 22) and (9d part 2) every feed into Silver from the full
+# generator: cross-feed duplicates, planted defects, backlog sweeper, --reset, --trickle (section 23), and (9e) Splunk:
+# logs + metrics + consumer lag arriving, dashboards + alerts provisioned, each alert firing (section 24).
 # Assumes the stack is already up: `docker-compose up -d` from the repo root.
 # Usage: ./scripts/smoke-test.sh
 set -uo pipefail
@@ -136,17 +139,20 @@ else
   echo "  FAIL  could not get a token from $TOKEN_URL (is the keycloak container healthy?)"; FAIL=$((FAIL + 1))
 fi
 
+# Since 9d the REST paths publish to Kafka: 202 = passed the syntax check and Kafka confirmed it, 422 = failed
+# it (published anyway; bronze-listener-service quarantines it). Resending a fixture is fine: Bronze skips the
+# duplicate. Section 22 follows each payload into Bronze.
 section "1. ingestion-service — HL7 v2 (REST)"
-check_http "valid ADT^A01 accepted" POST "$INGESTION_URL/api/ingestion/hl7" 201 "text/plain" "$FIXTURES/hl7_valid.txt"
-check_http "malformed HL7 quarantined" POST "$INGESTION_URL/api/ingestion/hl7" 422 "text/plain" "$FIXTURES/hl7_malformed.txt"
+check_http "valid ADT^A01 accepted (202, on Kafka)" POST "$INGESTION_URL/api/ingestion/hl7" 202 "text/plain" "$FIXTURES/hl7_valid.txt"
+check_http "malformed HL7 refused (422, still published for quarantine)" POST "$INGESTION_URL/api/ingestion/hl7" 422 "text/plain" "$FIXTURES/hl7_malformed.txt"
 
 section "2. ingestion-service — FHIR JSON"
-check_http "valid Patient resource accepted" POST "$INGESTION_URL/api/ingestion/fhir" 201 "application/json" "$FIXTURES/fhir_valid_patient.json"
-check_http "resource with no resourceType quarantined" POST "$INGESTION_URL/api/ingestion/fhir" 422 "application/json" "$FIXTURES/fhir_malformed.json"
+check_http "valid Patient resource accepted (202)" POST "$INGESTION_URL/api/ingestion/fhir" 202 "application/json" "$FIXTURES/fhir_valid_patient.json"
+check_http "resource with no resourceType refused (422)" POST "$INGESTION_URL/api/ingestion/fhir" 422 "application/json" "$FIXTURES/fhir_malformed.json"
 
 section "3. ingestion-service — Claims CSV"
-check_http "valid 2-row claims file accepted" POST "$INGESTION_URL/api/ingestion/claims" 201 "text/csv" "$FIXTURES/claims_valid.csv"
-check_http "ragged claims file quarantined whole" POST "$INGESTION_URL/api/ingestion/claims" 422 "text/csv" "$FIXTURES/claims_ragged.csv"
+check_http "valid 2-row claims file accepted (202)" POST "$INGESTION_URL/api/ingestion/claims" 202 "text/csv" "$FIXTURES/claims_valid.csv"
+check_http "ragged claims file refused whole (422)" POST "$INGESTION_URL/api/ingestion/claims" 422 "text/csv" "$FIXTURES/claims_ragged.csv"
 
 section "4. ontology-service — code validation + lookups"
 curl -s -X POST "$ONTOLOGY_URL/api/ontology/validate" -H "Content-Type: application/json" \
@@ -494,7 +500,9 @@ check_json "  → 1 auto-merge, 2 review items, from this run's 4 new masters" "
 MA="$(master_of "$SA")"
 check_sql "A + A2 (same person, two feeds) share one MATCHED master, confidence 1.0000" \
   "SELECT (SELECT master_patient_id FROM gold.patient_source_xref WHERE silver_patient_id = $SA2) = $MA AND match_status = 'MATCHED' AND match_confidence_score = 1 FROM gold.master_patients WHERE id = $MA" "t"
-if docker logs clinicalharmony-fhir-compliance-service 2>&1 | grep -q "\[$CORR\].*Merged master"; then
+# Since 9e every service logs JSON: the correlation id is the "requestId" (MDC) field of the line.
+docker logs clinicalharmony-fhir-compliance-service > "$TMP/fc_merge.log" 2>&1
+if grep "\"requestId\":\"$CORR\"" "$TMP/fc_merge.log" | grep -q "Merged master"; then
   echo "  PASS  GoldWriter logged the merge under the PMI's correlation id [$CORR]"; PASS=$((PASS + 1))
 else
   echo "  FAIL  GoldWriter logged the merge under the PMI's correlation id (no [$CORR] 'Merged master' line)"; FAIL=$((FAIL + 1))
@@ -578,7 +586,8 @@ check_http "services/health" GET "$GW/services/health" 200
 check_json "  → all 5 services + the gateway's DB UP" "$TMP/last_response.json" "(d['status'], len(d['services']), d['degraded'])" "('UP', 6, [])"
 
 MARIA="$(psql_id "SELECT x.master_patient_id FROM gold.patient_source_xref x JOIN silver.patients p ON p.id = x.silver_patient_id WHERE p.source_patient_id = 'SEED-0001'")"
-check_http "patient search q=garcia" GET "$GW/patients?q=garcia&size=50" 200
+# A first + last name, not just "garcia": the generator adds GARCIAs on every run, so a one-word search outgrows a page.
+check_http "patient search q=maria garcia" GET "$GW/patients?q=maria%20garcia&size=50" 200
 check_json "  → finds SEED-0001's master" "$TMP/last_response.json" "any(m['id'] == $MARIA for m in d['items'])" "True"
 check_http "patient search by MRN q=mrn100001 (any case)" GET "$GW/patients?q=mrn100001" 200
 check_json "  → exactly SEED-0001's master" "$TMP/last_response.json" "[m['id'] for m in d['items']]" "[$MARIA]"
@@ -639,7 +648,8 @@ TOKEN="$DANA"
 GCORR="smoke-gw-$SFX"
 gw_run="$(fc_curl -s -o "$TMP/gw_run.json" -D - -X POST "$GW/pmi/match/run" -H "X-Correlation-Id: $GCORR" | tr -d '\r' | awk -F': ' 'tolower($1)=="x-correlation-id"{print $2}')"
 check_json "dana's matching run via the gateway queues the twin for review" "$TMP/gw_run.json" "(d['run']['status'], d['run']['queuedForReview'] >= 1)" "('COMPLETED', True)"
-if [[ "$gw_run" == "$GCORR" ]] && docker logs clinicalharmony-patient-index-service 2>&1 | grep -q "\[$GCORR\].*PMI run"; then
+docker logs clinicalharmony-patient-index-service > "$TMP/pmi_run.log" 2>&1
+if [[ "$gw_run" == "$GCORR" ]] && grep "\"requestId\":\"$GCORR\"" "$TMP/pmi_run.log" | grep -q "PMI run"; then
   echo "  PASS  correlation id [$GCORR] echoed by the gateway and logged by patient-index-service"; PASS=$((PASS + 1))
 else
   echo "  FAIL  correlation id [$GCORR] not echoed ('$gw_run') or not in patient-index-service's log"; FAIL=$((FAIL + 1))
@@ -768,7 +778,7 @@ in_list() { python3 -c "import json;print(','.join(\"'%s'\" % m['sha256'] for m 
 
 SEED="$(( (RANDOM << 15) | RANDOM ))"
 GEN_OUT="$TMP/generator"
-python3 "$SCRIPT_DIR/../data-generator/generate.py" --count 20 --seed "$SEED" --malformed-rate 0.10 \
+python3 "$SCRIPT_DIR/../data-generator/generate.py" --count 20 --seed "$SEED" --malformed-rate 0.10 --feeds hl7 \
   --out "$GEN_OUT" --host "$MLLP_HOST" --port "$MLLP_PORT" --quiet > "$TMP/gen.out" 2>&1
 gen_rc=$?
 [[ $gen_rc -eq 0 ]] && grep -q "20 ACK AA" "$TMP/gen.out"
@@ -821,8 +831,8 @@ check_sql "  → still exactly 20 rows: repeats are skipped, not duplicated" \
   "SELECT count(*) FROM bronze.raw_messages WHERE payload_checksum IN ($SHAS)" "20"
 check_sql "  → and no second bronze.ingested event" \
   "SELECT count(*) FROM bronze.outbox_events o JOIN bronze.raw_messages b ON b.id = o.aggregate_id WHERE b.payload_checksum IN ($SHAS)" "18"
-check_sql "partial unique index guards MLLP_KAFKA rows (migration 23)" \
-  "SELECT count(*) FROM pg_indexes WHERE indexname = 'uq_raw_messages_kafka_source_checksum'" "1"
+check_sql "partial unique index guards the Kafka-fed rows, MLLP_KAFKA + REST_KAFKA (migration 23, widened by 26)" \
+  "SELECT count(*) FROM pg_indexes WHERE indexname = 'uq_raw_messages_kafka_intake_source_checksum' AND indexdef LIKE '%MLLP_KAFKA%REST_KAFKA%'" "1"
 
 # Raw MLLP: a malformed frame still gets AA (kept + quarantined downstream), and the ACK echoes MSH-10.
 ack="$(python3 - "$MLLP_HOST" "$MLLP_PORT" "SMOKE-$SEED" <<'PY'
@@ -864,8 +874,10 @@ done
 wait_silver_lag_zero; pass_if "silver-transformer caught up (consumer lag 0)" $? "lag $(group_lag silver-transformer clinicalharmony.bronze.ingested)"
 check_sql "every generated ORU^R01 left its observations in Silver, linked to its Bronze row" \
   "SELECT bool_and(EXISTS (SELECT 1 FROM silver.observations o WHERE o.raw_message_id = b.id)) FROM bronze.raw_messages b WHERE b.payload_checksum IN ($SHAS) AND b.raw_payload LIKE '%|ORU^R01^%' AND b.processing_status = 'PROCESSED'" "t"
+# PROCESSED only, like the ORU check above: the generator's deliberately malformed messages (e.g. EMPTY_CONTROL_ID)
+# can be RDEs too — QUARANTINED in Bronze, so rightly never in Silver (failed once, 2026-11-23, on a random seed).
 check_sql "every generated RDE^O11 left its medication order in Silver" \
-  "SELECT coalesce(bool_and(EXISTS (SELECT 1 FROM silver.medications m WHERE m.raw_message_id = b.id)), true) FROM bronze.raw_messages b WHERE b.payload_checksum IN ($SHAS) AND b.raw_payload LIKE '%|RDE^O11^%'" "t"
+  "SELECT coalesce(bool_and(EXISTS (SELECT 1 FROM silver.medications m WHERE m.raw_message_id = b.id)), true) FROM bronze.raw_messages b WHERE b.payload_checksum IN ($SHAS) AND b.raw_payload LIKE '%|RDE^O11^%' AND b.processing_status = 'PROCESSED'" "t"
 check_sql "results and orders attach to the HOME facility's patient (PID-3.4), not the lab's or pharmacy's" \
   "SELECT count(*) FROM silver.patients WHERE source_system IN ('REGIONAL_LAB', 'CITY_PHARMACY')" "0"
 check_sql "silver outbox: one silver.patient.changed event per PROCESSED row, carrying its correlation id" \
@@ -963,7 +975,7 @@ while True:
 PY
 )"
 T0="$(psql_id "SELECT now()")"
-python3 "$SCRIPT_DIR/../data-generator/generate.py" --count 60 --seed "$GSEED" --out "$GEN_OUT" \
+python3 "$SCRIPT_DIR/../data-generator/generate.py" --count 60 --seed "$GSEED" --out "$GEN_OUT" --feeds hl7 \
   --host "$MLLP_HOST" --port "$MLLP_PORT" --quiet > "$TMP/gen3.out" 2>&1
 [[ $? -eq 0 ]] && grep -q "60 ACK AA" "$TMP/gen3.out"; pass_if "generator sent 60 messages (seed $GSEED, 2 cross-facility duplicates), all ACK AA" $? "$(tail -1 "$TMP/gen3.out")"
 GMAN="$GEN_OUT/seed-$GSEED/manifest.json"
@@ -1047,8 +1059,9 @@ check_sql "section 19's hand-sent amoxicillin allergy is now a compliant US Core
 
 # A broken silver.patient.changed record goes straight to the dead-letter topic.
 DKEY="smoke-dlt-$GSEED"
-echo "$DKEY|not json at all" | docker exec -i "$KAFKA_CONTAINER" kafka-console-producer --bootstrap-server localhost:29092 \
-  --topic clinicalharmony.silver.patient.changed --property parse.key=true --property key.separator='|' >/dev/null 2>&1
+# Tagged correlation-id smoke-… so Splunk's Pipeline dashboard can tell the smoke test's dead letters from real ones.
+printf 'correlation-id:%s\t%s|not json at all\n' "$DKEY" "$DKEY" | docker exec -i "$KAFKA_CONTAINER" kafka-console-producer --bootstrap-server localhost:29092 \
+  --topic clinicalharmony.silver.patient.changed --property parse.key=true --property key.separator='|' --property parse.headers=true >/dev/null 2>&1
 found=1
 for _ in $(seq 1 6); do
   kexec kafka-console-consumer --bootstrap-server localhost:29092 --topic clinicalharmony.silver.patient.changed.dlt \
@@ -1060,12 +1073,12 @@ pass_if "a broken silver.patient.changed record is dead-lettered to clinicalharm
 # Logs to a file first: `docker logs | grep -q` under pipefail fails on SIGPIPE when the match comes early.
 docker logs clinicalharmony-fhir-compliance-service > "$TMP/fc.log" 2>&1
 docker logs clinicalharmony-patient-index-service > "$TMP/pmi.log" 2>&1
-if grep -q 'event="gold.built"' "$TMP/fc.log" && grep -q 'event="gold.deadlettered"' "$TMP/fc.log"; then
+if grep -q '"event":"gold.built"' "$TMP/fc.log" && grep -q '"event":"gold.deadlettered"' "$TMP/fc.log"; then
   echo "  PASS  fhir-compliance-service logs gold.built and gold.deadlettered events"; PASS=$((PASS + 1))
 else
   echo "  FAIL  no event=\"gold.built\" / \"gold.deadlettered\" line in fhir-compliance-service's log"; FAIL=$((FAIL + 1))
 fi
-if grep -q 'event="pmi.run"' "$TMP/pmi.log"; then
+if grep -q '"event":"pmi.run"' "$TMP/pmi.log"; then
   echo "  PASS  patient-index-service logs pmi.run events"; PASS=$((PASS + 1))
 else
   echo "  FAIL  no event=\"pmi.run\" line in patient-index-service's log"; FAIL=$((FAIL + 1))
@@ -1118,6 +1131,373 @@ check_http "unknown Silver patient → 404" GET "$GW/silver/patients/999999999" 
 check_http "unknown validation status → 400" GET "$GW/silver/patients?validationStatus=MAYBE" 400
 check_http "two trace targets at once → 400" GET "$GW/lineage?silverPatientId=1&bronzeMessageId=1" 400
 TOKEN=""
+
+section "22. REST intake over Kafka — HL7 / FHIR / claims / C-CDA → bronze-listener (Phase 9d part 1)"
+RUN="$(python3 -c 'import uuid; print(uuid.uuid4().hex[:10].upper())')"
+echo "  (run id $RUN: every payload below is unique to this run, so Bronze stores it fresh)"
+# rest_post NAME PATH CONTENT_TYPE BODY_FILE EXPECTED_CODE [EXTRA_HEADER] → body in $TMP/last_response.json
+rest_post() {
+  local name="$1" path="$2" ctype="$3" body="$4" expected="$5" extra="${6:-}"
+  local args=(-s -o "$TMP/last_response.json" -D "$TMP/last_headers.txt" -w "%{http_code}" -X POST
+              "$INGESTION_URL/api/ingestion/$path" -H "Content-Type: $ctype" --data-binary "@$body")
+  [[ -n "$extra" ]] && args+=(-H "$extra")
+  local actual; actual="$(curl "${args[@]}")"
+  if [[ "$actual" == "$expected" ]]; then echo "  PASS  $name (HTTP $actual)"; PASS=$((PASS + 1))
+  else echo "  FAIL  $name (expected HTTP $expected, got $actual)"; cat "$TMP/last_response.json"; FAIL=$((FAIL + 1)); fi
+}
+corr_of() { python3 -c "import json; print(json.load(open('$TMP/last_response.json')).get('correlationId',''))" 2>/dev/null; }
+# wait_rows CORRELATION_ID N — until bronze-listener has stored N rows for that correlation id (≤ 30 s)
+wait_rows() {
+  for _ in $(seq 1 60); do
+    [[ "$(psql_id "SELECT count(*) FROM bronze.raw_messages WHERE correlation_id = '$1'")" -ge "$2" ]] && return 0; sleep 0.5
+  done; return 1
+}
+
+for t in clinicalharmony.bronze.fhir.raw clinicalharmony.bronze.claims.raw clinicalharmony.bronze.ccda.raw \
+         clinicalharmony.bronze.fhir.raw.dlt clinicalharmony.bronze.claims.raw.dlt clinicalharmony.bronze.ccda.raw.dlt; do
+  parts="$(kexec kafka-topics --bootstrap-server localhost:29092 --describe --topic "$t" | grep -c 'Partition: ')"
+  pass_if "topic $t declared with 3 partitions" "$([[ "$parts" == "3" ]]; echo $?)" "$parts partitions"
+done
+
+# HL7 v2 over REST: same topic as MLLP, marked REST → REST_KAFKA, mapped to Silver like an MLLP message.
+printf 'MSH|^~\\&|SMOKE_APP|CITY_HOSPITAL|CH|INGEST|20261119090000||ADT^A01^ADT_A01|R9D%s|P|2.5\rEVN|A01|20261119090000\rPID|1||R9D%s^^^CITY_HOSPITAL^MR||RESTSMOKE^NINE||19700101|F\rPV1|1|O\r' "$RUN" "$RUN" > "$TMP/r_hl7.txt"
+rest_post "HL7 ADT over REST → 202" hl7 text/plain "$TMP/r_hl7.txt" 202
+check_json "  → names its topic, MSH-4 source and message type; no Bronze id (written later)" "$TMP/last_response.json" \
+  "(d['topic'], d['sourceSystem'], d['details']['hl7MessageType'], 'rawMessageId' in d, d['correlationId'].startswith('rest-'))" \
+  "('clinicalharmony.bronze.hl7v2.raw', 'CITY_HOSPITAL', 'ADT^A01', False, True)"
+HCORR="$(corr_of)"
+pass_if "  → correlation id echoed as X-Correlation-Id" "$([[ "$(header_of "$TMP/last_headers.txt" X-Correlation-Id)" == "$HCORR" ]]; echo $?)" "$HCORR"
+wait_rows "$HCORR" 1
+check_sql "  → one Bronze row, channel REST_KAFKA, from the hl7v2.raw topic" \
+  "SELECT count(*) || '/' || min(intake_channel) || '/' || min(kafka_topic) FROM bronze.raw_messages WHERE correlation_id = '$HCORR'" \
+  "1/REST_KAFKA/clinicalharmony.bronze.hl7v2.raw"
+for _ in $(seq 1 40); do [[ "$(psql_id "SELECT processing_status FROM bronze.raw_messages WHERE correlation_id = '$HCORR'")" == "PROCESSED" ]] && break; sleep 0.5; done
+check_sql "  → silver-transformer mapped it: Silver patient CITY_HOSPITAL / R9D$RUN" \
+  "SELECT b.processing_status || '/' || count(p.id) FROM bronze.raw_messages b LEFT JOIN silver.patients p ON p.source_system = 'CITY_HOSPITAL' AND p.source_patient_id = 'R9D$RUN' WHERE b.correlation_id = '$HCORR' GROUP BY b.processing_status" \
+  "PROCESSED/1"
+REST_LINEAGE="SELECT count(*) > 0 FROM gold.data_lineage WHERE transformation_details::text LIKE '%ingestion-service REST → Kafka → bronze-listener-service (HL7V2)%' AND transformation_details::text LIKE '%' || (SELECT payload_checksum FROM bronze.raw_messages WHERE correlation_id = '$HCORR') || '%'"
+for _ in $(seq 1 60); do [[ "$(psql_id "$REST_LINEAGE")" == "t" ]] && break; sleep 0.5; done
+check_sql "  → gold-builder built it; its Gold lineage names the REST door" "$REST_LINEAGE" "t"
+rest_post "the same HL7 bytes again → 202 (Kafka took it)" hl7 text/plain "$TMP/r_hl7.txt" 202
+DCORR="$(corr_of)"
+sleep 3
+check_sql "  → Bronze stored it once (duplicate skipped, same source + checksum)" \
+  "SELECT count(*) FROM bronze.raw_messages WHERE payload_checksum = (SELECT payload_checksum FROM bronze.raw_messages WHERE correlation_id = '$HCORR')" "1"
+docker logs clinicalharmony-bronze-listener-service > "$TMP/bronze.log" 2>&1
+pass_if "  → bronze-listener logged bronze.duplicate for it" "$(grep -q "\"correlationId\":\"$DCORR\".*\"event\":\"bronze.duplicate\"" "$TMP/bronze.log"; echo $?)" "$DCORR"
+printf 'NOT HL7 %s\r' "$RUN" > "$TMP/r_hl7_bad.txt"
+rest_post "garbage over the HL7 endpoint → 422" hl7 text/plain "$TMP/r_hl7_bad.txt" 422
+BCORR="$(corr_of)"; wait_rows "$BCORR" 1
+check_sql "  → published anyway and QUARANTINED in Bronze" "$(printf "SELECT processing_status FROM bronze.raw_messages WHERE correlation_id = '%s'" "$BCORR")" "QUARANTINED"
+
+# FHIR JSON: X-Source-System names the source; the caller's X-Correlation-Id is kept.
+printf '{"resourceType":"Patient","id":"r9d-%s","identifier":[{"system":"urn:mrn","value":"F9D%s"}],"name":[{"family":"Restsmoke","given":["Fhir"]}],"gender":"female","birthDate":"1971-02-03"}' "$RUN" "$RUN" > "$TMP/r_fhir.json"
+rest_post "FHIR Patient over REST (application/fhir+json, X-Source-System) → 202" fhir application/fhir+json "$TMP/r_fhir.json" 202 "X-Source-System: PARTNER_CLINIC"
+FCORR="$(corr_of)"
+curl -s -o "$TMP/last_response.json" -X POST "$INGESTION_URL/api/ingestion/fhir" -H "Content-Type: application/json" \
+  -H "X-Source-System: PARTNER_CLINIC" -H "X-Correlation-Id: smoke-9d-$RUN" --data-binary "@$TMP/r_fhir.json" > /dev/null
+check_json "  → the caller's correlation id is used" "$TMP/last_response.json" "(d['correlationId'], d['sourceSystem'], d['details']['resourceType'])" \
+  "('smoke-9d-$RUN', 'PARTNER_CLINIC', 'Patient')"
+wait_rows "$FCORR" 1
+wait_status() { for _ in $(seq 1 60); do [[ "$(psql_id "SELECT string_agg(DISTINCT processing_status, ',') FROM bronze.raw_messages WHERE correlation_id = '$1'")" == "$2" ]] && return 0; sleep 0.5; done; return 1; }
+wait_status "$FCORR" PROCESSED
+check_sql "  → Bronze row: FHIR_JSON / JSON / REST_KAFKA from PARTNER_CLINIC, PROCESSED into Silver (9d part 2)" \
+  "SELECT message_type || '/' || message_format || '/' || intake_channel || '/' || processing_status || '/' || source_system FROM bronze.raw_messages WHERE correlation_id = '$FCORR'" \
+  "FHIR_JSON/JSON/REST_KAFKA/PROCESSED/PARTNER_CLINIC"
+check_sql "  → Silver patient PARTNER_CLINIC / F9D$RUN (Restsmoke Fhir, 1971-02-03) from the Patient's identifier" \
+  "SELECT first_name || ' ' || last_name || ' ' || date_of_birth || ' ' || gender FROM silver.patients WHERE source_system = 'PARTNER_CLINIC' AND source_patient_id = 'F9D$RUN'" \
+  "Fhir Restsmoke 1971-02-03 female"
+check_sql "  → the resend with another correlation id was a duplicate (no second row)" \
+  "SELECT count(*) FROM bronze.raw_messages WHERE correlation_id = 'smoke-9d-$RUN'" "0"
+printf '{"notFhir":"%s"}' "$RUN" > "$TMP/r_fhir_bad.json"
+rest_post "JSON without resourceType → 422" fhir application/json "$TMP/r_fhir_bad.json" 422
+FBCORR="$(corr_of)"; wait_rows "$FBCORR" 1
+check_sql "  → QUARANTINED with the reason" \
+  "SELECT processing_status || ': ' || error_message FROM bronze.raw_messages WHERE correlation_id = '$FBCORR'" \
+  "QUARANTINED: JSON has no resourceType field — not a FHIR resource"
+
+# Claims CSV: one Kafka event per file; bronze-listener splits it into one row (and one bronze.ingested) per line.
+CH="claim_id,member_id,member_first_name,member_last_name,member_dob,member_gender,member_zip,service_date,icd10_code,billed_amount"
+printf '%s\nC9D%s-1,M9D%s,Claire,Restsmoke,1966-06-06,F,62704,2026-11-01,E11.9,150.00\nC9D%s-2,M9D%s,Claire,Restsmoke,1966-06-06,F,62704,2026-11-02,I10,95.50\nC9D%s-3,M9D%s,Claire,Restsmoke,1966-06-06,F,62704,2026-11-03,J45.909,40.00\n' \
+  "$CH" "$RUN" "$RUN" "$RUN" "$RUN" "$RUN" "$RUN" > "$TMP/r_claims.csv"
+rest_post "3-line claims file over REST → 202" claims text/csv "$TMP/r_claims.csv" 202 "X-Source-System: CLAIMS_VENDOR_A"
+check_json "  → reports 3 claim lines" "$TMP/last_response.json" "d['details']['claimLines']" "3"
+CCORR="$(corr_of)"; wait_rows "$CCORR" 3
+wait_status "$CCORR" PROCESSED
+check_sql "  → 3 Bronze rows (header + one line each), all CLAIMS_CSV / CSV / REST_KAFKA, PROCESSED into Silver" \
+  "SELECT count(*) || ':' || string_agg(DISTINCT message_type || '/' || message_format || '/' || intake_channel || '/' || processing_status, ',') FROM bronze.raw_messages WHERE correlation_id = '$CCORR' AND raw_payload LIKE '$CH' || chr(10) || 'C9D$RUN-_,%'" \
+  "3:CLAIMS_CSV/CSV/REST_KAFKA/PROCESSED"
+check_sql "  → one Silver member CLAIMS_VENDOR_A / M9D$RUN (Claire Restsmoke, 1966-06-06) with 3 silver.claims rows + 3 ICD-10 conditions" \
+  "SELECT p.first_name || ' ' || p.last_name || ' ' || p.date_of_birth || ' ' || (SELECT string_agg(claim_id || '=' || icd10_code || '/' || billed_amount, ',' ORDER BY claim_id) FROM silver.claims WHERE patient_id = p.id) || ' ' || (SELECT count(*) FROM silver.conditions WHERE patient_id = p.id AND code_system = 'ICD-10') FROM silver.patients p WHERE p.source_system = 'CLAIMS_VENDOR_A' AND p.source_patient_id = 'M9D$RUN'" \
+  "Claire Restsmoke 1966-06-06 C9D$RUN-1=E11.9/150.00,C9D$RUN-2=I10/95.50,C9D$RUN-3=J45.909/40.00 3"
+check_sql "  → one bronze.ingested outbox event per line, numbered 1..3" \
+  "SELECT string_agg(payload->>'claimLine', ',' ORDER BY (payload->>'claimLine')::int) FROM bronze.outbox_events WHERE aggregate_id IN (SELECT id FROM bronze.raw_messages WHERE correlation_id = '$CCORR')" \
+  "1,2,3"
+printf 'claim_id,member_id,service_date,icd10_code,billed_amount\nC9D%s-OLD,M9D%s,2026-11-01,E11.9,10.00\n' "$RUN" "$RUN" > "$TMP/r_claims_old.csv"
+rest_post "a pre-9d claims line (no member columns) → 202 (well-formed CSV)" claims text/csv "$TMP/r_claims_old.csv" 202 "X-Source-System: CLAIMS_VENDOR_A"
+OCORR="$(corr_of)"; wait_status "$OCORR" FAILED
+check_sql "  → Bronze FAILED in Silver: the member can't be built without name / DOB / gender" \
+  "SELECT processing_status || ': ' || (error_message LIKE '%no member columns%') FROM bronze.raw_messages WHERE correlation_id = '$OCORR'" "FAILED: true"
+printf 'claim_id,member_id,billed_amount\nC9D%s-X,M9D%s\n' "$RUN" "$RUN" > "$TMP/r_claims_bad.csv"
+rest_post "ragged claims file → 422" claims text/csv "$TMP/r_claims_bad.csv" 422
+CBCORR="$(corr_of)"; wait_rows "$CBCORR" 1
+check_sql "  → quarantined WHOLE (one row holding the file)" \
+  "SELECT count(*) || '/' || min(processing_status) || '/' || min(error_message) FROM bronze.raw_messages WHERE correlation_id = '$CBCORR'" \
+  "1/QUARANTINED/Row 1 has 2 columns, header has 3"
+
+# C-CDA: a new Bronze format (CCDA_XML / XML).
+sed -e "s/extension=\"CCD-CH-0001\"/extension=\"CCD-9D-$RUN\"/" -e "s/MRN-CCDA-1001/X9D$RUN/" "$FIXTURES/ccda_compliant.xml" > "$TMP/r_ccda.xml"
+rest_post "C-CDA document over REST → 202" ccda application/xml "$TMP/r_ccda.xml" 202 "X-Source-System: NORTH_CLINIC"
+check_json "  → document id + patient read" "$TMP/last_response.json" "(d['details']['documentId'], d['topic'])" \
+  "('2.16.840.1.113883.19.5.99999.1^CCD-9D-$RUN', 'clinicalharmony.bronze.ccda.raw')"
+XCORR="$(corr_of)"; wait_rows "$XCORR" 1; wait_status "$XCORR" PROCESSED
+check_sql "  → Bronze row CCDA_XML / XML / REST_KAFKA, PROCESSED into Silver" \
+  "SELECT message_type || '/' || message_format || '/' || intake_channel || '/' || processing_status FROM bronze.raw_messages WHERE correlation_id = '$XCORR'" \
+  "CCDA_XML/XML/REST_KAFKA/PROCESSED"
+check_sql "  → Silver patient NORTH_CLINIC / X9D$RUN (Ana Rivera, 1978-04-12): 3 problems, 3 results, 2 medications" \
+  "SELECT p.first_name || ' ' || p.last_name || ' ' || p.date_of_birth || ' ' || (SELECT count(*) FROM silver.conditions WHERE patient_id = p.id) || '/' || (SELECT count(*) FROM silver.observations WHERE patient_id = p.id) || '/' || (SELECT count(*) FROM silver.medications WHERE patient_id = p.id) FROM silver.patients p WHERE p.source_system = 'NORTH_CLINIC' AND p.source_patient_id = 'X9D$RUN'" \
+  "Ana Rivera 1978-04-12 3/3/2"
+sed "s/Unclosed recordTarget/Unclosed $RUN/" "$FIXTURES/ccda_malformed.xml" > "$TMP/r_ccda_bad.xml"
+rest_post "malformed C-CDA → 422" ccda text/xml "$TMP/r_ccda_bad.xml" 422
+XBCORR="$(corr_of)"; wait_rows "$XBCORR" 1
+check_sql "  → QUARANTINED as not well-formed XML" \
+  "SELECT processing_status || '/' || (error_message LIKE 'Not well-formed XML%') FROM bronze.raw_messages WHERE correlation_id = '$XBCORR'" \
+  "QUARANTINED/true"
+printf '<?xml version="1.0"?><!DOCTYPE d [<!ENTITY x SYSTEM "file:///etc/passwd">]><ClinicalDocument xmlns="urn:hl7-org:v3"><title>%s &x;</title></ClinicalDocument>' "$RUN" > "$TMP/r_ccda_xxe.xml"
+rest_post "C-CDA with a DOCTYPE / external entity → 422, never resolved" ccda application/xml "$TMP/r_ccda_xxe.xml" 422
+check_json "  → refused for the DOCTYPE" "$TMP/last_response.json" "'DOCTYPE' in d['error']" "True"
+
+# Requests that store nothing.
+rest_post "unusable X-Source-System → 400, not published" fhir application/json "$TMP/r_fhir.json" 400 "X-Source-System: bad;source"
+check_json "  → error body with a correlation id" "$TMP/last_response.json" "(d['error'], d['correlationId'].startswith('rest-'))" "('bad_header', True)"
+check_http "JSON posted to the C-CDA endpoint → 415" POST "$INGESTION_URL/api/ingestion/ccda" 415 "application/json" '{"a":1}'
+
+TOKEN="$(user_token dana)"
+check_http "dashboard: Bronze list filters by the C-CDA format" GET "$GW/bronze/messages?messageType=CCDA_XML&size=50" 200
+check_json "  → finds this run's document" "$TMP/last_response.json" \
+  "any(i['id'] == $(psql_id "SELECT id FROM bronze.raw_messages WHERE correlation_id = '$XCORR'") for i in d['items'])" "True"
+TOKEN=""
+
+section "23. Every feed into Silver — full generator: FHIR / claims / C-CDA, cross-feed duplicates, defects (Phase 9d part 2)"
+FSEED="$(( (RANDOM << 15) | RANDOM ))"
+python3 "$SCRIPT_DIR/../data-generator/generate.py" --count 40 --seed "$FSEED" --out "$GEN_OUT" --host "$MLLP_HOST" \
+  --port "$MLLP_PORT" --ingestion-url "$INGESTION_URL" --quiet > "$TMP/gen4.out" 2>&1
+FMAN="$GEN_OUT/seed-$FSEED/manifest.json"
+read -r F_HL7 F_FEEDS < <(python3 -c "import json; m=json.load(open('$FMAN')); print(m['count'], len(m['feedRecords']))")
+grep -q "$F_HL7 ACK AA" "$TMP/gen4.out" && grep -q "$F_FEEDS 202 Accepted, 0 failed" "$TMP/gen4.out"
+pass_if "generator (seed $FSEED) sent $F_HL7 HL7 over MLLP (all AA) + $F_FEEDS FHIR / claims / C-CDA payloads over REST (all 202)" $? "$(tail -2 "$TMP/gen4.out" | tr '\n' ' ')"
+check_json "  → manifest: every feed present, cross-feed duplicates with an expected PMI outcome, planted defects" "$FMAN" \
+  "(all(d['feeds'][f] > 0 for f in ('fhir','claims','ccda')), len(d['crossFeedDuplicates']) > 0, all(c['expectedPmiOutcome'] in ('AUTO_MERGED','PENDING_REVIEW') for c in d['crossFeedDuplicates']), len(d['defects']) > 0)" \
+  "(True, True, True, True)"
+# Bronze checksums of every feed payload: one per FHIR / C-CDA record, one per claims LINE (header + that line).
+FSHAS="$(python3 - "$FMAN" "$GEN_OUT/seed-$FSEED" <<'PY'
+import hashlib, json, sys
+m = json.load(open(sys.argv[1])); out = []
+for r in m["feedRecords"]:
+    text = open(sys.argv[2] + "/" + r["file"], encoding="utf-8", newline="").read()
+    if r["feed"] == "claims":
+        lines = text.strip("\n").split("\n")
+        out += [hashlib.sha256((lines[0] + "\n" + l).encode()).hexdigest() for l in lines[1:]]
+    else:
+        out.append(r["sha256"])
+print(",".join("'%s'" % x for x in out))
+PY
+)"
+F_ROWS="$(python3 -c "import json; print(sum(r['bronzeRows'] for r in json.load(open('$FMAN'))['feedRecords']))")"
+for _ in $(seq 1 90); do
+  [[ "$(psql_id "SELECT count(*) FROM bronze.raw_messages WHERE payload_checksum IN ($FSHAS) AND processing_status = 'PROCESSED'")" == "$F_ROWS" ]] && break; sleep 1
+done
+check_sql "every feed payload landed in Bronze via REST_KAFKA and was mapped into Silver ($F_ROWS rows PROCESSED, none FAILED)" \
+  "SELECT count(*) FILTER (WHERE processing_status = 'PROCESSED') || '/' || count(*) || '/' || count(*) FILTER (WHERE intake_channel = 'REST_KAFKA') FROM bronze.raw_messages WHERE payload_checksum IN ($FSHAS)" \
+  "$F_ROWS/$F_ROWS/$F_ROWS"
+BY_FORMAT="$(python3 - "$FMAN" <<'PY'
+import json, sys
+n = {}
+for r in json.load(open(sys.argv[1]))["feedRecords"]:
+    t = {"fhir": "FHIR_JSON", "claims": "CLAIMS_CSV", "ccda": "CCDA_XML"}[r["feed"]]
+    n[t] = n.get(t, 0) + r["bronzeRows"]
+print(",".join("%s=%d" % kv for kv in sorted(n.items())))
+PY
+)"
+check_sql "  → by format: FHIR_JSON / CLAIMS_CSV / CCDA_XML rows as the manifest says ($BY_FORMAT)" \
+  "SELECT string_agg(message_type || '=' || n, ',' ORDER BY message_type) FROM (SELECT message_type, count(*) n FROM bronze.raw_messages WHERE payload_checksum IN ($FSHAS) GROUP BY 1) x" \
+  "$BY_FORMAT"
+# Each feed's people as Silver patients (source + id from the manifest).
+FPEOPLE="$(python3 -c "
+import json; m = json.load(open('$FMAN'))
+print(' OR '.join(\"(source_system = '%s' AND source_patient_id = '%s')\" % (r['sourceSystem'], p['id']) for r in m['feedRecords'] for p in r['people']))")"
+check_sql "  → one Silver patient per person in the feeds (source system + that feed's id)" \
+  "SELECT count(*) FROM silver.patients WHERE $FPEOPLE" \
+  "$(python3 -c "import json; print(sum(len(r['people']) for r in json.load(open('$FMAN'))['feedRecords']))")"
+check_sql "  → claims members carry silver.claims rows (one per line) and their diagnoses as conditions" \
+  "SELECT count(*) = $(python3 -c "import json; print(sum(r['bronzeRows'] for r in json.load(open('$FMAN'))['feedRecords'] if r['feed']=='claims'))") FROM silver.claims c JOIN bronze.raw_messages b ON b.id = c.raw_message_id WHERE b.payload_checksum IN ($FSHAS)" "t"
+# Claim lifecycle (migration 28): every generated line carries a payer + status, and Silver stores what the line says.
+check_sql "  → every generated claim has a payer and a status, equal to its CSV line's claim_status" \
+  "SELECT count(*) FILTER (WHERE c.payer_id IS NULL OR c.claim_status IS NULL OR c.claim_status <> split_part(split_part(b.raw_payload, E'\\n', 2), ',', 14)) FROM silver.claims c JOIN bronze.raw_messages b ON b.id = c.raw_message_id WHERE b.payload_checksum IN ($FSHAS)" "0"
+CLAIM_PID="$(psql_id "SELECT c.patient_id FROM silver.claims c JOIN bronze.raw_messages b ON b.id = c.raw_message_id WHERE b.payload_checksum IN ($FSHAS) ORDER BY c.id LIMIT 1")"
+SAVED_TOKEN="$TOKEN"; TOKEN="$(user_token dana)"
+check_http "  → gateway: a claims member's page (Silver #${CLAIM_PID:-0})" GET "$GW/silver/patients/${CLAIM_PID:-0}" 200
+check_json "    → each claim row has its payer, status and who it is waiting on (status → waitingOn as ClaimLifecycle says)" "$TMP/last_response.json" \
+  "all(r['claim']['payerName'] and r['claim']['status'] == r['status'] and r['claim']['waitingOn'] == {'SUBMITTED':'PAYER','ACCEPTED':'PAYER','PENDED':'PAYER','APPEALED':'PAYER','REJECTED':'PROVIDER','VOIDED':'NOBODY'}.get(r['status'], r['claim']['waitingOn']) for r in d['rows'] if r['kind'] == 'CLAIM') and any(r['kind'] == 'CLAIM' for r in d['rows'])" "True"
+TOKEN="$SAVED_TOKEN"
+# Gold + PMI: wait for the build and the debounced matching run after the last event.
+wait_silver_lag_zero; wait_gold_lag_zero
+FP_SIDS="SELECT id FROM silver.patients WHERE $FPEOPLE"
+for _ in $(seq 1 60); do
+  [[ "$(psql_id "SELECT count(*) FROM ($FP_SIDS) s LEFT JOIN gold.patient_source_xref x ON x.silver_patient_id = s.id WHERE x.id IS NULL")" == "0" ]] && break; sleep 1
+done
+check_sql "  → every feed person reached Gold (a FHIR Patient on a master) with no manual build" \
+  "SELECT count(*) FROM ($FP_SIDS) s LEFT JOIN gold.fhir_resources r ON r.resource_type = 'Patient' AND r.fhir_id = 'silver-patient-' || s.id WHERE r.master_patient_id IS NULL" "0"
+LAST_FEED_GOLD="SELECT max(g.created_at) FROM gold.outbox_events g WHERE (g.payload->>'silverPatientId')::bigint IN ($FP_SIDS)"
+for _ in $(seq 1 90); do
+  [[ "$(psql_id "SELECT count(*) FROM pmi.match_runs WHERE status = 'COMPLETED' AND started_at > ($LAST_FEED_GOLD)")" -ge 1 ]] && break; sleep 1
+done
+python3 - "$FMAN" > "$TMP/xfeed.tsv" <<'PY'
+import json, sys
+for c in json.load(open(sys.argv[1]))["crossFeedDuplicates"]:
+    o, t = c["original"], c["twin"]
+    print("\t".join([c["variation"], c["feed"], c["expectedPmiOutcome"], "%.4f" % c["expectedScore"], o["sourceSystem"], o["mrn"],
+                     o["dob"], t["sourceSystem"], t["id"], t["name"], t["dob"]]))
+PY
+while IFS=$'\t' read -r VAR FEED EXP SCORE OSRC OMRN ODOB TSRC TID TNAME TDOB; do
+  A="$(sp "$OSRC" "$OMRN")"; B="$(sp "$TSRC" "$TID")"
+  if [[ "$EXP" == "AUTO_MERGED" ]]; then
+    check_sql "cross-feed $VAR ($FEED): $OSRC $OMRN (DOB $ODOB) = $TSRC $TID $TNAME (DOB $TDOB) → one master" \
+      "SELECT (SELECT master_patient_id FROM gold.patient_source_xref WHERE silver_patient_id = ${A:-0}) = (SELECT master_patient_id FROM gold.patient_source_xref WHERE silver_patient_id = ${B:-0})" "t"
+  else
+    check_sql "cross-feed $VAR ($FEED): $OSRC $OMRN (DOB $ODOB) vs $TSRC $TID $TNAME (DOB $TDOB) → PMI review at $SCORE" \
+      "SELECT string_agg(status || ' ' || score, ',') FROM pmi.match_candidates WHERE least(silver_patient_a_id, silver_patient_b_id) = least(${A:-0}, ${B:-0}) AND greatest(silver_patient_a_id, silver_patient_b_id) = greatest(${A:-0}, ${B:-0})" \
+      "PENDING $SCORE"
+  fi
+done < "$TMP/xfeed.tsv"
+python3 - "$FMAN" > "$TMP/defects.tsv" <<'PY'
+import json, sys
+for d in json.load(open(sys.argv[1]))["defects"]:
+    print("\t".join([d["kind"], d["expectedRule"], d["sourceSystem"], d["patientId"], d["name"], d["dob"], d["code"] or ""]))
+PY
+for _ in $(seq 1 60); do
+  [[ "$(psql_id "SELECT count(*) FROM silver.patients WHERE ($FPEOPLE) AND validation_status = 'PENDING_VALIDATION'")" == "0" ]] && break; sleep 1
+done
+while IFS=$'\t' read -r KIND RULE DSRC DID DNAME DDOB DCODE; do
+  check_sql "defect $KIND: $DSRC $DID $DNAME (DOB $DDOB), code $DCODE → open $RULE finding" \
+    "SELECT count(*) > 0 FROM silver.validation_reports WHERE patient_id = (SELECT id FROM silver.patients WHERE source_system = '$DSRC' AND source_patient_id = '$DID') AND rule_code = '$RULE' AND NOT is_resolved" "t"
+done < "$TMP/defects.tsv"
+check_sql "backlog sweeper: no Kafka-fed Bronze row left PENDING for more than 3 minutes (9d part 1 rows included)" \
+  "SELECT count(*) FROM bronze.raw_messages WHERE processing_status = 'PENDING' AND intake_channel IN ('MLLP_KAFKA', 'REST_KAFKA') AND created_at < now() - interval '3 minutes'" "0"
+check_sql "  → legacy REST rows (pre-9d direct writes) are never swept, and none is left PENDING (migration 29 closed them as FAILED)" \
+  "SELECT count(*) FILTER (WHERE processing_status = 'PENDING') || ' ' || (count(*) FILTER (WHERE processing_status = 'FAILED' AND error_message LIKE 'Legacy row:%') > 0) FROM bronze.raw_messages WHERE intake_channel = 'REST'" "0 true"
+
+# --reset: the same seed again in a new namespace → new people (nothing deduplicated, nothing deleted).
+python3 "$SCRIPT_DIR/../data-generator/generate.py" --count 12 --seed "$FSEED" --feeds fhir --reset --out "$GEN_OUT" \
+  --ingestion-url "$INGESTION_URL" --quiet > "$TMP/gen5.out" 2>&1
+RMAN="$GEN_OUT/seed-$FSEED-ns1/manifest.json"
+check_json "--reset: same seed, namespace 1 → new FHIR ids (PC1…)" "$RMAN" \
+  "(d['namespace'], all(p['id'].startswith('PC1') for r in d['feedRecords'] for p in r['people']))" "(1, True)"
+RPEOPLE="$(python3 -c "
+import json; m = json.load(open('$RMAN'))
+print(' OR '.join(\"(source_system = '%s' AND source_patient_id = '%s')\" % (r['sourceSystem'], p['id']) for r in m['feedRecords'] for p in r['people']))")"
+for _ in $(seq 1 60); do [[ "$(psql_id "SELECT count(*) FROM silver.patients WHERE $RPEOPLE")" == "2" ]] && break; sleep 0.5; done
+check_sql "  → its 2 Bundles became 2 NEW Silver patients" "SELECT count(*) FROM silver.patients WHERE $RPEOPLE" "2"
+
+# --trickle: a steady rate instead of a burst.
+t0=$(date +%s)
+python3 "$SCRIPT_DIR/../data-generator/generate.py" --count 24 --seed "$FSEED" --feeds claims --reset --trickle --rate 2 \
+  --out "$GEN_OUT" --ingestion-url "$INGESTION_URL" --quiet > "$TMP/gen6.out" 2>&1
+t1=$(date +%s)
+grep -q "Trickle: 4 items at 2/s" "$TMP/gen6.out" && grep -q "4 202 Accepted, 0 failed" "$TMP/gen6.out" && [[ $((t1 - t0)) -ge 1 ]]
+pass_if "--trickle --rate 2: 4 claims files spread out (took $((t1 - t0)) s), all 202" $? "$(tr '\n' ' ' < "$TMP/gen6.out")"
+
+section "24. Observability — logs + metrics in Splunk, consumer lag, dashboards, alerts firing (Phase 9e)"
+SPLUNK_API="${SPLUNK_API:-https://localhost:8089}"
+SPLUNK_AUTH="admin:${SPLUNK_PASSWORD:-clinicalharmony-splunk-dev}"   # DEV-ONLY (docker-compose.yml)
+# spl QUERY [EARLIEST] → the first result row of a Splunk search as JSON ({} when none)
+spl() {
+  curl -sk -u "$SPLUNK_AUTH" "$SPLUNK_API/services/search/jobs/export" --data-urlencode "search=$1" \
+    -d output_mode=json -d earliest_time="${2:--30m}" -d latest_time=now \
+    | python3 -c "
+import json, sys
+rows = [json.loads(l)['result'] for l in sys.stdin if l.strip() and '\"result\"' in l]
+print(json.dumps(rows[0] if rows else {}))"
+}
+spl_field() { spl "$1" "${3:--30m}" | python3 -c "import json,sys; print(json.load(sys.stdin).get('$2',''))"; }
+rest_get() { curl -sk -u "$SPLUNK_AUTH" -o "$TMP/splunk_rest.json" -w "%{http_code}" "$SPLUNK_API$1?output_mode=json"; }
+
+code="$(curl -sk -o "$TMP/hec.json" -w "%{http_code}" https://localhost:8088/services/collector/health)"
+[[ "$code" == "200" ]] && grep -q "HEC is healthy" "$TMP/hec.json"; pass_if "Splunk HTTP Event Collector is healthy" $? "HTTP $code $(cat "$TMP/hec.json")"
+code="$(rest_get /services/apps/local/clinicalharmony)"; pass_if "the clinicalharmony app is installed (config as code)" "$([[ "$code" == "200" ]]; echo $?)" "HTTP $code"
+code="$(rest_get /services/data/indexes/clinicalharmony_metrics)"
+[[ "$code" == "200" ]] && grep -q '"datatype":"metric"' "$TMP/splunk_rest.json"; pass_if "indexes clinicalharmony (events) + clinicalharmony_metrics (metric)" $? "HTTP $code"
+for v in clinicalharmony_pipeline clinicalharmony_trace; do
+  code="$(rest_get /servicesNS/nobody/clinicalharmony/data/ui/views/$v)"; pass_if "dashboard $v provisioned" "$([[ "$code" == "200" ]]; echo $?)" "HTTP $code"
+done
+for a in "Consumer lag high" "Dead letters" "Service down"; do
+  code="$(rest_get "/servicesNS/nobody/clinicalharmony/saved/searches/ClinicalHarmony%20-%20${a// /%20}")"
+  [[ "$code" == "200" ]] && grep -q '"is_scheduled":true' "$TMP/splunk_rest.json" && grep -q '"alert.track":true' "$TMP/splunk_rest.json"
+  pass_if "alert '$a' scheduled every minute, tracked in Splunk" $? "HTTP $code"
+done
+
+# Logs: every service's JSON lines arrive (Docker splunk log driver), parsed into fields.
+for _ in $(seq 1 60); do [[ "$(spl_field 'search index=clinicalharmony | stats dc(service) AS n' n -24h)" == "8" ]] && break; sleep 2; done
+check_val() { [[ "$2" == "$3" ]]; pass_if "$1 ($2)" $? "expected $3, got $2"; }
+check_val "logs from all 8 services in index=clinicalharmony" "$(spl_field 'search index=clinicalharmony | stats dc(service) AS n' n -24h)" "8"
+check_val "  → JSON parsed: event / correlationId are fields (bronze.stored with a correlation id)" \
+  "$(spl_field 'search index=clinicalharmony event="bronze.stored" correlationId=* | stats count AS n | eval ok=if(n>0,"yes","no")' ok -24h)" "yes"
+# Section 22's REST HL7 message, end to end, by one correlation id (requestId is aliased to correlationId).
+for _ in $(seq 1 30); do [[ "$(spl_field "search index=clinicalharmony correlationId=\"$HCORR\" | stats dc(service) AS n" n -2h)" -ge 4 ]] 2>/dev/null && break; sleep 2; done
+check_val "trace by correlation id $HCORR: ingestion → bronze-listener → silver-transformer → fhir-compliance" \
+  "$(spl_field "search index=clinicalharmony correlationId=\"$HCORR\" | stats values(event) AS e | eval ok=if(mvfind(e,\"^rest.published\$\")>=0 AND mvfind(e,\"^bronze.stored\$\")>=0 AND mvfind(e,\"^silver.mapped\$\")>=0 AND mvfind(e,\"^gold.built\$\")>=0,\"yes\",\"no\")" ok -2h)" "yes"
+check_val "  → gold.built carries the end-to-end latency (endToEndMs)" \
+  "$(spl_field "search index=clinicalharmony correlationId=\"$HCORR\" event=\"gold.built\" endToEndMs=* | stats count AS n | eval ok=if(n>0,\"yes\",\"no\")" ok -2h)" "yes"
+
+# Metrics: Micrometer → OTLP → collector → HEC, plus the collector's own Kafka lag + health checks.
+for _ in $(seq 1 60); do [[ "$(spl_field '| mstats count(clinicalharmony.bronze.messages) AS n WHERE index=clinicalharmony_metrics | eval ok=if(n>0,"yes","no")' ok -10m)" == "yes" ]] && break; sleep 2; done
+check_val "pipeline counters arrive as metrics (clinicalharmony.bronze.messages)" \
+  "$(spl_field '| mstats count(clinicalharmony.bronze.messages) AS n WHERE index=clinicalharmony_metrics | eval ok=if(n>0,"yes","no")' ok -10m)" "yes"
+check_val "  → metrics from all 8 services (service.name)" \
+  "$(spl_field '| mcatalog values(service.name) AS s WHERE index=clinicalharmony_metrics | eval n=mvcount(s)' n -10m)" "8"
+check_val "consumer lag per group from the collector (kafka.consumer_group.lag_sum): bronze-writer, silver-transformer, gold-builder, pmi-matcher" \
+  "$(spl_field '| mstats max(kafka.consumer_group.lag_sum) AS lag WHERE index=clinicalharmony_metrics BY group | stats values(group) AS g | eval ok=if(mvfind(g,"^bronze-writer$")>=0 AND mvfind(g,"^silver-transformer$")>=0 AND mvfind(g,"^gold-builder$")>=0 AND mvfind(g,"^pmi-matcher$")>=0,"yes","no")' ok -5m)" "yes"
+check_val "health checks: all 8 /actuator/health endpoints answering 2xx" \
+  "$(spl_field '| mstats max(httpcheck.status) AS up WHERE index=clinicalharmony_metrics AND http.status_class="2xx" BY http.url | where up=1 | stats count AS n' n -2m)" "8"
+
+# Alerts actually fire. fired() NAME → number of times that alert fired in the last 15 minutes.
+fired() { curl -sk -u "$SPLUNK_AUTH" "$SPLUNK_API/servicesNS/-/clinicalharmony/alerts/fired_alerts/${1// /%20}?output_mode=json&count=0" \
+  | python3 -c "
+import json, sys, time
+try: e = json.load(sys.stdin).get('entry', [])
+except Exception: e = []
+print(sum(1 for x in e if time.time() - float(x['content'].get('trigger_time', 0)) < 900))"; }
+wait_fired() { for _ in $(seq 1 "${2:-60}"); do [[ "$(fired "$1")" -ge 1 ]] && return 0; sleep 5; done; return 1; }
+# 1. Dead letter: a broken record on clinicalharmony.bronze.hl7v2.raw → bronze-writer dead-letters it at once.
+printf 'correlation-id:smoke-9e-dlt\tsmoke-9e-dlt|{not json\n' | docker exec -i "$KAFKA_CONTAINER" kafka-console-producer --bootstrap-server localhost:29092 --topic clinicalharmony.bronze.hl7v2.raw \
+  --property parse.key=true --property key.separator='|' --property parse.headers=true > /dev/null
+wait_fired "ClinicalHarmony - Dead letters" 48; pass_if "alert 'Dead letters' fired after a broken record was dead-lettered" $? "not fired within 4 min"
+# Dashboard ↔ Splunk: the smoke test's dead letter is tagged smoke-… (the Pipeline tile leaves it out), and the
+# dashboard's Bronze page can link section 22's REST message to its Splunk trace.
+for _ in $(seq 1 30); do [[ "$(spl_field 'search index=clinicalharmony event="bronze.deadlettered" correlationId="smoke-9e-dlt" | stats count AS n' n -30m)" -ge 1 ]] 2>/dev/null && break; sleep 2; done
+check_val "  → the smoke test's dead letter carries correlationId smoke-9e-dlt (left out of the Dead letters tile)" \
+  "$(spl_field 'search index=clinicalharmony event="bronze.deadlettered" correlationId="smoke-9e-dlt" | stats count AS n | eval ok=if(n>0,"yes","no")' ok -30m)" "yes"
+HBRONZE="$(psql_id "SELECT id FROM bronze.raw_messages WHERE correlation_id = '$HCORR' ORDER BY id LIMIT 1")"
+SAVED_TOKEN="$TOKEN"; TOKEN="$(user_token dana)"
+check_http "gateway: Bronze message #${HBRONZE:-0} (section 22's REST HL7)" GET "$GW/bronze/messages/${HBRONZE:-0}" 200
+check_json "  → carries its correlation id and intake channel (the UI's \"Open trace in Splunk\")" "$TMP/last_response.json" \
+  "(d['correlationId'], d['intakeChannel'])" "('$HCORR', 'REST_KAFKA')"
+TOKEN="$SAVED_TOKEN"
+code="$(curl -s -o "$TMP/gw_config.json" -w "%{http_code}" "$GW/config")"
+check_json "  → GET /config names Splunk's Trace dashboard (HTTP $code)" "$TMP/gw_config.json" \
+  "d['observability']['splunkTraceUrl']" "http://localhost:8000/en-US/app/clinicalharmony/clinicalharmony_trace"
+
+# 2 + 3. Stop bronze-writer's service, then send 60 HL7 messages: service down + lag > 50 for 3 minutes.
+docker stop clinicalharmony-bronze-listener-service > /dev/null
+python3 "$SCRIPT_DIR/../data-generator/generate.py" --count 60 --seed "$(( (RANDOM << 15) | RANDOM ))" --feeds hl7 --malformed-rate 0 \
+  --out "$GEN_OUT" --host "$MLLP_HOST" --port "$MLLP_PORT" --quiet > "$TMP/gen7.out" 2>&1
+wait_fired "ClinicalHarmony - Service down" 48; pass_if "alert 'Service down' fired with bronze-listener-service stopped" $? "not fired within 4 min"
+wait_fired "ClinicalHarmony - Consumer lag high" 72; pass_if "alert 'Consumer lag high' fired (bronze-writer ≥ 60 behind for 3 min)" $? "not fired within 6 min"
+docker start clinicalharmony-bronze-listener-service > /dev/null
+for _ in $(seq 1 90); do [[ "$(group_lag bronze-writer clinicalharmony.bronze.hl7v2.raw)" == "0" ]] && break; sleep 2; done
+pass_if "  → bronze-listener back: it caught up (lag 0), nothing lost" "$([[ "$(group_lag bronze-writer clinicalharmony.bronze.hl7v2.raw)" == "0" ]]; echo $?)" "lag $(group_lag bronze-writer clinicalharmony.bronze.hl7v2.raw)"
+check_val "  → the dashboard's alert panel query lists all three (fired_alerts REST)" \
+  "$(spl_field '| rest /servicesNS/-/clinicalharmony/alerts/fired_alerts/- splunk_server=local | stats dc(savedsearch_name) AS n' n -1h)" "3"
 
 echo
 echo "=== Summary: $PASS passed, $FAIL failed ==="

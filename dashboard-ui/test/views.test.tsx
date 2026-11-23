@@ -2,7 +2,7 @@ import { screen, waitFor, within } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
 import { http } from 'msw';
 import { describe, expect, it, vi } from 'vitest';
-import { displayPayload } from '../src/views/lineage/BronzeMessagePage';
+import { displayPayload, splunkTraceLink } from '../src/views/lineage/BronzeMessagePage';
 import { API, calls, fixtures, meVic, problem, reply, server } from './gateway';
 import { renderApp } from './render';
 
@@ -203,7 +203,43 @@ describe('Validation Report', () => {
     const bucket = await screen.findByRole('button', { name: /^CODE-001/ });
     await userEvent.click(bucket);
     await waitFor(() => expect(calls('/validation/findings').some((r) => r.query.get('ruleCode') === 'CODE-001')).toBe(true));
-    expect(screen.getByRole('button', { name: 'ruleCode: CODE-001 ×' })).toBeInTheDocument();
+    expect(screen.getByRole('button', { name: 'Rule: CODE-001 ×' })).toBeInTheDocument();
+  });
+
+  it('lists filters in the order applied, highlights their columns, and resets them all', async () => {
+    // Found by the user: chips came out in a fixed order, and nothing in the table showed what was filtered.
+    renderApp('/validation?severity=ERROR&ruleCode=CODE-001');
+    const region = await screen.findByRole('region', { name: 'Findings' });
+    await within(region).findByRole('option', { name: 'CONDITION' });   // options come with the summary
+    await userEvent.selectOptions(within(region).getByLabelText('Entity type'), 'CONDITION');
+    const chips = within(region).getAllByRole('button', { name: / ×$/ }).map((b) => b.textContent);
+    expect(chips).toEqual(['Severity: ERROR ×', 'Rule: CODE-001 ×', 'Entity: CONDITION ×']);
+    await waitFor(() => expect(within(region).getAllByRole('columnheader', { name: /\(filtered\)/ }).map((h) => h.textContent))
+      .toEqual(['Severity (filtered)', 'Rule (filtered)', 'Entity (filtered)']));
+    await userEvent.click(within(region).getByRole('button', { name: 'Reset filters' }));
+    await waitFor(() => expect(within(region).queryByRole('button', { name: / ×$/ })).not.toBeInTheDocument());
+    expect(within(region).queryAllByRole('columnheader', { name: /\(filtered\)/ })).toHaveLength(0);
+  });
+
+  it('shows the top rules until "Show all", keeping the selected one visible', async () => {
+    renderApp('/validation');
+    const card = (await screen.findByRole('heading', { name: 'By rule' })).closest('section') as HTMLElement;
+    const total = fixtures.validationSummary.byRule.length;
+    if (total <= 6) return;   // the captured fixture may hold few rules
+    expect(within(card).getAllByRole('listitem')).toHaveLength(6);
+    await userEvent.click(within(card).getByRole('button', { name: `Show all ${total} rules` }));
+    expect(within(card).getAllByRole('listitem')).toHaveLength(total);
+  });
+
+  it('brings the Findings table into view when a summary card is clicked, with the match count', async () => {
+    // Found by the user: the table sits below the three cards, so a click seemed to do nothing.
+    const scrolled = vi.fn();
+    Element.prototype.scrollIntoView = scrolled;
+    renderApp('/validation');
+    await userEvent.click(await screen.findByRole('button', { name: /^WARNING/ }));
+    expect(scrolled).toHaveBeenCalled();
+    const heading = within(screen.getByRole('region', { name: 'Findings' })).getByRole('heading', { level: 2 });
+    await waitFor(() => expect(heading).toHaveTextContent(/Findings \(\d[\d,]* matching\)/));
   });
 
   it('toggles a rule after confirmation and shows non-toggleable rules as such', async () => {
@@ -421,6 +457,14 @@ describe('Data Lineage', () => {
     expect(hl7).toBeEnabled();
   });
 
+  it('offers C-CDA XML as a payload format (9d) and filters by it', async () => {
+    renderApp('/lineage?messageType=CCDA_XML');
+    expect(await screen.findByLabelText('Payload format')).toHaveDisplayValue('C-CDA XML');
+    await waitFor(() => expect(calls('/bronze/messages').length).toBeGreaterThan(0));
+    expect(calls('/bronze/messages').at(-1)!.query.get('messageType')).toBe('CCDA_XML');
+    expect(screen.getByLabelText('HL7 message type')).toBeDisabled();
+  });
+
   it('reads the Bronze filters from the URL, ignoring an HL7 type next to a non-HL7 format', async () => {
     renderApp('/lineage?bronzeStatus=PROCESSED&messageType=CLAIMS_CSV&hl7Type=ORU');
     expect(await screen.findByLabelText('Payload format')).toHaveDisplayValue('Claims CSV');
@@ -458,6 +502,54 @@ describe('Data Lineage', () => {
     expect(screen.getByText(/HL7V2 ADT\^A01 from CITY_HOSPITAL/)).toBeInTheDocument();
     expect(displayPayload('HL7V2', 'MSH|a\rPID|b\r')).toBe('MSH|a\nPID|b\n');
     expect(displayPayload('FHIR_JSON', '{"a":1}')).toBe('{\n  "a": 1\n}');
+  });
+
+  it('shows a Bronze message\'s correlation id with a link to its trace in Splunk (9e)', async () => {
+    server.use(
+      http.get(`${API}/bronze/messages/:id`, ({ request }) =>
+        reply(request, {
+          ...fixtures.bronzeMessage,
+          summary: { ...fixtures.bronzeMessage.summary, receivedAt: '2026-11-23T08:00:00Z' },
+          intakeChannel: 'REST_KAFKA',
+          correlationId: 'rest-0123456789ab',
+        }),
+      ),
+    );
+    renderApp('/lineage/bronze/1');
+    expect(await screen.findByText('rest-0123456789ab')).toBeInTheDocument();
+    expect(screen.getByText('REST → Kafka')).toBeInTheDocument();
+    const link = await screen.findByRole('link', { name: 'Open trace in Splunk' });
+    const url = new URL(link.getAttribute('href')!);
+    expect(url.origin + url.pathname).toBe(fixtures.config.observability!.splunkTraceUrl);
+    expect(url.searchParams.get('form.cid')).toBe('rest-0123456789ab');
+    // Opened an hour before the payload arrived, not the dashboard's default last 24 h.
+    expect(url.searchParams.get('form.t.earliest')).toBe(String(Date.parse('2026-11-23T08:00:00Z') / 1000 - 3600));
+    expect(link).toHaveAttribute('target', '_blank');
+  });
+
+  it('says a legacy Bronze row has no correlation id, and builds a safe trace link', async () => {
+    server.use(
+      http.get(`${API}/bronze/messages/:id`, ({ request }) =>
+        reply(request, {
+          ...fixtures.bronzeMessage,
+          // Migration 29: a pre-9d REST row is closed as FAILED with the reason, not PENDING forever.
+          summary: { ...fixtures.bronzeMessage.summary, processingStatus: 'FAILED', errorMessage: 'Legacy row: written straight to Bronze' },
+          silverRows: [],
+          intakeChannel: 'REST',
+          correlationId: null,
+        }),
+      ),
+    );
+    renderApp('/lineage/bronze/1');
+    expect(await screen.findByText(/none — written straight to Bronze/)).toBeInTheDocument();
+    expect(screen.getByText('Why it failed:')).toBeInTheDocument();
+    expect(screen.getByText('REST, written directly (before Phase 9d)')).toBeInTheDocument();
+    expect(screen.getByText(/failed messages never reach Silver/)).toBeInTheDocument();
+    expect(screen.queryByRole('link', { name: 'Open trace in Splunk' })).toBeNull();
+    // An id with characters that mean something in a URL is encoded, and a missing time falls back to 7 days.
+    const href = splunkTraceLink('http://s/trace', 'a&b=c', null);
+    expect(new URL(href).searchParams.get('form.cid')).toBe('a&b=c');
+    expect(new URL(href).searchParams.get('form.t.earliest')).toBe('-7d@d');
   });
 });
 
@@ -533,6 +625,95 @@ describe('Data Lineage layer browser', () => {
       'href',
       `/lineage/silver/${hugo.id}#observations-${finding.entityId}`,
     );
+  });
+
+  it('lists a claims member\'s claim lines in their own card, which stay in Silver (9d)', async () => {
+    const base = {
+      kind: 'CLAIM', codeSystem: 'ICD-10', display: null, value: null, instant: null,
+      fhirResourceId: null, fhirResourceType: null, fhirId: null, usCoreCompliant: null,
+    };
+    const lifecycle = {
+      payerId: null, payerName: null, status: null, statusReason: null, allowedAmount: null, paidAmount: null,
+      patientResponsibility: null, submittedDate: null, statusDate: null, waitingOn: null, waitingSince: null,
+    };
+    // One claim from a file without the lifecycle columns, one denied by the payer.
+    const old = {
+      ...base, id: 4242, code: 'E11.9', display: 'Claim C9D-1', status: null, value: 'billed 150.00', date: '2026-11-01',
+      rawMessageId: 3554, claim: { ...lifecycle, claimId: 'C9D-1', billedAmount: 150, serviceDate: '2026-11-01' },
+    };
+    const denied = {
+      ...base, id: 4243, code: 'I10', display: 'Claim CLM-2', status: 'DENIED', value: 'billed 95.50', date: '2026-11-02',
+      rawMessageId: 3555,
+      claim: {
+        ...lifecycle, claimId: 'CLM-2', payerId: '60054', payerName: 'AETNA', status: 'DENIED', statusReason: 'CO-50',
+        billedAmount: 95.5, allowedAmount: 0, paidAmount: 0, patientResponsibility: 0, serviceDate: '2026-11-02',
+        submittedDate: '2026-11-03', statusDate: '2026-11-20', waitingOn: 'PROVIDER', waitingSince: '2026-11-20',
+      },
+    };
+    server.use(
+      http.get(`${API}/silver/patients/:id`, ({ request }) =>
+        reply(request, { ...fixtures.silverPatient, rows: [...fixtures.silverPatient.rows, old, denied] }),
+      ),
+    );
+    renderApp(`/lineage/silver/${hugo.id}`);
+    const heading = await screen.findByRole('heading', { name: /Claims/ });
+    expect(heading).toHaveTextContent('Claims (2)');
+    const card = document.getElementById('records-claims')!;
+    expect(within(card).getByText(/they stay in Silver/)).toBeInTheDocument();
+
+    const row = document.getElementById('claims-4242')!;
+    expect(within(row).getByText('C9D-1')).toBeInTheDocument();
+    expect(within(row).getByText('payer not given')).toBeInTheDocument();
+    expect(within(row).getByText('not in feed')).toBeInTheDocument();
+    expect(within(row).getByText('billed 150.00')).toBeInTheDocument();
+    expect(within(row).getByRole('link', { name: '#3554' })).toHaveAttribute('href', '/lineage/bronze/3554');
+
+    const d = document.getElementById('claims-4243')!;
+    expect(within(d).getByText('AETNA · 60054')).toBeInTheDocument();
+    expect(within(d).getByText('Denied')).toHaveClass('badge-bad');
+    expect(within(d).getByText('CO-50 · not medically necessary')).toBeInTheDocument();
+    expect(within(d).getByText('Provider')).toBeInTheDocument();
+    expect(within(d).getByText('· appeal or correct')).toBeInTheDocument();
+    expect(within(d).getByText(/^since .*2026 · \d+ days$/)).toBeInTheDocument();
+    expect(within(d).getByText('paid 0.00')).toBeInTheDocument();
+    expect(within(d).getByText(/^sent /)).toBeInTheDocument();
+
+    // Visible without scrolling: the Records strip counts the claims, flags the denial, and jumps to the card.
+    const strip = screen.getByRole('navigation', { name: 'Records of this patient' });
+    expect(within(strip).getByRole('link', { name: /^Claims/ })).toHaveAttribute(
+      'href',
+      `/lineage/silver/${hugo.id}#records-claims`,
+    );
+    expect(within(strip).getByRole('link', { name: /^Claims/ })).toHaveTextContent(/^Claims 2 · 1 denied$/);
+  });
+
+  it('counts every kind in the Records strip and collapses the empty kinds into one line', async () => {
+    // Found by the user: a claims member's Claims card sat under four "None." cards, several screens down.
+    const scrolled = vi.fn();
+    Element.prototype.scrollIntoView = scrolled;
+    renderApp(`/lineage/silver/${hugo.id}`);
+    const strip = await screen.findByRole('navigation', { name: 'Records of this patient' });
+    const count = (kind: string) => fixtures.silverPatient.rows.filter((r) => r.kind === kind).length;
+    // The fixture: conditions, observations and an allergy, no medications or claims.
+    expect(count('MEDICATION')).toBe(0);
+    expect(count('CLAIM')).toBe(0);
+    for (const [title, kind] of [['Conditions', 'CONDITION'], ['Observations', 'OBSERVATION'], ['Allergies', 'ALLERGY']] as const) {
+      expect(within(strip).getByRole('link', { name: `${title} ${count(kind)}` })).toHaveAttribute('href', expect.stringMatching(/#records-/));
+    }
+    expect(within(strip).getByRole('link', { name: `Findings ${fixtures.silverPatient.findings.length}` })).toHaveAttribute(
+      'href',
+      `/lineage/silver/${hugo.id}#findings`,
+    );
+    // Zero counts are shown but aren't links, and their cards are folded into one muted line.
+    expect(within(strip).getByText('Medications 0')).not.toHaveAttribute('href');
+    expect(within(strip).queryByRole('link', { name: /Claims/ })).toBeNull();
+    expect(screen.queryByRole('heading', { name: /Medications/ })).toBeNull();
+    expect(screen.queryByRole('heading', { name: /Claims/ })).toBeNull();
+    expect(screen.getByText('No medications or claims.')).toBeInTheDocument();
+    expect(screen.queryByText('None.')).toBeNull();
+    await userEvent.click(within(strip).getByRole('link', { name: /^Observations/ }));
+    await waitFor(() => expect(scrolled.mock.contexts).toContain(document.getElementById('records-observations')));
+    expect(scrolled).toHaveBeenCalledWith(expect.objectContaining({ block: 'start' }));
   });
 
   it('opens a lineage ref like silver.allergies/165 on its Silver patient', async () => {

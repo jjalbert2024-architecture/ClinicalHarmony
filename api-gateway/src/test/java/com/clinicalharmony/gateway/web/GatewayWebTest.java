@@ -104,7 +104,10 @@ class GatewayWebTest {
                 .andExpect(status().isOk())
                 .andExpect(jsonPath("$.auth.clientId").value("clinicalharmony-dashboard"))
                 .andExpect(jsonPath("$.auth.pkce").value("S256"))
-                .andExpect(jsonPath("$.auth.issuer").value(TestJwts.ISSUER));
+                .andExpect(jsonPath("$.auth.issuer").value(TestJwts.ISSUER))
+                // 9e: where the UI links a correlation id to its Splunk trace (SPLUNK_WEB_URL, as the browser sees it)
+                .andExpect(jsonPath("$.observability.splunkTraceUrl")
+                        .value("http://localhost:8000/en-US/app/clinicalharmony/clinicalharmony_trace"));
     }
 
     @Test
@@ -329,6 +332,17 @@ class GatewayWebTest {
                     .andExpect(status().isBadRequest());
         }
         verifyNoMoreInteractions(lineage);
+    }
+
+    @Test
+    void bronzeListAcceptsTheCcdaFormatAndRejectsUnknownOnes() throws Exception {
+        when(lineage.bronzeMessages(any(), any(), any(), any(), any(), anyInt(), anyInt())).thenReturn(Page.of(List.of(), 0, 15, 0));
+        mvc.perform(get("/api/v1/bronze/messages?messageType=CCDA_XML&size=15")
+                        .header(HttpHeaders.AUTHORIZATION, bearer(TestJwts.viewer())))
+                .andExpect(status().isOk());
+        verify(lineage).bronzeMessages(null, "CCDA_XML", null, null, null, 0, 15);
+        mvc.perform(get("/api/v1/bronze/messages?messageType=PDF").header(HttpHeaders.AUTHORIZATION, bearer(TestJwts.viewer())))
+                .andExpect(status().isBadRequest());
     }
 
     @Test

@@ -82,7 +82,7 @@ public class LineageController {
 
     /** Which Silver patient a row belongs to — resolves lineage refs like {@code silver.allergies/165}. */
     @GetMapping("/silver/rows/{table}/{id}")
-    public SilverQueries.RowOwner silverRow(@PathVariable @Pattern(regexp = "patients|conditions|observations|medications|allergies") String table,
+    public SilverQueries.RowOwner silverRow(@PathVariable @Pattern(regexp = "patients|conditions|observations|medications|allergies|claims") String table,
                                             @PathVariable long id) {
         return silver.owner(table, id);
     }
@@ -96,7 +96,7 @@ public class LineageController {
     public Page<LineageQueries.BronzeSummary> bronzeMessages(
             @RequestParam(required = false)
             @Pattern(regexp = "PENDING|PROCESSING|PROCESSED|FAILED|QUARANTINED") String status,
-            @RequestParam(required = false) @Pattern(regexp = "HL7V2|FHIR_JSON|CLAIMS_CSV") String messageType,
+            @RequestParam(required = false) @Pattern(regexp = "HL7V2|FHIR_JSON|CLAIMS_CSV|CCDA_XML") String messageType,
             @RequestParam(required = false) @Pattern(regexp = "[A-Z][A-Z0-9]{2}") String hl7Type,
             @RequestParam(required = false) @Size(max = 100) String sourceSystem,
             @RequestParam(required = false) @Size(max = 100) String q,

@@ -63,6 +63,9 @@ import static org.assertj.core.api.Assertions.assertThat;
         "silver.outbox.poll-interval=200ms",
         "silver.validation.sweep-interval=500ms",
         "silver.validation.min-age=0s",
+        "silver.backlog.initial-delay=1s",
+        "silver.backlog.interval=1s",
+        "silver.backlog.min-age=3s",
         "spring.kafka.consumer.auto-offset-reset=earliest"
 })
 @Testcontainers(disabledWithoutDocker = true)
@@ -84,6 +87,7 @@ class SilverTransformerIntegrationTest {
     // ---- stand-in rules-engine ----------------------------------------------------------------------
     static final HttpServer RULES = startRulesEngine();
     static volatile boolean rulesUp = true;
+    static volatile long rulesDelayMs = 0;   // > 0: the stand-in answers slowly, so concurrent calls overlap
     static volatile JdbcTemplate rulesDb;   // set once the context is up
     static final List<JsonNode> RULES_REQUESTS = new CopyOnWriteArrayList<>();
     static final ObjectMapper JSON = new ObjectMapper();
@@ -105,6 +109,13 @@ class SilverTransformerIntegrationTest {
                 }
                 JsonNode request = JSON.readTree(body);
                 RULES_REQUESTS.add(request);
+                if (rulesDelayMs > 0) {
+                    try {
+                        Thread.sleep(rulesDelayMs);
+                    } catch (InterruptedException e) {
+                        Thread.currentThread().interrupt();
+                    }
+                }
                 long patientId = request.get("patientId").asLong();
                 List<Long> ids = new ArrayList<>();
                 for (JsonNode med : request.path("medications")) {
@@ -124,6 +135,7 @@ class SilverTransformerIntegrationTest {
                 exchange.getResponseBody().write(out);
                 exchange.close();
             });
+            server.setExecutor(java.util.concurrent.Executors.newFixedThreadPool(4));   // like the real one: concurrent
             server.start();
             return server;
         } catch (IOException e) {
@@ -150,12 +162,15 @@ class SilverTransformerIntegrationTest {
     KafkaTemplate<String, String> kafka;
     @Autowired
     JdbcTemplate jdbc;
+    @Autowired
+    com.clinicalharmony.silver.validation.PatientValidator validator;
 
     /** Started once the context (and so the Boot-managed containers) is up — not in @BeforeAll. */
     @BeforeEach
     void setUp() {
         rulesDb = jdbc;
         rulesUp = true;
+        rulesDelayMs = 0;
         synchronized (SEEN) {
             if (tail == null) {
                 tail = new Thread(SilverTransformerIntegrationTest::tailLoop, "test-tail");
@@ -294,6 +309,153 @@ class SilverTransformerIntegrationTest {
     }
 
     @Test
+    void fhirBundleBecomesASilverPatientWithItsResources() throws Exception {
+        String mrn = mrn();
+        String key = "PARTNER_CLINIC|" + mrn;
+        String bundle = com.clinicalharmony.silver.map.FhirSilverMapperTest.BUNDLE.replace("PC100200", mrn);
+        long id = bronzeAs("FHIR_JSON", "JSON", bundle, "PARTNER_CLINIC");
+        announce(id, key, "corr-fhir");
+
+        long patientId = JSON_id(awaitChanged(key, 1).get(0));
+        assertThat(jdbc.queryForMap("SELECT source_system, first_name, last_name FROM silver.patients WHERE id = ?", patientId))
+                .containsEntry("source_system", "PARTNER_CLINIC").containsEntry("first_name", "Ana").containsEntry("last_name", "Rivera");
+        assertThat(List.of(count("silver.conditions", patientId), count("silver.observations", patientId),
+                count("silver.medications", patientId), count("silver.allergies", patientId))).containsExactly(1L, 1L, 1L, 1L);
+        assertThat(jdbc.queryForObject("SELECT processing_status FROM bronze.raw_messages WHERE id = ?", String.class, id))
+                .isEqualTo("PROCESSED");
+        assertThat(JSON.readTree(changedFor(key).get(0).value()).get("messageType").asText()).isEqualTo("FHIR_JSON");
+    }
+
+    @Test
+    void claimsLineBecomesMemberConditionAndClaimRow() {
+        String member = mrn();
+        String key = "CLAIMS_VENDOR_A|" + member;
+        String line = com.clinicalharmony.silver.map.ClaimsSilverMapperTest.HEADER + "\n"
+                + com.clinicalharmony.silver.map.ClaimsSilverMapperTest.LINE.replace("MBR-77", member);
+        long id = bronzeAs("CLAIMS_CSV", "CSV", line, "CLAIMS_VENDOR_A");
+        announce(id, key, "corr-claim");
+
+        long patientId = JSON_id(awaitChanged(key, 1).get(0));
+        assertThat(jdbc.queryForMap("SELECT claim_id, icd10_code, billed_amount::text AS billed FROM silver.claims WHERE patient_id = ?",
+                patientId)).containsEntry("claim_id", "CLM-1").containsEntry("icd10_code", "E11.9").containsEntry("billed", "150.00");
+        assertThat(jdbc.queryForObject("SELECT code FROM silver.conditions WHERE patient_id = ?", String.class, patientId))
+                .isEqualTo("E11.9");
+    }
+
+    @Test
+    void concurrentValidationsOfOnePatientLeaveOneOpenFindingPerProblem() throws Exception {
+        // Smoke section 19 (2026-11-23): a hospital ADT (allergy) and a pharmacy RDE (conflicting order) for the same
+        // patient arrive on different partitions and are validated at the same moment. In parallel, neither run saw
+        // the other's finding, so both stayed open. The validator now runs one validation per patient at a time.
+        long patientId = jdbc.queryForObject("""
+                INSERT INTO silver.patients (source_system, source_patient_id, first_name, last_name, date_of_birth, gender,
+                    validation_status) VALUES ('RACE_TEST', ?, 'Ada', 'Race', '1970-01-01', 'female', 'PENDING_VALIDATION')
+                RETURNING id""", Long.class, mrn());
+        jdbc.update("INSERT INTO silver.medications (patient_id, rxnorm_code, display, start_date) VALUES (?, '723', 'amoxicillin', '2026-11-01')",
+                patientId);
+        jdbc.update("INSERT INTO silver.allergies (patient_id, code_system, code, display) VALUES (?, 'RXNORM', '723', 'amoxicillin')",
+                patientId);
+        rulesDelayMs = 400;
+        java.util.concurrent.ExecutorService pool = java.util.concurrent.Executors.newFixedThreadPool(2);
+        try {
+            java.util.concurrent.CountDownLatch go = new java.util.concurrent.CountDownLatch(1);
+            List<java.util.concurrent.Future<?>> runs = new ArrayList<>();
+            for (int i = 0; i < 2; i++) {
+                runs.add(pool.submit(() -> {
+                    go.await();
+                    return validator.validate(patientId);
+                }));
+            }
+            go.countDown();
+            for (java.util.concurrent.Future<?> run : runs) {
+                run.get(30, java.util.concurrent.TimeUnit.SECONDS);
+            }
+        } finally {
+            pool.shutdownNow();
+            rulesDelayMs = 0;
+        }
+        assertThat(jdbc.queryForObject("SELECT count(*) FROM silver.validation_reports WHERE patient_id = ? AND NOT is_resolved",
+                Long.class, patientId)).as("open findings").isEqualTo(1L);
+        assertThat(jdbc.queryForObject("SELECT count(*) FROM silver.validation_reports WHERE patient_id = ? AND is_resolved",
+                Long.class, patientId)).as("the first run's finding, retired by the second").isEqualTo(1L);
+    }
+
+    @Test
+    void resentClaimLineMovesTheClaimForwardButNeverBack() {
+        String member = mrn();
+        String key = "CLAIMS_VENDOR_A|" + member;
+        String head = com.clinicalharmony.silver.map.ClaimsSilverMapperTest.LIFECYCLE_HEADER + "\n"
+                + com.clinicalharmony.silver.map.ClaimsSilverMapperTest.LINE.replace("MBR-77", member);
+        String pended = head + ",60054,AETNA,PENDED,2026-11-03,2026-11-10,,,,";
+        String paid = head + ",60054,AETNA,PAID,2026-11-03,2026-11-20,120.00,100.00,20.00,PR-1";
+        String latePended = head + ",60054,AETNA,PENDED,2026-11-03,2026-11-12,,,,";
+        announce(bronzeAs("CLAIMS_CSV", "CSV", pended, "CLAIMS_VENDOR_A"), key, "corr-claim-1");
+        long patientId = JSON_id(awaitChanged(key, 1).get(0));
+        assertThat(jdbc.queryForObject("SELECT claim_status FROM silver.claims WHERE patient_id = ?", String.class, patientId))
+                .isEqualTo("PENDED");
+        announce(bronzeAs("CLAIMS_CSV", "CSV", paid, "CLAIMS_VENDOR_A"), key, "corr-claim-2");
+        awaitChanged(key, 2);
+        announce(bronzeAs("CLAIMS_CSV", "CSV", latePended, "CLAIMS_VENDOR_A"), key, "corr-claim-3");
+        awaitChanged(key, 3);
+        assertThat(jdbc.queryForMap("SELECT claim_status, status_date::text AS d, paid_amount::text AS paid, "
+                + "patient_responsibility::text AS owes, status_reason, count(*) OVER () AS n FROM silver.claims WHERE patient_id = ?",
+                patientId))
+                .containsEntry("claim_status", "PAID").containsEntry("d", "2026-11-20").containsEntry("paid", "100.00")
+                .containsEntry("owes", "20.00").containsEntry("status_reason", "PR-1").containsEntry("n", 1L);
+    }
+
+    @Test
+    void oldFormatClaimsLineFailsWithTheReason() {
+        long id = bronzeAs("CLAIMS_CSV", "CSV", "claim_id,member_id,service_date,icd10_code,billed_amount\nCLM-" + mrn()
+                + ",MBR-1,2026-06-01,E11.9,150.00", "CLAIMS_VENDOR_A");
+        announce(id, "k-oldclaim", "corr-oldclaim");
+        await(() -> "FAILED".equals(jdbc.queryForObject("SELECT processing_status FROM bronze.raw_messages WHERE id = ?",
+                String.class, id)), "Bronze row FAILED");
+        assertThat(jdbc.queryForObject("SELECT error_message FROM bronze.raw_messages WHERE id = ?", String.class, id))
+                .contains("no member columns");
+    }
+
+    @Test
+    void ccdaDocumentBecomesASilverPatient() throws Exception {
+        String mrn = mrn();
+        String key = "NORTH_CLINIC|" + mrn;
+        String doc = com.clinicalharmony.silver.map.CcdaSilverMapperTest.fixture().replace("MRN-CCDA-1001", mrn);
+        long id = bronzeAs("CCDA_XML", "XML", doc, "NORTH_CLINIC");
+        announce(id, key, "corr-ccda");
+
+        long patientId = JSON_id(awaitChanged(key, 1).get(0));
+        assertThat(List.of(count("silver.conditions", patientId), count("silver.observations", patientId),
+                count("silver.medications", patientId))).containsExactly(3L, 3L, 2L);
+    }
+
+    @Test
+    void backlogSweeperTransformsAStrandedRowThatWasNeverAnnounced() {
+        String mrn = mrn();
+        String key = "PARTNER_CLINIC|" + mrn;
+        String bundle = com.clinicalharmony.silver.map.FhirSilverMapperTest.BUNDLE.replace("PC100200", mrn);
+        long id = bronzeAs("FHIR_JSON", "JSON", bundle, "PARTNER_CLINIC");   // no announce(): like a 9d part 1 row
+
+        await(() -> "PROCESSED".equals(jdbc.queryForObject("SELECT processing_status FROM bronze.raw_messages WHERE id = ?",
+                String.class, id)), "backlog sweeper transformed the stranded row");
+        long patientId = JSON_id(awaitChanged(key, 1).get(0));
+        assertThat(count("silver.conditions", patientId)).isEqualTo(1);
+        await(() -> "VALIDATED".equals(status(patientId)), "swept patient validated");
+    }
+
+    @Test
+    void backlogSweeperLeavesLegacyRestRowsAlone() throws Exception {
+        String raw = patient(Hl7Samples.adtA01("L-" + mrn()), mrn());
+        long id = jdbc.queryForObject("""
+                INSERT INTO bronze.raw_messages (source_system, message_type, message_format, raw_payload, payload_checksum,
+                    processing_status, intake_channel, created_at)
+                VALUES ('CITY_HOSPITAL', 'HL7V2', 'TEXT', ?, md5(?), 'PENDING', 'REST', now() - interval '1 hour') RETURNING id
+                """, Long.class, raw, raw);
+        Thread.sleep(2500);   // two sweeps
+        assertThat(jdbc.queryForObject("SELECT processing_status FROM bronze.raw_messages WHERE id = ?", String.class, id))
+                .isEqualTo("PENDING");
+    }
+
+    @Test
     void redeliveredEventIsSkippedWithoutASecondAnnouncement() throws Exception {
         String mrn = mrn();
         String key = "CITY_HOSPITAL|" + mrn;
@@ -361,6 +523,15 @@ class SilverTransformerIntegrationTest {
                     processing_status, intake_channel)
                 VALUES (?, 'HL7V2', 'TEXT', ?, md5(?) || md5(?), 'PENDING', 'MLLP_KAFKA') RETURNING id
                 """, Long.class, source, raw, raw, raw + "x");
+    }
+
+    /** A PENDING REST_KAFKA Bronze row of another format (9d), as bronze-listener-service writes it. */
+    private long bronzeAs(String type, String format, String raw, String source) {
+        return jdbc.queryForObject("""
+                INSERT INTO bronze.raw_messages (source_system, message_type, message_format, raw_payload, payload_checksum,
+                    processing_status, intake_channel)
+                VALUES (?, ?, ?, ?, md5(?) || md5(?), 'PENDING', 'REST_KAFKA') RETURNING id
+                """, Long.class, source, type, format, raw, raw, raw + "x");
     }
 
     /** A clinicalharmony.bronze.ingested event, as bronze-listener-service's outbox relay sends it. */

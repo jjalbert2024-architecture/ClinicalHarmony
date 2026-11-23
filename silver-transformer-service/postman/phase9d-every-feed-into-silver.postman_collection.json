@@ -1,0 +1,346 @@
+{
+  "info": {
+    "name": "ClinicalHarmony · Phase 9d part 2 — every feed into Silver",
+    "description": "Happy-path walkthrough (8 requests) of Phase 9d part 2: a FHIR Bundle, a claims line (with the new member columns) and a C-CDA document posted to ingestion-service go through Kafka and Bronze into Silver, mapped by silver-transformer-service, and show up in the dashboard's Silver read model. Run in order (2 sets the run id). The full generator (cross-feed duplicates, defects, --reset, --trickle) and every failure case are covered by scripts/smoke-test.sh section 23.",
+    "schema": "https://schema.getpostman.com/json/collection/v2.1.0/collection.json"
+  },
+  "variable": [
+    {
+      "key": "ingestion_url",
+      "value": "http://localhost:8081"
+    },
+    {
+      "key": "gateway_url",
+      "value": "http://localhost:8080"
+    },
+    {
+      "key": "keycloak_url",
+      "value": "http://localhost:8180"
+    },
+    {
+      "key": "access_token",
+      "value": ""
+    },
+    {
+      "key": "run",
+      "value": ""
+    },
+    {
+      "key": "fhir_silver_id",
+      "value": ""
+    },
+    {
+      "key": "claims_silver_id",
+      "value": ""
+    },
+    {
+      "key": "ccda_silver_id",
+      "value": ""
+    }
+  ],
+  "item": [
+    {
+      "name": "1. Auth — sign in as dana (data steward)",
+      "request": {
+        "method": "POST",
+        "header": [],
+        "url": "{{keycloak_url}}/realms/clinicalharmony/protocol/openid-connect/token",
+        "description": "DEV-ONLY password grant (client clinicalharmony-dashboard-dev) for the gateway reads in 5–7. Tokens live 10 minutes.",
+        "auth": {
+          "type": "noauth"
+        },
+        "body": {
+          "mode": "urlencoded",
+          "urlencoded": [
+            {
+              "key": "grant_type",
+              "value": "password"
+            },
+            {
+              "key": "client_id",
+              "value": "clinicalharmony-dashboard-dev"
+            },
+            {
+              "key": "username",
+              "value": "dana"
+            },
+            {
+              "key": "password",
+              "value": "dana-dev-password"
+            }
+          ]
+        }
+      },
+      "event": [
+        {
+          "listen": "test",
+          "script": {
+            "type": "text/javascript",
+            "exec": [
+              "pm.test('token issued', () => pm.response.to.have.status(200));",
+              "pm.collectionVariables.set('access_token', pm.response.json().access_token);"
+            ]
+          }
+        }
+      ]
+    },
+    {
+      "name": "2. FHIR Bundle (Patient + Condition + Observation) → 202",
+      "request": {
+        "method": "POST",
+        "header": [
+          {
+            "key": "Content-Type",
+            "value": "application/fhir+json"
+          },
+          {
+            "key": "X-Source-System",
+            "value": "PARTNER_CLINIC"
+          }
+        ],
+        "url": "{{ingestion_url}}/api/ingestion/fhir",
+        "description": "The pre-request script picks a fresh run id. silver-transformer maps the Bundle: the Patient (MR identifier PF<run>) becomes Silver patient PARTNER_CLINIC / PF<run>, the Condition and Observation that reference it become Silver rows.",
+        "auth": {
+          "type": "noauth"
+        },
+        "body": {
+          "mode": "raw",
+          "raw": "{\"resourceType\":\"Bundle\",\"type\":\"collection\",\"entry\":[\n {\"fullUrl\":\"urn:uuid:p-{{run}}\",\"resource\":{\"resourceType\":\"Patient\",\"identifier\":[{\"type\":{\"coding\":[{\"code\":\"MR\"}]},\"value\":\"PF{{run}}\"}],\"name\":[{\"family\":\"Postman\",\"given\":[\"Fhira\"]}],\"gender\":\"female\",\"birthDate\":\"1974-05-06\",\"address\":[{\"line\":[\"9 Oak St\"],\"city\":\"Springfield\",\"state\":\"IL\",\"postalCode\":\"62704\"}]}},\n {\"resource\":{\"resourceType\":\"Condition\",\"subject\":{\"reference\":\"urn:uuid:p-{{run}}\"},\"code\":{\"coding\":[{\"system\":\"http://hl7.org/fhir/sid/icd-10-cm\",\"code\":\"E11.9\",\"display\":\"Type 2 diabetes\"}]},\"onsetDateTime\":\"2020-03-02\"}},\n {\"resource\":{\"resourceType\":\"Observation\",\"status\":\"final\",\"subject\":{\"reference\":\"urn:uuid:p-{{run}}\"},\"code\":{\"coding\":[{\"system\":\"http://loinc.org\",\"code\":\"4548-4\",\"display\":\"Hemoglobin A1c\"}]},\"valueQuantity\":{\"value\":7.4,\"unit\":\"%\"},\"effectiveDateTime\":\"2026-11-01T08:00:00Z\",\"referenceRange\":[{\"low\":{\"value\":4.0},\"high\":{\"value\":5.6}}]}}]}"
+        }
+      },
+      "event": [
+        {
+          "listen": "prerequest",
+          "script": {
+            "type": "text/javascript",
+            "exec": [
+              "pm.collectionVariables.set('run', String(Date.now()).slice(-8));"
+            ]
+          }
+        },
+        {
+          "listen": "test",
+          "script": {
+            "type": "text/javascript",
+            "exec": [
+              "pm.test('202 Accepted — on Kafka', () => pm.response.to.have.status(202));"
+            ]
+          }
+        }
+      ]
+    },
+    {
+      "name": "3. Claims line with member columns + its lifecycle (denied) → 202",
+      "request": {
+        "method": "POST",
+        "header": [
+          {
+            "key": "Content-Type",
+            "value": "text/csv"
+          },
+          {
+            "key": "X-Source-System",
+            "value": "CLAIMS_VENDOR_A"
+          }
+        ],
+        "url": "{{ingestion_url}}/api/ingestion/claims",
+        "description": "9d part 2 claims format: the member's name, DOB and gender ride on every line. The line becomes Silver member CLAIMS_VENDOR_A / PM<run>, an ICD-10 condition, and a silver.claims row.",
+        "auth": {
+          "type": "noauth"
+        },
+        "body": {
+          "mode": "raw",
+          "raw": "claim_id,member_id,member_first_name,member_last_name,member_dob,member_gender,member_zip,member_phone,service_date,icd10_code,billed_amount,payer_id,payer_name,claim_status,submitted_date,status_date,allowed_amount,paid_amount,patient_responsibility,status_reason\nPCL{{run}},PM{{run}},Claud,Postman,1958-09-09,M,62704,5551230000,2026-11-01,I10,95.50,60054,AETNA,DENIED,2026-11-03,2026-11-20,0.00,0.00,0.00,CO-50\n"
+        }
+      },
+      "event": [
+        {
+          "listen": "test",
+          "script": {
+            "type": "text/javascript",
+            "exec": [
+              "pm.test('202 Accepted — on Kafka', () => pm.response.to.have.status(202));"
+            ]
+          }
+        }
+      ]
+    },
+    {
+      "name": "4. C-CDA document → 202",
+      "request": {
+        "method": "POST",
+        "header": [
+          {
+            "key": "Content-Type",
+            "value": "application/xml"
+          },
+          {
+            "key": "X-Source-System",
+            "value": "COMMUNITY_HIE"
+          }
+        ],
+        "url": "{{ingestion_url}}/api/ingestion/ccda",
+        "description": "A minimal CCD: patientRole PX<run> + one problem. Becomes Silver patient COMMUNITY_HIE / PX<run> with one condition.",
+        "auth": {
+          "type": "noauth"
+        },
+        "body": {
+          "mode": "raw",
+          "raw": "<?xml version=\"1.0\" encoding=\"UTF-8\"?>\n<ClinicalDocument xmlns=\"urn:hl7-org:v3\" xmlns:xsi=\"http://www.w3.org/2001/XMLSchema-instance\">\n <id root=\"2.16.840.1.113883.19.5\" extension=\"POSTMAN-{{run}}\"/>\n <recordTarget><patientRole><id root=\"2.16.840.1.113883.19.5.2\" extension=\"PX{{run}}\"/>\n  <patient><name><given>Ccdia</given><family>Postman</family></name><administrativeGenderCode code=\"F\"/><birthTime value=\"19800101\"/></patient>\n </patientRole></recordTarget>\n <component><structuredBody><component><section><code code=\"11450-4\" codeSystem=\"2.16.840.1.113883.6.1\"/>\n  <entry><act classCode=\"ACT\" moodCode=\"EVN\"><entryRelationship typeCode=\"SUBJ\"><observation classCode=\"OBS\" moodCode=\"EVN\">\n   <effectiveTime><low value=\"20190302\"/></effectiveTime><value xsi:type=\"CD\" code=\"I10\" codeSystem=\"2.16.840.1.113883.6.90\" displayName=\"Essential hypertension\"/>\n  </observation></entryRelationship></act></entry>\n </section></component></structuredBody></component>\n</ClinicalDocument>\n"
+        }
+      },
+      "event": [
+        {
+          "listen": "test",
+          "script": {
+            "type": "text/javascript",
+            "exec": [
+              "pm.test('202 Accepted — on Kafka', () => pm.response.to.have.status(202));"
+            ]
+          }
+        }
+      ]
+    },
+    {
+      "name": "5. Silver — the FHIR patient",
+      "request": {
+        "method": "GET",
+        "header": [],
+        "url": "{{gateway_url}}/api/v1/silver/patients?q=PF{{run}}",
+        "description": "Dashboard: Data Lineage → Silver tab, search PF<run>. Run a few seconds after 2–4 (Kafka → Bronze → Silver).",
+        "auth": {
+          "type": "bearer",
+          "bearer": [
+            {
+              "key": "token",
+              "value": "{{access_token}}",
+              "type": "string"
+            }
+          ]
+        }
+      },
+      "event": [
+        {
+          "listen": "test",
+          "script": {
+            "type": "text/javascript",
+            "exec": [
+              "pm.test('200', () => pm.response.to.have.status(200));",
+              "const p = pm.response.json().items[0];",
+              "pm.test('found in Silver', () => pm.expect(p).to.be.an('object'));",
+              "pm.collectionVariables.set('fhir_silver_id', p.id);",
+              "pm.test('PARTNER_CLINIC, 1 condition + 1 observation', () => { pm.expect(p.sourceSystem).to.eql('PARTNER_CLINIC'); pm.expect(p.conditions).to.eql(1); pm.expect(p.observations).to.eql(1); });"
+            ]
+          }
+        }
+      ]
+    },
+    {
+      "name": "6. Silver — the claims member and its claim line",
+      "request": {
+        "method": "GET",
+        "header": [],
+        "url": "{{gateway_url}}/api/v1/silver/patients?q=PM{{run}}",
+        "description": "The member CLAIMS_VENDOR_A / PM<run> (Claud Postman, 1958-09-09) with its ICD-10 condition.",
+        "auth": {
+          "type": "bearer",
+          "bearer": [
+            {
+              "key": "token",
+              "value": "{{access_token}}",
+              "type": "string"
+            }
+          ]
+        }
+      },
+      "event": [
+        {
+          "listen": "test",
+          "script": {
+            "type": "text/javascript",
+            "exec": [
+              "pm.test('200', () => pm.response.to.have.status(200));",
+              "const p = pm.response.json().items[0];",
+              "pm.test('found in Silver', () => pm.expect(p).to.be.an('object'));",
+              "pm.collectionVariables.set('claims_silver_id', p.id);",
+              "pm.test('CLAIMS_VENDOR_A member, 1 condition', () => { pm.expect(p.sourceSystem).to.eql('CLAIMS_VENDOR_A'); pm.expect(p.conditions).to.eql(1); });"
+            ]
+          }
+        }
+      ]
+    },
+    {
+      "name": "7. Silver patient page — the CLAIM row, denied and waiting on the provider",
+      "request": {
+        "method": "GET",
+        "header": [],
+        "url": "{{gateway_url}}/api/v1/silver/patients/{{claims_silver_id}}",
+        "description": "The same member's detail: a row of kind CLAIM (code I10, 'Claim PCL<run>', billed 95.50). Claims stay in Silver; their diagnosis is the condition that reaches Gold.",
+        "auth": {
+          "type": "bearer",
+          "bearer": [
+            {
+              "key": "token",
+              "value": "{{access_token}}",
+              "type": "string"
+            }
+          ]
+        }
+      },
+      "event": [
+        {
+          "listen": "test",
+          "script": {
+            "type": "text/javascript",
+            "exec": [
+              "pm.test('200', () => pm.response.to.have.status(200));",
+              "const claim = pm.response.json().rows.find(r => r.kind === 'CLAIM');",
+              "pm.test('claim row', () => { pm.expect(claim.code).to.eql('I10'); pm.expect(claim.value).to.eql('billed 95.50'); });",
+              "pm.test('lifecycle: AETNA denied it (CO-50), the provider has to act since the status date', () => {",
+              "  pm.expect(claim.status).to.eql('DENIED');",
+              "  pm.expect(claim.claim.payerName).to.eql('AETNA');",
+              "  pm.expect(claim.claim.statusReason).to.eql('CO-50');",
+              "  pm.expect(claim.claim.waitingOn).to.eql('PROVIDER');",
+              "  pm.expect(claim.claim.waitingSince).to.eql('2026-11-20');",
+              "});"
+            ]
+          }
+        }
+      ]
+    },
+    {
+      "name": "8. Silver — the C-CDA patient",
+      "request": {
+        "method": "GET",
+        "header": [],
+        "url": "{{gateway_url}}/api/v1/silver/patients?q=PX{{run}}",
+        "description": "COMMUNITY_HIE / PX<run> (Ccdia Postman, 1980-01-01) with the problem from the document.",
+        "auth": {
+          "type": "bearer",
+          "bearer": [
+            {
+              "key": "token",
+              "value": "{{access_token}}",
+              "type": "string"
+            }
+          ]
+        }
+      },
+      "event": [
+        {
+          "listen": "test",
+          "script": {
+            "type": "text/javascript",
+            "exec": [
+              "pm.test('200', () => pm.response.to.have.status(200));",
+              "const p = pm.response.json().items[0];",
+              "pm.test('found in Silver', () => pm.expect(p).to.be.an('object'));",
+              "pm.collectionVariables.set('ccda_silver_id', p.id);",
+              "pm.test('COMMUNITY_HIE, 1 condition', () => { pm.expect(p.sourceSystem).to.eql('COMMUNITY_HIE'); pm.expect(p.conditions).to.eql(1); });"
+            ]
+          }
+        }
+      ]
+    }
+  ]
+}

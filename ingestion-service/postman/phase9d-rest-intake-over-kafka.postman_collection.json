@@ -1,0 +1,310 @@
+{
+  "info": {
+    "name": "ClinicalHarmony · Phase 9d part 1 — REST intake over Kafka",
+    "description": "Happy-path walkthrough (7 requests) of Phase 9d part 1: every REST intake path — HL7 v2, FHIR JSON, claims CSV and the new C-CDA — publishes to Kafka (clinicalharmony.bronze.{hl7v2,fhir,claims,ccda}.raw) and answers 202 once Kafka confirms; bronze-listener-service stores the rows. Prereqs: `docker-compose up -d`, migration 26 applied. Run in order (2 sets the run id the others use). 422 / 503 / 413 / 400, duplicates, quarantine and the claims split details are covered by scripts/smoke-test.sh section 22.",
+    "schema": "https://schema.getpostman.com/json/collection/v2.1.0/collection.json"
+  },
+  "variable": [
+    {
+      "key": "ingestion_url",
+      "value": "http://localhost:8081"
+    },
+    {
+      "key": "gateway_url",
+      "value": "http://localhost:8080"
+    },
+    {
+      "key": "keycloak_url",
+      "value": "http://localhost:8180"
+    },
+    {
+      "key": "access_token",
+      "value": ""
+    },
+    {
+      "key": "run",
+      "value": ""
+    }
+  ],
+  "item": [
+    {
+      "name": "1. Auth — sign in as dana (data steward)",
+      "request": {
+        "method": "POST",
+        "header": [],
+        "url": "{{keycloak_url}}/realms/clinicalharmony/protocol/openid-connect/token",
+        "description": "DEV-ONLY password grant on client clinicalharmony-dashboard-dev, so requests 6–7 can read Bronze through the api-gateway. Tokens live 10 minutes — re-run 1 on a 401. The ingestion endpoints (2–5) need no token.",
+        "auth": {
+          "type": "noauth"
+        },
+        "body": {
+          "mode": "urlencoded",
+          "urlencoded": [
+            {
+              "key": "grant_type",
+              "value": "password"
+            },
+            {
+              "key": "client_id",
+              "value": "clinicalharmony-dashboard-dev"
+            },
+            {
+              "key": "username",
+              "value": "dana"
+            },
+            {
+              "key": "password",
+              "value": "dana-dev-password"
+            }
+          ]
+        }
+      },
+      "event": [
+        {
+          "listen": "test",
+          "script": {
+            "type": "text/javascript",
+            "exec": [
+              "pm.test('token issued', () => pm.response.to.have.status(200));",
+              "pm.collectionVariables.set('access_token', pm.response.json().access_token);"
+            ]
+          }
+        }
+      ]
+    },
+    {
+      "name": "2. HL7 v2 ADT^A01 over REST → 202",
+      "request": {
+        "method": "POST",
+        "header": [
+          {
+            "key": "Content-Type",
+            "value": "text/plain"
+          }
+        ],
+        "url": "{{ingestion_url}}/api/ingestion/hl7",
+        "description": "Same topic as MLLP (clinicalharmony.bronze.hl7v2.raw), marked intakeChannel REST. The pre-request script picks a fresh run id so the patient (CITY_HOSPITAL / PM9D<run>) is new every time — resending identical bytes is accepted (202) but Bronze stores it once. 202 = passed the syntax check and Kafka confirmed it (acks=all).",
+        "auth": {
+          "type": "noauth"
+        },
+        "body": {
+          "mode": "raw",
+          "raw": "MSH|^~\\&|POSTMAN|CITY_HOSPITAL|CH|INGEST|20261119100000||ADT^A01^ADT_A01|PM9D{{run}}|P|2.5\rEVN|A01|20261119100000\rPID|1||PM9D{{run}}^^^CITY_HOSPITAL^MR||POSTMAN^NINE||19650412|M\rPV1|1|O\r"
+        }
+      },
+      "event": [
+        {
+          "listen": "prerequest",
+          "script": {
+            "type": "text/javascript",
+            "exec": [
+              "pm.collectionVariables.set('run', String(Date.now()).slice(-8));"
+            ]
+          }
+        },
+        {
+          "listen": "test",
+          "script": {
+            "type": "text/javascript",
+            "exec": [
+              "pm.test('202 Accepted — on Kafka', () => pm.response.to.have.status(202));",
+              "const b = pm.response.json();",
+              "pm.test('no Bronze id: bronze-listener writes the row', () => pm.expect(b.rawMessageId).to.be.undefined);",
+              "pm.test('correlation id echoed', () => pm.expect(pm.response.headers.get('X-Correlation-Id')).to.eql(b.correlationId));",
+              "pm.test('HL7 topic, MSH-4 source, ADT^A01', () => { pm.expect(b.topic).to.eql('clinicalharmony.bronze.hl7v2.raw'); pm.expect(b.sourceSystem).to.eql('CITY_HOSPITAL'); pm.expect(b.details.hl7MessageType).to.eql('ADT^A01'); });"
+            ]
+          }
+        }
+      ]
+    },
+    {
+      "name": "3. FHIR Patient over REST → 202",
+      "request": {
+        "method": "POST",
+        "header": [
+          {
+            "key": "Content-Type",
+            "value": "application/fhir+json"
+          },
+          {
+            "key": "X-Source-System",
+            "value": "PARTNER_CLINIC"
+          },
+          {
+            "key": "X-Correlation-Id",
+            "value": "postman-fhir-{{run}}"
+          }
+        ],
+        "url": "{{ingestion_url}}/api/ingestion/fhir",
+        "description": "X-Source-System names the sender; a caller-supplied X-Correlation-Id is kept (it becomes bronze.raw_messages.correlation_id and appears on every log line). Lands as FHIR_JSON / JSON / REST_KAFKA / PENDING; Silver mapping of FHIR comes in 9d part 2.",
+        "auth": {
+          "type": "noauth"
+        },
+        "body": {
+          "mode": "raw",
+          "raw": "{\"resourceType\":\"Patient\",\"id\":\"postman-{{run}}\",\"identifier\":[{\"system\":\"urn:mrn\",\"value\":\"PF9D{{run}}\"}],\"name\":[{\"family\":\"Postman\",\"given\":[\"Fhir\"]}],\"gender\":\"female\",\"birthDate\":\"1972-03-04\"}"
+        }
+      },
+      "event": [
+        {
+          "listen": "test",
+          "script": {
+            "type": "text/javascript",
+            "exec": [
+              "pm.test('202 Accepted — on Kafka', () => pm.response.to.have.status(202));",
+              "const b = pm.response.json();",
+              "pm.test('no Bronze id: bronze-listener writes the row', () => pm.expect(b.rawMessageId).to.be.undefined);",
+              "pm.test('correlation id echoed', () => pm.expect(pm.response.headers.get('X-Correlation-Id')).to.eql(b.correlationId));",
+              "pm.test('caller correlation id kept', () => pm.expect(b.correlationId).to.eql('postman-fhir-' + pm.collectionVariables.get('run')));",
+              "pm.test('Patient, keyed by source + identifier', () => pm.expect(b.details.resourceType).to.eql('Patient'));"
+            ]
+          }
+        }
+      ]
+    },
+    {
+      "name": "4. Claims CSV file (2 lines) over REST → 202",
+      "request": {
+        "method": "POST",
+        "header": [
+          {
+            "key": "Content-Type",
+            "value": "text/csv"
+          },
+          {
+            "key": "X-Source-System",
+            "value": "CLAIMS_VENDOR_A"
+          }
+        ],
+        "url": "{{ingestion_url}}/api/ingestion/claims",
+        "description": "ONE Kafka event for the file; bronze-listener-service splits it into one Bronze row (and one bronze.ingested event) per claim line, in one transaction.",
+        "auth": {
+          "type": "noauth"
+        },
+        "body": {
+          "mode": "raw",
+          "raw": "claim_id,member_id,service_date,icd10_code,billed_amount\nPC9D{{run}}-1,PM9D{{run}},2026-11-01,E11.9,150.00\nPC9D{{run}}-2,PM9D{{run}},2026-11-02,I10,95.50\n"
+        }
+      },
+      "event": [
+        {
+          "listen": "test",
+          "script": {
+            "type": "text/javascript",
+            "exec": [
+              "pm.test('202 Accepted — on Kafka', () => pm.response.to.have.status(202));",
+              "const b = pm.response.json();",
+              "pm.test('no Bronze id: bronze-listener writes the row', () => pm.expect(b.rawMessageId).to.be.undefined);",
+              "pm.test('correlation id echoed', () => pm.expect(pm.response.headers.get('X-Correlation-Id')).to.eql(b.correlationId));",
+              "pm.test('2 claim lines', () => pm.expect(b.details.claimLines).to.eql(2));"
+            ]
+          }
+        }
+      ]
+    },
+    {
+      "name": "5. C-CDA document over REST → 202",
+      "request": {
+        "method": "POST",
+        "header": [
+          {
+            "key": "Content-Type",
+            "value": "application/xml"
+          },
+          {
+            "key": "X-Source-System",
+            "value": "NORTH_CLINIC"
+          }
+        ],
+        "url": "{{ingestion_url}}/api/ingestion/ccda",
+        "description": "New Bronze format CCDA_XML / XML (migration 26). Checked: well-formed, no DOCTYPE, HL7 v3 ClinicalDocument with recordTarget/patientRole.",
+        "auth": {
+          "type": "noauth"
+        },
+        "body": {
+          "mode": "raw",
+          "raw": "<?xml version=\"1.0\" encoding=\"UTF-8\"?>\n<ClinicalDocument xmlns=\"urn:hl7-org:v3\">\n  <id root=\"2.16.840.1.113883.19.5\" extension=\"POSTMAN-{{run}}\"/>\n  <title>Postman CCD</title>\n  <recordTarget><patientRole><id root=\"2.16.840.1.113883.19.5.2\" extension=\"PX9D{{run}}\"/>\n    <patient><name><given>Ccda</given><family>Postman</family></name><administrativeGenderCode code=\"F\"/><birthTime value=\"19800101\"/></patient>\n  </patientRole></recordTarget>\n</ClinicalDocument>\n"
+        }
+      },
+      "event": [
+        {
+          "listen": "test",
+          "script": {
+            "type": "text/javascript",
+            "exec": [
+              "pm.test('202 Accepted — on Kafka', () => pm.response.to.have.status(202));",
+              "const b = pm.response.json();",
+              "pm.test('no Bronze id: bronze-listener writes the row', () => pm.expect(b.rawMessageId).to.be.undefined);",
+              "pm.test('correlation id echoed', () => pm.expect(pm.response.headers.get('X-Correlation-Id')).to.eql(b.correlationId));",
+              "pm.test('document id read', () => pm.expect(b.details.documentId).to.eql('2.16.840.1.113883.19.5^POSTMAN-' + pm.collectionVariables.get('run')));"
+            ]
+          }
+        }
+      ]
+    },
+    {
+      "name": "6. Bronze — the C-CDA row, via the gateway",
+      "request": {
+        "method": "GET",
+        "header": [],
+        "url": "{{gateway_url}}/api/v1/bronze/messages?messageType=CCDA_XML&size=5",
+        "description": "Dashboard: Data Lineage → Bronze messages, format C-CDA XML. The newest row is request 5's document, PENDING (stored by bronze-listener-service a moment after the 202).",
+        "auth": {
+          "type": "bearer",
+          "bearer": [
+            {
+              "key": "token",
+              "value": "{{access_token}}",
+              "type": "string"
+            }
+          ]
+        }
+      },
+      "event": [
+        {
+          "listen": "test",
+          "script": {
+            "type": "text/javascript",
+            "exec": [
+              "pm.test('200', () => pm.response.to.have.status(200));",
+              "const top = pm.response.json().items[0];",
+              "pm.test('newest C-CDA row is PENDING', () => { pm.expect(top.messageType).to.eql('CCDA_XML'); pm.expect(top.processingStatus).to.eql('PENDING'); });"
+            ]
+          }
+        }
+      ]
+    },
+    {
+      "name": "7. Bronze — the REST HL7 message reached Silver",
+      "request": {
+        "method": "GET",
+        "header": [],
+        "url": "{{gateway_url}}/api/v1/bronze/messages?q=PM9D{{run}}&size=5",
+        "description": "Search Bronze by request 2's MRN: the ADT^A01 is PROCESSED and linked to its Silver patient — HL7 over REST now flows Bronze → Silver → Gold exactly like MLLP. (Run a few seconds after request 2.)",
+        "auth": {
+          "type": "bearer",
+          "bearer": [
+            {
+              "key": "token",
+              "value": "{{access_token}}",
+              "type": "string"
+            }
+          ]
+        }
+      },
+      "event": [
+        {
+          "listen": "test",
+          "script": {
+            "type": "text/javascript",
+            "exec": [
+              "pm.test('200', () => pm.response.to.have.status(200));",
+              "const m = pm.response.json().items[0];",
+              "pm.test('PROCESSED, HL7 ADT^A01, linked to a Silver patient', () => { pm.expect(m.processingStatus).to.eql('PROCESSED'); pm.expect(m.hl7MessageType).to.eql('ADT^A01'); pm.expect(m.silverPatientId).to.be.a('number'); });"
+            ]
+          }
+        }
+      ]
+    }
+  ]
+}

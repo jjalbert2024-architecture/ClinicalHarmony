@@ -1,0 +1,49 @@
+<form version="1.1" theme="light">
+  <label>ClinicalHarmony — Trace by correlation id</label>
+  <description>Every log line, from every service, for one correlation id: mllp-… (MLLP intake), rest-… (REST intake), ui-… (the dashboard), gen-… (the data-generator), or any X-Correlation-Id a caller sent. Kafka-driven work carries the intake's id through Bronze, Silver, Gold and the PMI.</description>
+  <!-- Where the dashboard UI is, as the browser sees it: ids in the trace link back to it. -->
+  <init>
+    <set token="ui">http://localhost:3000</set>
+  </init>
+  <fieldset submitButton="true" autoRun="true">
+    <input type="text" token="cid">
+      <label>Correlation id</label>
+    </input>
+    <input type="time" token="t">
+      <label>Time range</label>
+      <default><earliest>-24h@h</earliest><latest>now</latest></default>
+    </input>
+  </fieldset>
+  <row>
+    <panel>
+      <title>Path through the pipeline</title>
+      <table>
+        <title>Click a Bronze / Silver / master id to open it in the ClinicalHarmony dashboard.</title>
+        <search><query>index=clinicalharmony (correlationId="$cid$" OR requestId="$cid$") | eval time=strftime(_time,"%Y-%m-%d %H:%M:%S.%3N") | rename rawMessageId AS bronze, silverPatientId AS silver, masterPatientId AS master | table time service level event message bronze silver master topic partition offset durationMs | sort time</query><earliest>$t.earliest$</earliest><latest>$t.latest$</latest></search>
+        <option name="count">50</option>
+        <option name="drilldown">cell</option>
+        <drilldown>
+          <condition field="bronze">
+            <link target="_blank">$ui|n$/lineage/bronze/$row.bronze|u$</link>
+          </condition>
+          <condition field="silver">
+            <link target="_blank">$ui|n$/lineage/silver/$row.silver|u$</link>
+          </condition>
+          <condition field="master">
+            <link target="_blank">$ui|n$/patients/$row.master|u$</link>
+          </condition>
+          <condition field="*"></condition>
+        </drilldown>
+      </table>
+    </panel>
+  </row>
+  <row>
+    <panel>
+      <title>Time spent per service</title>
+      <chart>
+        <search><query>index=clinicalharmony (correlationId="$cid$" OR requestId="$cid$") | stats min(_time) AS first max(_time) AS last count AS lines BY service | eval seconds=round(last-first,3) | sort first | table service seconds lines</query><earliest>$t.earliest$</earliest><latest>$t.latest$</latest></search>
+        <option name="charting.chart">bar</option>
+      </chart>
+    </panel>
+  </row>
+</form>

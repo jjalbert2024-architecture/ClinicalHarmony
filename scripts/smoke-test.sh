@@ -629,6 +629,23 @@ check_http "lineage without a target → 400" GET "$GW/lineage" 400
 check_http "quarantined Bronze messages" GET "$GW/bronze/messages?status=QUARANTINED&size=200" 200
 check_json "  → total matches bronze.raw_messages" "$TMP/last_response.json" "d['total']" \
   "$(psql_id "SELECT count(*) FROM bronze.raw_messages WHERE processing_status = 'QUARANTINED'")"
+# Phase 10 list controls: every paged list takes a number range (idFrom/idTo, a reversed range is swapped) and an order
+QLO=$(psql_id "SELECT min(id) FROM bronze.raw_messages WHERE processing_status = 'QUARANTINED'")
+QHI=$(psql_id "SELECT max(id) FROM bronze.raw_messages WHERE processing_status = 'QUARANTINED'")
+QFIRST=$(psql_id "SELECT id FROM bronze.raw_messages WHERE processing_status = 'QUARANTINED' ORDER BY received_at, id LIMIT 1")
+check_http "Bronze list: number range + oldest first" GET "$GW/bronze/messages?status=QUARANTINED&idFrom=$QHI&idTo=$QLO&order=oldest&size=200" 200
+check_json "  → reversed range read as $QLO–$QHI, every quarantined row, oldest first" "$TMP/last_response.json" \
+  "(d['total'], d['items'][0]['id'])" \
+  "($(psql_id "SELECT count(*) FROM bronze.raw_messages WHERE processing_status = 'QUARANTINED'"), ${QFIRST:-0})"
+check_http "Bronze list: 'name' is not an order for messages → 400" GET "$GW/bronze/messages?order=name" 400
+check_http "Gold masters: newest master number first" GET "$GW/patients?order=newest&size=2" 200
+check_json "  → the highest active master id on top" "$TMP/last_response.json" "d['items'][0]['id']" \
+  "$(psql_id "SELECT max(id) FROM gold.master_patients WHERE is_active")"
+CLAIM_LINE=$(psql_id "SELECT raw_message_id FROM silver.claims WHERE raw_message_id IS NOT NULL ORDER BY id DESC LIMIT 1")
+check_http "Bronze claims line #${CLAIM_LINE:-0} (no PID segment)" GET "$GW/bronze/messages?idFrom=${CLAIM_LINE:-0}&idTo=${CLAIM_LINE:-0}" 200
+check_json "  → names its member (the Silver patient it built)" "$TMP/last_response.json" \
+  "(d['items'][0]['silverPatientId'], bool(d['items'][0]['patientName']))" \
+  "($(psql_id "SELECT patient_id FROM silver.claims WHERE raw_message_id = ${CLAIM_LINE:-0} ORDER BY id LIMIT 1"), True)"
 check_http "unknown gateway path → 404 problem" GET "$GW/does-not-exist" 404
 
 # Steward actions: a fresh opposite-sex-twin pair lands in the PMI review queue; dana rejects it via the gateway.
@@ -995,6 +1012,12 @@ check_sql "  → one Gold resource per Silver row (patients + conditions + obser
   "SELECT (SELECT count(*) FROM ($GP) p) + (SELECT count(*) FROM silver.conditions WHERE patient_id IN ($GP)) + (SELECT count(*) FROM silver.observations WHERE patient_id IN ($GP)) + (SELECT count(*) FROM silver.medications WHERE patient_id IN ($GP)) + (SELECT count(*) FROM silver.allergies WHERE patient_id IN ($GP)) = (SELECT count(*) FROM ($GRES) r)" "t"
 check_sql "  → every one validated (compliance_notes from the HL7 validator, profile set)" \
   "SELECT count(*) FROM ($GRES) r WHERE compliance_notes->>'profile' IS NULL OR compliance_notes->>'validatedAt' IS NULL" "0"
+check_sql "  → every one has its \"why compliant\" element checklist (Phase 10)" \
+  "SELECT count(*) FROM ($GRES) r WHERE jsonb_array_length(coalesce(compliance_notes->'checklist', '[]'::jsonb)) = 0" "0"
+check_sql "  → no compliant resource lacks a required top-level element (checklist agrees with the validator)" \
+  "SELECT count(*) FROM ($GRES) r WHERE r.is_us_core_compliant AND EXISTS (SELECT 1 FROM jsonb_array_elements(r.compliance_notes->'checklist') i WHERE (i->>'required')::boolean AND (i->>'depth')::int = 1 AND NOT (i->>'present')::boolean)" "0"
+check_sql "  → each lab Observation carries its OBX-8 flag as interpretation and its OBX-7 range as referenceRange (Phase 10)" \
+  "SELECT count(*) FILTER (WHERE o.abnormal_flag IS NOT NULL) > 0 AND count(*) FILTER (WHERE coalesce(o.abnormal_flag, '') <> coalesce(r.resource_json #>> '{interpretation,0,coding,0,code}', r.resource_json #>> '{interpretation,0,text}', '') OR ((o.reference_low IS NOT NULL OR o.reference_high IS NOT NULL) <> (r.resource_json ? 'referenceRange'))) = 0 FROM silver.observations o JOIN gold.fhir_resources r ON r.resource_type = 'Observation' AND r.fhir_id = 'silver-observation-' || o.id WHERE o.patient_id IN ($GP)" "t"
 check_sql "  → US Core AllergyIntolerance for every AL1 allergy, all compliant" \
   "SELECT count(a.id) || '=' || count(r.id) || ' compliant=' || coalesce(bool_and(r.is_us_core_compliant), true) FROM silver.allergies a LEFT JOIN gold.fhir_resources r ON r.resource_type = 'AllergyIntolerance' AND r.fhir_id = 'silver-allergy-' || a.id WHERE a.patient_id IN ($GP)" \
   "$(psql_id "SELECT count(*) || '=' || count(*) || ' compliant=true' FROM silver.allergies WHERE patient_id IN ($GP)")"
@@ -1053,6 +1076,28 @@ check_http "FHIR Viewer: default order" GET "$GW/fhir/resources?size=25" 200
 check_json "  → newest first" "$TMP/last_response.json" \
   "(lambda ts, k: [k(t) for t in ts] == sorted(map(k, ts), reverse=True))([i['updatedAt'] for i in d['items']], lambda t: (t[:19], float('0' + t[19:].rstrip('Z'))))" "True"
 check_http "FHIR Viewer: unknown origin → 400" GET "$GW/fhir/resources?origin=everything" 400
+# Per-type attribute filters (Phase 10): the type's own elements, values from Gold.
+check_http "FHIR Viewer: Patient attribute filters" GET "$GW/fhir/attributes?type=Patient" 200
+check_json "  → gender / birth date / state / city / postal code / phone, gender values from Gold" "$TMP/last_response.json" \
+  "([a['key'] for a in d], 'male' in [v['value'] for v in d[0]['values']])" "(['gender', 'birthDate', 'state', 'city', 'postalCode', 'phone'], True)"
+check_http "FHIR Viewer: abnormal lab results (attr.abnormal=yes)" GET "$GW/fhir/resources?type=Observation&attr.abnormal=yes&size=1" 200
+check_json "  → exactly the Observations whose interpretation is H/L/HH/LL/A/AA" "$TMP/last_response.json" "d['total']" \
+  "$(psql_id "SELECT count(*) FROM gold.fhir_resources WHERE resource_type = 'Observation' AND resource_json #>> '{interpretation,0,coding,0,code}' IN ('H','L','HH','LL','A','AA')")"
+check_http "FHIR Viewer: female Patients born 1970–1989" GET "$GW/fhir/resources?type=Patient&attr.gender=female&attr.birthDateFrom=1970&attr.birthDateTo=1989&size=1" 200
+check_json "  → the same count as the SQL" "$TMP/last_response.json" "d['total']" \
+  "$(psql_id "SELECT count(*) FROM gold.fhir_resources WHERE resource_type = 'Patient' AND resource_json->>'gender' = 'female' AND left(resource_json->>'birthDate', 4) BETWEEN '1970' AND '1989'")"
+check_http "FHIR Viewer: an attribute of another type → 400" GET "$GW/fhir/resources?type=Observation&attr.gender=male" 400
+check_http "FHIR Viewer: low-criticality allergies" GET "$GW/fhir/resources?type=AllergyIntolerance&attr.criticality=low&size=200" 200
+check_json "  → every row shows its own criticality = low (the Key attributes column)" "$TMP/last_response.json" \
+  "d['total'] > 0 and all(i['attributes'].get('criticality') == 'low' for i in d['items'])" "True"
+SMASTER="$(psql_id "SELECT master_patient_id FROM gold.patient_source_xref WHERE silver_patient_id = ${SPID:-0}")"
+check_http "Patient page: allergies of section 19's patient (master #${SMASTER:-?})" GET "$GW/patients/${SMASTER:-0}" 200
+check_json "  → the amoxicillin allergy with Gold criticality high and source severity SV" "$TMP/last_response.json" \
+  "[(a['code'], a['criticality'], a['severity']) for a in d['allergies'] if a['code'] == '723'][:1]" "[('723', 'high', 'SV')]"
+FLAGGED="$(psql_id "SELECT x.master_patient_id FROM silver.observations o JOIN gold.patient_source_xref x ON x.silver_patient_id = o.patient_id WHERE o.abnormal_flag = 'H' AND o.reference_high IS NOT NULL ORDER BY o.id DESC LIMIT 1")"
+check_http "Patient timeline: a high lab result (master #${FLAGGED:-?})" GET "$GW/patients/${FLAGGED:-0}/timeline?types=OBSERVATION" 200
+check_json "  → its event carries flag H and the reference range" "$TMP/last_response.json" \
+  "any(e['abnormalFlag'] == 'H' and e['referenceHigh'] is not None for e in d['events'])" "True"
 TOKEN=""
 check_sql "section 19's hand-sent amoxicillin allergy is now a compliant US Core AllergyIntolerance (criticality high)" \
   "SELECT is_us_core_compliant || ' ' || (resource_json->>'criticality') || ' ' || (resource_json #>> '{code,coding,0,code}') FROM gold.fhir_resources WHERE resource_type = 'AllergyIntolerance' AND resource_json #>> '{patient,reference}' = 'Patient/silver-patient-${SPID:-0}'" "true high 723"
@@ -1384,8 +1429,9 @@ while IFS=$'\t' read -r KIND RULE DSRC DID DNAME DDOB DCODE; do
 done < "$TMP/defects.tsv"
 check_sql "backlog sweeper: no Kafka-fed Bronze row left PENDING for more than 3 minutes (9d part 1 rows included)" \
   "SELECT count(*) FROM bronze.raw_messages WHERE processing_status = 'PENDING' AND intake_channel IN ('MLLP_KAFKA', 'REST_KAFKA') AND created_at < now() - interval '3 minutes'" "0"
-check_sql "  → legacy REST rows (pre-9d direct writes) are never swept, and none is left PENDING (migration 29 closed them as FAILED)" \
-  "SELECT count(*) FILTER (WHERE processing_status = 'PENDING') || ' ' || (count(*) FILTER (WHERE processing_status = 'FAILED' AND error_message LIKE 'Legacy row:%') > 0) FROM bronze.raw_messages WHERE intake_channel = 'REST'" "0 true"
+# A fresh database (docker compose down -v) has no legacy rows at all, so the check must hold for 0 rows too.
+check_sql "  → legacy REST rows (pre-9d direct writes) are never swept: none PENDING, every one FAILED with the legacy reason (migration 29)" \
+  "SELECT count(*) FILTER (WHERE processing_status = 'PENDING') || ' ' || count(*) FILTER (WHERE NOT (processing_status = 'FAILED' AND error_message LIKE 'Legacy row:%')) FROM bronze.raw_messages WHERE intake_channel = 'REST'" "0 0"
 
 # --reset: the same seed again in a new namespace → new people (nothing deduplicated, nothing deleted).
 python3 "$SCRIPT_DIR/../data-generator/generate.py" --count 12 --seed "$FSEED" --feeds fhir --reset --out "$GEN_OUT" \

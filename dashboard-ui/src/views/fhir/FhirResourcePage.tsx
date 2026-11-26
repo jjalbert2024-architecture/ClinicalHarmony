@@ -5,6 +5,7 @@ import { useApi } from '../../app/context';
 import { Badge, Empty, JsonView, PageHeader, QueryState, safeFileName } from '../../components/common';
 import { fmtDateTime } from '../../format';
 import { LineageChain } from '../lineage/LineageChain';
+import { Checklist } from './Checklist';
 import { Violations } from './Violations';
 
 export function FhirResourcePage() {
@@ -85,6 +86,12 @@ export function FhirResourcePage() {
                 {d.lineage.length === 0 ? <Empty>No lineage recorded.</Empty> : <LineageChain records={d.lineage} />}
               </section>
             </div>
+            {notes && notes.status !== 'PENDING_VALIDATION' && (
+              <section className="card">
+                <h2>{d.summary.usCoreCompliant ? 'Why it is compliant' : 'What it was checked for'}</h2>
+                <Checklist items={notes.checklist} compliant={d.summary.usCoreCompliant} />
+              </section>
+            )}
             <section className="card">
               <h2>Resource</h2>
               <JsonView

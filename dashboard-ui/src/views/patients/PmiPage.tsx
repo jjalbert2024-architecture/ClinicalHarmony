@@ -78,9 +78,11 @@ export function PmiPage() {
           {lastResult.skipped.length > 0 && <> Skipped: {lastResult.skipped.join('; ')}</>}
         </div>
       )}
-      <section className="card">
+      <section className="card" id={QUEUE_ID}>
         <div className="card-head">
-          <h2>Review queue</h2>
+          <h2 id={`${QUEUE_ID}-heading`} tabIndex={-1}>
+            Review queue
+          </h2>
           <label>
             Status{' '}
             <select value={status} onChange={(e) => setStatus(e.target.value)}>
@@ -243,9 +245,25 @@ export function PmiPage() {
 }
 
 /** A run's count, linking to that run's candidates when there are any. */
+const QUEUE_ID = 'review-queue';
+
+/**
+ * The review queue is the top card and the runs table the bottom one: without this, clicking a run's count
+ * changed the queue off screen and looked like nothing happened. Scroll there and move focus to its heading.
+ */
+function showQueue() {
+  const section = document.getElementById(QUEUE_ID);
+  if (!section) return;
+  // The top bar is sticky: land the card just below it, not underneath it (scrollIntoView did — the heading and
+  // the run chip were hidden and only "a bit of scrolling" was visible).
+  const bar = document.querySelector('.topbar')?.getBoundingClientRect().height ?? 0;
+  window.scrollTo({ top: Math.max(0, window.scrollY + section.getBoundingClientRect().top - bar - 12), behavior: 'smooth' });
+  document.getElementById(`${QUEUE_ID}-heading`)?.focus({ preventScroll: true });
+}
+
 function RunCount({ count, to, label }: { count: number; to: string; label: string }) {
   return count > 0 ? (
-    <Link to={to} aria-label={label} title={label}>
+    <Link to={to} aria-label={label} title={label} onClick={showQueue}>
       {count}
     </Link>
   ) : (

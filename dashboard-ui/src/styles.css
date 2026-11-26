@@ -308,6 +308,40 @@ h3 {
   width: 240px;
   flex-shrink: 0;
 }
+.side-wide {
+  width: 330px;
+}
+.card > .table.type-table {
+  display: table;
+}
+.type-table td,
+.type-table th {
+  padding: 4px 6px;
+}
+.type-table tr.active td {
+  background: var(--surface-2);
+  font-weight: 600;
+}
+.type-table tfoot th,
+.type-table tfoot td {
+  font-weight: 700;
+  border-top: 2px solid var(--border);
+  border-bottom: 0;
+}
+.type-table .not-compliant {
+  color: var(--bad);
+  font-weight: 600;
+}
+.gold-summary {
+  margin: 0 0 10px;
+  font-size: 14px;
+}
+.gold-summary .good {
+  color: var(--good);
+}
+.gold-summary .bad {
+  color: var(--bad);
+}
 .grow {
   flex: 1;
 }
@@ -409,6 +443,15 @@ a:focus-visible {
   gap: 3px;
   font-size: 12.5px;
   color: var(--muted);
+}
+.filters-break {
+  flex-basis: 100%;
+  margin-top: 4px;
+  padding-top: 8px;
+  border-top: 1px solid var(--border);
+  font-size: 12.5px;
+  font-weight: 600;
+  color: var(--text);
 }
 .filters.inline {
   align-items: center;
@@ -736,6 +779,7 @@ ul.plain li {
 }
 .pager {
   display: flex;
+  flex-wrap: wrap;
   gap: 8px;
   align-items: center;
   justify-content: flex-end;
@@ -1102,4 +1146,102 @@ tr[id] {
 }
 .claim-amounts {
   white-space: nowrap;
+}
+
+/* FHIR Viewer "why compliant" checklist */
+.checklist-summary {
+  margin: 0 0 12px;
+}
+.table.checklist td.checklist-child {
+  padding-left: 28px;
+}
+.table.checklist tr.checklist-missing td {
+  background: var(--bad-bg);
+}
+
+/* FHIR Viewer: a row's own attribute values; the ones being filtered on are emphasised. */
+.attr-cell {
+  max-width: 340px;
+}
+.attr {
+  display: inline-block;
+  margin: 0 6px 2px 0;
+  padding: 0 6px;
+  border-radius: 4px;
+  font-size: 12px;
+  color: var(--muted);
+  background: var(--surface-2, transparent);
+  border: 1px solid var(--border);
+}
+.attr-filtered {
+  color: var(--text);
+  font-weight: 600;
+  border-color: var(--text);
+}
+
+/* Headings that receive focus programmatically (e.g. the PMI review queue) need no focus ring. */
+h2[tabindex="-1"]:focus {
+  outline: none;
+}
+
+/* ---- shared list controls (Pager + WindowFilter) ---- */
+.pager-ids {
+  color: var(--text);
+  font-variant-numeric: tabular-nums;
+}
+.pager-size,
+.pager-jump {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+}
+.pager-size select,
+.pager-jump input {
+  font: inherit;
+  padding: 2px 4px;
+}
+.pager-jump input {
+  width: 3.5em;
+  text-align: right;
+}
+.window-filter {
+  margin: 0 0 8px;
+  font-size: 12.5px;
+  color: var(--muted);
+}
+.window-filter label {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+}
+.window-filter input {
+  width: 6.5em;
+}
+.list-summary-line {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: baseline;
+  column-gap: 8px;
+}
+.list-summary-line h2 {
+  margin: 0;
+}
+.list-summary .sep {
+  color: var(--muted, #6b7280);
+  white-space: pre;
+}
+.list-summary {
+  margin: 2px 0 0;
+  font-size: 13px;
+  font-variant-numeric: tabular-nums;
+}
+/* A list's main search box: wide enough to show its whole hint (what it accepts). */
+.search-box {
+  min-width: 300px;
+}
+@media (max-width: 800px) {
+  .search-box {
+    min-width: 0;
+    width: 100%;
+  }
 }

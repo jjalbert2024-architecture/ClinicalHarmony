@@ -108,6 +108,60 @@ describe('Patient Timeline', () => {
     expect(JSON.parse(post!.body)).toEqual({ reason: 'different people' });
   });
 
+  it('lists allergies with the Gold criticality and the source severity it came from', async () => {
+    // Values of masters #344 / #346 in the live stack (2026-11-24).
+    const allergy = (id: number, code: string, display: string, severity: string, reaction: string, criticality: string,
+                     reactionSeverity: string, silverPatientId: number, rawMessageId: number) => ({
+      id, codeSystem: 'RXNORM', code, display, allergyType: 'DA', severity, reaction, sourceSystem: 'NORTH_CLINIC',
+      silverPatientId, rawMessageId, fhirResourceId: 900 + id, fhirReference: `AllergyIntolerance/silver-allergy-${id}`,
+      usCoreCompliant: true, clinicalStatus: 'active', criticality, reactionSeverity, category: 'medication',
+    });
+    server.use(
+      http.get(`${API}/patients/:id`, ({ request }) =>
+        reply(request, {
+          ...fixtures.patientMerged,
+          allergies: [
+            allergy(97, '723', 'Amoxicillin', 'SV', 'SWELLING', 'high', 'severe', 717, 839),
+            allergy(96, '5640', 'Ibuprofen', 'MO', 'HIVES', 'low', 'moderate', 716, 836),
+          ],
+        }),
+      ),
+    );
+    renderApp('/patients/1');
+    const card = (await screen.findByRole('heading', { name: 'Allergies (2)' })).closest('section')!;
+    const amox = within(card).getByText('Amoxicillin').closest('tr')!;
+    expect(within(amox).getByText('high')).toBeInTheDocument();
+    expect(within(amox).getByText('AL1-4 SV (severe)')).toBeInTheDocument();
+    expect(within(amox).getByRole('link', { name: /AllergyIntolerance\/silver-allergy-97/ })).toHaveAttribute(
+      'href',
+      '/fhir/AllergyIntolerance/silver-allergy-97',
+    );
+    const ibu = within(card).getByText('Ibuprofen').closest('tr')!;
+    expect(within(ibu).getByText('low')).toBeInTheDocument();
+    expect(within(ibu).getByText('AL1-4 MO (moderate)')).toBeInTheDocument();
+    expect(within(ibu).getByText('severity moderate')).toBeInTheDocument();
+  });
+
+  it('says when no source has an allergy', async () => {
+    renderApp('/patients/1');
+    expect(await screen.findByText('No allergies recorded in any source.')).toBeInTheDocument();
+  });
+
+  it('shows a lab result flag and reference range in the timeline', async () => {
+    const [first, ...rest] = fixtures.timeline.events;
+    server.use(
+      http.get(`${API}/patients/:id/timeline`, ({ request }) =>
+        reply(request, {
+          ...fixtures.timeline,
+          events: [{ ...first!, abnormalFlag: 'H', referenceLow: 4, referenceHigh: 5.6 }, ...rest],
+        }),
+      ),
+    );
+    renderApp('/patients/1');
+    expect(await screen.findByText('H · high')).toBeInTheDocument();
+    expect(screen.getByText('ref 4–5.6')).toBeInTheDocument();
+  });
+
   it('gives a viewer a disabled unmerge button that says why', async () => {
     asVic();
     renderApp('/patients/1');
@@ -165,14 +219,19 @@ describe('PMI review', () => {
   it("opens a run's review candidates from its count and clears the run filter", async () => {
     const run = fixtures.pmiRuns.find((r) => r.queuedForReview > 0)!;
     renderApp('/pmi');
+    const scrolled = vi.spyOn(window, 'scrollTo').mockImplementation(() => {});
     await userEvent.click(await screen.findByRole('link', { name: `Review candidates of run #${run.id}` }));
     expect(await screen.findByRole('button', { name: `run #${run.id} ×` })).toBeInTheDocument();
+    // The queue is the top card, the runs the bottom one: the click brings the queue into view and focus.
+    expect(scrolled).toHaveBeenCalledWith(expect.objectContaining({ behavior: 'smooth' }));
+    expect(screen.getByRole('heading', { name: 'Review queue' })).toHaveFocus();
     await waitFor(() =>
       expect(calls('/pmi/candidates').some((r) => r.query.get('status') === 'QUEUED' && r.query.get('runId') === String(run.id))).toBe(true),
     );
     expect(screen.getByText('Newest decision first.')).toBeInTheDocument();
     await userEvent.click(screen.getByRole('button', { name: `run #${run.id} ×` }));
     await waitFor(() => expect(screen.queryByRole('button', { name: `run #${run.id} ×` })).not.toBeInTheDocument());
+    scrolled.mockRestore();
   });
 
   it('shows a candidate side by side and requires a note to reject', async () => {
@@ -237,7 +296,7 @@ describe('Validation Report', () => {
     Element.prototype.scrollIntoView = scrolled;
     renderApp('/validation');
     await userEvent.click(await screen.findByRole('button', { name: /^WARNING/ }));
-    expect(scrolled).toHaveBeenCalled();
+    expect(scrolled).toHaveBeenCalledWith(expect.objectContaining({ behavior: 'smooth' }));
     const heading = within(screen.getByRole('region', { name: 'Findings' })).getByRole('heading', { level: 2 });
     await waitFor(() => expect(heading).toHaveTextContent(/Findings \(\d[\d,]* matching\)/));
   });
@@ -292,13 +351,62 @@ describe('Ontology Coverage', () => {
 });
 
 describe('FHIR Viewer', () => {
+  it('counts resources per type in a table with a Total row and a Gold summary line', async () => {
+    // fixture fhir-types.json: 77 resources, 73 compliant; Condition 5 of 6, Patient 41 of 43, PractitionerRole 1 of 2
+    renderApp('/fhir');
+    const table = await screen.findByRole('table', { name: 'Resource types' });
+    expect(within(table).getAllByRole('columnheader').map((h) => h.textContent)).toEqual(['Type', 'Compliant', 'Not', 'Total']);
+    const condition = within(table).getByRole('button', { name: 'Condition' }).closest('tr')!;
+    expect(within(condition).getAllByRole('cell').map((c) => c.textContent)).toEqual(['Condition', '5', '1', '6']);
+    const total = within(table).getByRole('rowheader', { name: 'Total' }).closest('tr')!;
+    expect(within(total).getAllByRole('cell').map((c) => c.textContent)).toEqual(['73', '4', '77']);
+    expect(screen.getByLabelText('Gold totals')).toHaveTextContent('In Gold: 77 resources · 73 US Core compliant · 4 not compliant');
+
+    // A non-zero "Not" filters to that type's non-compliant resources; the summary follows the type
+    await userEvent.click(within(condition).getByRole('button', { name: '1' }));
+    await waitFor(() => {
+      const query = calls('/fhir/resources').at(-1)!.query;
+      expect([query.get('type'), query.get('compliant')]).toEqual(['Condition', 'false']);
+    });
+    expect(screen.getByLabelText('Gold totals')).toHaveTextContent('In Gold: 6 Condition · 5 US Core compliant · 1 not compliant');
+  });
+
   it('shows a resource with validator messages, lineage and JSON', async () => {
     renderApp('/fhir/Condition/silver-condition-5');
     expect(await screen.findByRole('heading', { name: 'Condition/silver-condition-5' })).toBeInTheDocument();
     expect(screen.getByText('Not US Core compliant')).toBeInTheDocument();
-    expect(screen.getByText('Condition.code')).toBeInTheDocument();
+    const validation = screen.getByRole('heading', { name: 'Validation' }).closest('section')!;
+    expect(within(validation).getByText('Condition.code')).toBeInTheDocument();
     expect(screen.getByText('FHIR_MAP')).toBeInTheDocument();
     expect(screen.getByRole('button', { name: 'Copy JSON' })).toBeInTheDocument();
+  });
+
+  it('shows the element checklist: what the profile asks for and what the resource has', async () => {
+    renderApp('/fhir/Condition/silver-condition-5');
+    const card = (await screen.findByRole('heading', { name: 'What it was checked for' })).closest('section')!;
+    // Real fixture: the Condition has no code, the one error the validator reported.
+    const codeRow = within(card).getByText('Condition.code').closest('tr')!;
+    expect(within(codeRow).getByText('Required')).toBeInTheDocument();
+    expect(within(codeRow).getByText('Missing')).toBeInTheDocument();
+    const subjectRow = within(card).getByText('Condition.subject').closest('tr')!;
+    expect(within(subjectRow).getByText('Present')).toBeInTheDocument();
+    const onsetRow = within(card).getByText('Condition.onset[x]').closest('tr')!;
+    expect(within(onsetRow).getByText('Not sent (allowed)')).toBeInTheDocument();
+    expect(within(onsetRow).getByText('USCDI')).toBeInTheDocument();
+    expect(within(card).getByText('required 2 of 3')).toBeInTheDocument();
+  });
+
+  it('says when a resource has no recorded checklist', async () => {
+    const notes = Object.fromEntries(
+      Object.entries(fixtures.fhirResourceCondition.complianceNotes).filter(([key]) => key !== 'checklist'),
+    );
+    server.use(
+      http.get(`${API}/fhir/resources/:type/:id`, ({ request }) =>
+        reply(request, { ...fixtures.fhirResourceCondition, complianceNotes: notes }),
+      ),
+    );
+    renderApp('/fhir/Condition/silver-condition-5');
+    expect(await screen.findByText(/No element checklist was recorded/)).toBeInTheDocument();
   });
 
   it('downloads the resource as a .json file', async () => {
@@ -322,8 +430,67 @@ describe('FHIR Viewer', () => {
     click.mockRestore();
   });
 
+  it('shows the selected type its own filters and sends them as attr.* parameters', async () => {
+    renderApp('/fhir?type=Patient');
+    const row = await screen.findByRole('group', { name: 'Patient attributes' });
+    expect(row).toHaveTextContent('Patient attributes');
+    // Real fixture: the dropdown lists what Gold holds, with counts.
+    const gender = screen.getByRole('combobox', { name: 'Gender' });
+    expect(within(gender).getByRole('option', { name: 'male (142)' })).toBeInTheDocument();
+    await userEvent.selectOptions(gender, 'female');
+    await waitFor(() => expect(calls('/fhir/resources').at(-1)!.query.get('attr.gender')).toBe('female'));
+
+    // Text and date boxes wait for Search, like the other text filters.
+    await userEvent.type(screen.getByRole('textbox', { name: 'Birth date from' }), '1970');
+    await userEvent.type(screen.getByRole('textbox', { name: 'City' }), 'spring');
+    await userEvent.click(screen.getByRole('button', { name: 'Search' }));
+    await waitFor(() => expect(calls('/fhir/resources').at(-1)!.query.get('attr.birthDateFrom')).toBe('1970'));
+    const last = calls('/fhir/resources').at(-1)!.query;
+    expect(last.get('attr.city')).toBe('spring');
+    expect(last.get('attr.gender')).toBe('female');
+    expect(last.has('attr.birthDateTo')).toBe(false);   // an empty box is no filter
+
+    // Another type: the Patient filters are dropped (they mean nothing for a Condition).
+    await userEvent.click(screen.getByRole('button', { name: 'Condition' }));
+    await waitFor(() => expect(calls('/fhir/resources').at(-1)!.query.get('type')).toBe('Condition'));
+    expect([...calls('/fhir/resources').at(-1)!.query.keys()].filter((k) => k.startsWith('attr.'))).toEqual([]);
+    // Let the Condition filters load before the test ends (no request may land in the next test).
+    await waitFor(() => expect(calls('/fhir/attributes').at(-1)!.query.get('type')).toBe('Condition'));
+    await screen.findByRole('group', { name: 'Condition attributes' });
+  });
+
+  it('shows each row its own attribute values, the filtered ones emphasised', async () => {
+    const [first] = fixtures.fhirResources.items;
+    server.use(
+      http.get(`${API}/fhir/resources`, ({ request }) =>
+        reply(request, {
+          ...fixtures.fhirResources,
+          items: [{ ...first!, attributes: { gender: 'female', birthDate: '1971-05-06', state: 'WY', phone: 'yes' } }],
+        }),
+      ),
+    );
+    renderApp('/fhir?type=Patient&attr.gender=female');
+    const gender = await screen.findByText('Gender: female');
+    expect(gender).toHaveClass('attr-filtered');
+    expect(gender).toHaveAttribute('title', 'Patient.gender');
+    expect(screen.getByText('State: WY')).not.toHaveClass('attr-filtered');
+    expect(screen.getByText('Has a phone: yes')).toBeInTheDocument();
+    expect(screen.getByRole('columnheader', { name: 'Key attributes' })).toBeInTheDocument();
+    // The "no filter" choice of US Core reads like every other dropdown's.
+    expect(within(screen.getByRole('combobox', { name: 'Compliance' })).getByRole('option', { name: 'Any' })).toBeInTheDocument();
+  });
+
+  it('offers no attribute row until a type is picked', async () => {
+    renderApp('/fhir');
+    expect(await screen.findByText(/Pick a resource type on the left for its own filters/)).toBeInTheDocument();
+    await screen.findByRole('button', { name: /^Updated/ });
+    expect(screen.queryByRole('group', { name: /attributes$/ })).not.toBeInTheDocument();
+    expect(calls('/fhir/attributes')).toEqual([]);
+  });
+
   it('lists newest first by default and sorts by clicking column headers', async () => {
-    const before = calls('/fhir/resources').length;
+    // renderApp clears the request log, so the first request of this page is [0].
+    const before = 0;
     renderApp('/fhir');
     const updated = await screen.findByRole('button', { name: /^Updated/ });
     expect(updated.closest('th')).toHaveAttribute('aria-sort', 'descending');
@@ -574,6 +741,44 @@ describe('Data Lineage layer browser', () => {
     expect(screen.getByRole('tab', { name: /Gold/ })).toHaveAttribute('aria-selected', 'true');
   });
 
+  it("starts the trace box from the selected layer's own record kind", async () => {
+    renderApp('/lineage');
+    const kind = await screen.findByLabelText('Record kind');
+    expect(kind).toHaveDisplayValue('Bronze message id');
+    await userEvent.click(screen.getByRole('tab', { name: /Silver/ }));
+    await waitFor(() => expect(kind).toHaveDisplayValue('Silver patient id'));
+    await userEvent.click(screen.getByRole('tab', { name: /Gold/ }));
+    await waitFor(() => expect(kind).toHaveDisplayValue('Master patient id'));
+    await userEvent.click(screen.getByRole('tab', { name: /Bronze/ }));
+    await waitFor(() => expect(kind).toHaveDisplayValue('Bronze message id'));
+  });
+
+  it('keeps the kind of a trace on screen when another layer is picked', async () => {
+    renderApp(`/lineage?silverPatientId=${hugo.id}`);
+    const kind = await screen.findByLabelText('Record kind');
+    expect(kind).toHaveDisplayValue('Silver patient id');
+    await userEvent.click(screen.getByRole('tab', { name: /Gold/ }));
+    await screen.findByRole('heading', { name: 'Gold master patients' });
+    expect(kind).toHaveDisplayValue('Silver patient id');
+  });
+
+  it('lists merged-away Gold masters under MERGED, each naming the master that absorbed it', async () => {
+    const survivor = fixtures.patients.items[1]!;
+    const absorbed = { ...survivor, id: 9001, matchStatus: 'MERGED', active: false, sourcePatientCount: 0, sourceSystems: null, fhirResourceCount: 0, mergedIntoMasterId: survivor.id };
+    server.use(
+      http.get(`${API}/patients`, ({ request }) =>
+        reply(request, new URL(request.url).searchParams.get('status') === 'MERGED' ? { ...fixtures.patients, items: [absorbed], total: 1 } : fixtures.patients),
+      ),
+    );
+    renderApp('/lineage?layer=gold');
+    await screen.findByRole('heading', { name: 'Gold master patients' });
+    await userEvent.selectOptions(screen.getByLabelText('Match status'), 'MERGED');
+    await waitFor(() => expect(calls('/patients').at(-1)!.query.get('status')).toBe('MERGED'));
+    expect(await screen.findByRole('link', { name: `#${survivor.id}` })).toHaveAttribute('href', `/patients/${survivor.id}`);
+    expect(screen.getByText(/merged into/)).toBeInTheDocument();
+    expect(screen.getByText(/Masters absorbed by a merge/)).toBeInTheDocument();
+  });
+
   it('filters Silver patients by MRN, source and validation status', async () => {
     renderApp('/lineage?layer=silver');
     await screen.findByRole('heading', { name: 'Silver patients' });
@@ -728,7 +933,7 @@ describe('Data Lineage layer browser', () => {
         reply(request, { items: [hugo], page: 0, size: 50, total: 1, totalPages: 1 }),
       ),
     );
-    renderApp('/lineage');
+    renderApp('/lineage?layer=silver'); // the Silver card starts the box on Silver patient id
     await userEvent.type(await screen.findByLabelText('Record id'), 'nc700343');
     await userEvent.click(screen.getByRole('button', { name: 'Trace' }));
     await waitFor(() => expect(calls('/lineage').at(-1)?.query.get('silverPatientId')).toBe(String(hugo.id)));
@@ -753,7 +958,7 @@ describe('Data Lineage layer browser', () => {
         return reply(request, { items, page: 0, size: 50, total: items.length, totalPages: 1 });
       }),
     );
-    renderApp('/lineage');
+    renderApp('/lineage?layer=silver'); // the Silver card starts the box on Silver patient id
     await userEvent.type(await screen.findByLabelText('Record id'), 'NC700343');
     await userEvent.click(screen.getByRole('button', { name: 'Trace' }));
     expect(await screen.findByText(/is the MRN of 2 Silver patients/)).toBeInTheDocument();
@@ -778,21 +983,22 @@ describe('Data Lineage layer browser', () => {
   it('keeps Transformations in pipeline order, saying so, and sorts by date or records on click', async () => {
     renderApp('/lineage');
     expect(await screen.findByText(/In pipeline order, not by date/)).toBeInTheDocument();
+    const card = () => within(screen.getByRole('heading', { name: 'Transformations recorded' }).closest('section')!);
     const steps = () =>
-      within(screen.getByRole('heading', { name: 'Transformations recorded' }).closest('section')!)
+      card()
         .getAllByRole('row')
         .slice(1)
         .map((r) => r.querySelector('td')!.textContent);
     await waitFor(() => expect(steps()).toEqual(fixtures.lineageSummary.map((r) => r.step)));
-    await userEvent.click(screen.getByRole('button', { name: /^Last/ }));
+    await userEvent.click(card().getByRole('button', { name: /^Last/ }));
     const byDate = [...fixtures.lineageSummary]
       .sort((a, b) => new Date(b.lastTransformedAt!).getTime() - new Date(a.lastTransformedAt!).getTime())
       .map((r) => r.step);
     expect(steps()).toEqual(byDate);
     expect(steps().at(-1)).toBe('SEED_LOAD'); // the oldest step goes to the bottom
-    await userEvent.click(screen.getByRole('button', { name: /^Records/ }));
+    await userEvent.click(card().getByRole('button', { name: /^Records/ }));
     expect(steps()[0]).toBe('FHIR_MAP');
-    await userEvent.click(screen.getByRole('button', { name: /^Step/ }));
+    await userEvent.click(card().getByRole('button', { name: /^Step/ }));
     expect(steps()).toEqual(fixtures.lineageSummary.map((r) => r.step));
   });
 
@@ -825,5 +1031,99 @@ describe('Data Lineage layer browser', () => {
     renderApp(`/lineage/bronze/${detail.summary.id}`);
     expect(await screen.findByText('LIAM NGUYEN')).toBeInTheDocument();
     expect(screen.getByRole('link', { name: 'Silver patient #1849' })).toHaveAttribute('href', '/lineage/silver/1849');
+  });
+});
+
+describe('List controls (every paged list)', () => {
+  it('pages the Bronze list: ids on screen, go to page, First / Last, rows per page', async () => {
+    // fixture: page 3 (index 2) of 102, 10 rows, #1279 … #1270
+    renderApp('/lineage');
+    const pager = (await screen.findByLabelText('Go to page')).closest('.pager') as HTMLElement;
+    expect(pager).toHaveTextContent('21–30 of 1,017 · #1279 → #1270');
+    expect(pager).toHaveTextContent('of 102');
+
+    await userEvent.type(screen.getByLabelText('Go to page'), '7{Enter}');
+    await waitFor(() => expect(calls('/bronze/messages').at(-1)!.query.get('page')).toBe('6'));
+    await userEvent.click(screen.getByRole('button', { name: 'Last page' }));
+    await waitFor(() => expect(calls('/bronze/messages').at(-1)!.query.get('page')).toBe('101'));
+    // (page 1 is the cached first request, so First is checked by being enabled on page 3)
+    expect(screen.getByRole('button', { name: 'First page' })).toBeEnabled();
+
+    await userEvent.selectOptions(screen.getByLabelText('Rows per page'), '50');
+    await waitFor(() => {
+      const query = calls('/bronze/messages').at(-1)!.query;
+      expect([query.get('size'), query.get('page')]).toEqual(['50', '0']);
+    });
+  });
+
+  it('filters the Bronze list by a message-number range ("#" ignored) and flips the order', async () => {
+    renderApp('/lineage');
+    await userEvent.type(await screen.findByLabelText('Message # from'), '#990');
+    await userEvent.type(screen.getByLabelText('Message # to'), '1003');
+    await userEvent.click(screen.getByRole('button', { name: 'Apply' }));
+    await waitFor(() => {
+      const query = calls('/bronze/messages').at(-1)!.query;
+      expect([query.get('idFrom'), query.get('idTo')]).toEqual(['990', '1003']);
+    });
+    await userEvent.selectOptions(screen.getByLabelText('Order'), 'oldest');
+    await waitFor(() => expect(calls('/bronze/messages').at(-1)!.query.get('order')).toBe('oldest'));
+    expect(screen.getByText(/^Oldest first \(by message #\)\./)).toBeInTheDocument();
+    await userEvent.click(screen.getByRole('button', { name: 'Clear range' }));
+    await waitFor(() => expect(calls('/bronze/messages').at(-1)!.query.get('idFrom')).toBeNull());
+    expect(calls('/bronze/messages').at(-1)!.query.get('order')).toBe('oldest');
+  });
+
+  it.each([
+    { path: '/lineage?layer=silver', api: '/silver/patients', label: 'Silver id', order: 'oldest' },
+    { path: '/lineage?layer=gold', api: '/patients', label: 'Master #', order: 'newest' },
+    { path: '/patients', api: '/patients', label: 'Master #', order: 'oldest' },
+    { path: '/validation', api: '/validation/findings', label: 'Finding #', order: 'oldest' },
+  ])('$path sends the same range, order and rows per page', async ({ path, api, label, order }) => {
+    renderApp(path);
+    await userEvent.type(await screen.findByLabelText(`${label} from`), '5');
+    await userEvent.type(screen.getByLabelText(`${label} to`), '9');
+    await userEvent.click(screen.getByRole('button', { name: 'Apply' }));
+    await waitFor(() => {
+      const query = calls(api).at(-1)!.query;
+      expect([query.get('idFrom'), query.get('idTo')]).toEqual(['5', '9']);
+    });
+    await userEvent.selectOptions(screen.getByLabelText('Order'), order);
+    await waitFor(() => expect(calls(api).at(-1)!.query.get('order')).toBe(order));
+    await userEvent.selectOptions(await screen.findByLabelText('Rows per page'), '100');
+    await waitFor(() => expect(calls(api).at(-1)!.query.get('size')).toBe('100'));
+    // the range survived the other two changes
+    expect(calls(api).at(-1)!.query.get('idFrom')).toBe('5');
+  });
+
+  it('gives the FHIR Viewer rows per page and the resources on screen (its ids are text: headers sort instead of a range)', async () => {
+    renderApp('/fhir');
+    const first = fixtures.fhirResources.items[0]!;
+    const pager = (await screen.findByLabelText('Rows per page')).closest('.pager') as HTMLElement;
+    expect(pager).toHaveTextContent(`${first.resourceType}/${first.fhirId}`);
+    expect(screen.queryByLabelText(/ from$/)).toBeNull();
+    await userEvent.selectOptions(screen.getByLabelText('Rows per page'), '50');
+    await waitFor(() => expect(calls('/fhir/resources').at(-1)!.query.get('size')).toBe('50'));
+  });
+});
+
+describe('List summary above every list', () => {
+  it('says how many and the starting / ending number of the whole result, next to the search box', async () => {
+    server.use(
+      http.get(`${API}/bronze/messages`, ({ request }) => reply(request, { ...fixtures.bronzeMessages, minId: 5, maxId: 1088 })),
+    );
+    renderApp('/lineage');
+    const summary = await screen.findByLabelText('List summary');
+    // one line with the card's title
+    expect(summary.closest('.list-summary-line')).toHaveTextContent(
+      'Bronze messages| Total # messages: 1,017 | Range: #5 (oldest) → #1088 (newest)',
+    );
+    expect(summary.closest('.card-head')).toContainElement(screen.getByLabelText('Bronze search'));
+    expect(screen.getByLabelText('Bronze search')).toHaveAttribute('placeholder', 'Patient name, MRN (exact) or message #');
+  });
+
+  it('leaves the number span out when the list has none', async () => {
+    renderApp('/fhir');
+    const summary = await screen.findByLabelText('List summary');
+    expect(summary).toHaveTextContent(/^\| Total # resources: 14$/);
   });
 });

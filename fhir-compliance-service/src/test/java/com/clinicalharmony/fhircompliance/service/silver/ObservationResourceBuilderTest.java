@@ -79,4 +79,35 @@ class ObservationResourceBuilderTest {
                 .extracting(FhirViolation::location)
                 .anyMatch(l -> l.startsWith("Observation.value"));
     }
+
+    @Test
+    void mapsAbnormalFlagAndReferenceRangeAndStaysCompliant() {
+        SilverObservationRow row = new SilverObservationRow(11L, 1L, "2093-3", "Cholesterol",
+                new BigDecimal("251.0000"), null, "mg/dL", "final", EFFECTIVE,
+                new BigDecimal("125.0000"), new BigDecimal("200.0000"), "H");
+
+        Observation observation = builder.build(row, "silver-patient-1");
+
+        assertThat(observation.getInterpretationFirstRep().getCodingFirstRep().getSystem())
+                .isEqualTo(ObservationResourceBuilder.INTERPRETATION_SYSTEM);
+        assertThat(observation.getInterpretationFirstRep().getCodingFirstRep().getCode()).isEqualTo("H");
+        assertThat(observation.getReferenceRangeFirstRep().getLow().getValue()).isEqualByComparingTo("125");
+        assertThat(observation.getReferenceRangeFirstRep().getHigh().getValue()).isEqualByComparingTo("200");
+        assertThat(observation.getReferenceRangeFirstRep().getHigh().getCode()).isEqualTo("mg/dL");
+
+        FhirValidationOutcome outcome = UsCoreValidatorFixture.validator().validate(observation);
+        assertThat(outcome.violations()).filteredOn(v -> "ERROR".equals(v.severity())).isEmpty();
+    }
+
+    @Test
+    void unknownFlagIsTextOnlyAndNoRangeMeansNoReferenceRange() {
+        SilverObservationRow row = new SilverObservationRow(12L, 1L, "2345-7", "Glucose",
+                new BigDecimal("90"), null, "mg/dL", "final", EFFECTIVE, null, null, "W");
+
+        Observation observation = builder.build(row, "silver-patient-1");
+
+        assertThat(observation.getInterpretationFirstRep().hasCoding()).isFalse();
+        assertThat(observation.getInterpretationFirstRep().getText()).isEqualTo("W");
+        assertThat(observation.hasReferenceRange()).isFalse();
+    }
 }

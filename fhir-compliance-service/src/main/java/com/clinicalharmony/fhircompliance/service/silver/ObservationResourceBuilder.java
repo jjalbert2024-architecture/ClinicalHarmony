@@ -10,7 +10,9 @@ import org.hl7.fhir.r4.model.Reference;
 import org.hl7.fhir.r4.model.StringType;
 import org.springframework.stereotype.Component;
 
+import java.math.BigDecimal;
 import java.util.Date;
+import java.util.Map;
 
 import static com.clinicalharmony.fhircompliance.service.silver.Narratives.isBlank;
 
@@ -25,6 +27,15 @@ public class ObservationResourceBuilder {
     static final String CATEGORY_SYSTEM = "http://terminology.hl7.org/CodeSystem/observation-category";
     static final String LOINC = "http://loinc.org";
     static final String UCUM = "http://unitsofmeasure.org";
+    static final String INTERPRETATION_SYSTEM = "http://terminology.hl7.org/CodeSystem/v3-ObservationInterpretation";
+
+    /**
+     * HL7 v2 table 0078 (OBX-8) flags that are the same code in FHIR's v3 ObservationInterpretation. Any other flag
+     * goes to {@code interpretation.text} only, never as a made-up coding.
+     */
+    static final Map<String, String> INTERPRETATIONS = Map.of(
+            "N", "Normal", "H", "High", "L", "Low", "HH", "Critical high", "LL", "Critical low",
+            "A", "Abnormal", "AA", "Critical abnormal");
 
     public Observation build(SilverObservationRow row, String patientFhirId) {
         Observation observation = new Observation();
@@ -63,11 +74,42 @@ public class ObservationResourceBuilder {
             observation.setValue(new StringType(row.valueText()));
         }
 
+        if (!isBlank(row.abnormalFlag())) {
+            String flag = row.abnormalFlag().trim().toUpperCase();
+            CodeableConcept interpretation = observation.addInterpretation();
+            String display = INTERPRETATIONS.get(flag);
+            if (display != null) {
+                interpretation.addCoding().setSystem(INTERPRETATION_SYSTEM).setCode(flag).setDisplay(display);
+            } else {
+                interpretation.setText(flag);
+            }
+        }
+        if (row.referenceLow() != null || row.referenceHigh() != null) {
+            Observation.ObservationReferenceRangeComponent range = observation.addReferenceRange();
+            if (row.referenceLow() != null) {
+                range.setLow(rangeQuantity(row.referenceLow(), row.unit()));
+            }
+            if (row.referenceHigh() != null) {
+                range.setHigh(rangeQuantity(row.referenceHigh(), row.unit()));
+            }
+        }
+
         String value = row.valueNumeric() != null
                 ? row.valueNumeric().stripTrailingZeros().toPlainString() + (isBlank(row.unit()) ? "" : " " + row.unit())
                 : Narratives.orUnknown(row.valueText());
         observation.setText(Narratives.generated("Lab: " + Narratives.orUnknown(row.display())
-                + " (LOINC " + Narratives.orUnknown(row.code()) + ") = " + value));
+                + " (LOINC " + Narratives.orUnknown(row.code()) + ") = " + value
+                + (isBlank(row.abnormalFlag()) ? "" : " [" + row.abnormalFlag().trim() + "]")));
         return observation;
+    }
+
+    /** A SimpleQuantity in the result's own unit (the OBX-7 range is in the OBX-6 unit). */
+    private static org.hl7.fhir.r4.model.SimpleQuantity rangeQuantity(BigDecimal value, String unit) {
+        org.hl7.fhir.r4.model.SimpleQuantity quantity = new org.hl7.fhir.r4.model.SimpleQuantity();
+        quantity.setValue(value.stripTrailingZeros());
+        if (!isBlank(unit)) {
+            quantity.setUnit(unit).setSystem(UCUM).setCode(unit);
+        }
+        return quantity;
     }
 }

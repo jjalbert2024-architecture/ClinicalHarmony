@@ -1,5 +1,5 @@
 import { keepPreviousData, useQuery } from '@tanstack/react-query';
-import { useState, type FormEvent, type ReactNode } from 'react';
+import { useEffect, useState, type FormEvent, type ReactNode } from 'react';
 import { Link, useSearchParams } from 'react-router';
 import type {
   BronzeSummary,
@@ -12,7 +12,7 @@ import type {
   StepCount,
 } from '../../api/types';
 import { useApi } from '../../app/context';
-import { Badge, Empty, PageHeader, Pager, QueryState, Stat } from '../../components/common';
+import { Badge, Empty, PageHeader, Pager, QueryState, Stat, PERSON_ORDERS, readWindow, WindowFilter, windowChanges, windowParams, ListSummary } from '../../components/common';
 import { fmtDate, fmtDateTime, fmtNumber, fullName } from '../../format';
 import { LineageChain } from './LineageChain';
 
@@ -27,6 +27,8 @@ type TraceKey = (typeof TRACE_KINDS)[number]['key'];
 
 export type Layer = 'bronze' | 'silver' | 'gold';
 const LAYERS: Layer[] = ['bronze', 'silver', 'gold'];
+/** The trace box starts from the selected layer's own record kind. */
+const LAYER_KIND: Record<Layer, TraceKey> = { bronze: 'bronzeMessageId', silver: 'silverPatientId', gold: 'masterPatientId' };
 
 const sum = (m: Record<string, number> | undefined) => Object.values(m ?? {}).reduce((a, b) => a + b, 0);
 
@@ -40,7 +42,7 @@ export function LineagePage() {
         title="Data Lineage"
         subtitle="Browse each medallion layer, open any record, and follow it from the raw Bronze message through Silver to Gold — every id is a link."
       />
-      <TraceCard />
+      <TraceCard layer={layer} />
       <LayerTabs layer={layer} />
       {layer === 'bronze' && <BronzeCard />}
       {layer === 'silver' && <SilverCard />}
@@ -71,12 +73,18 @@ const MRN_KINDS: TraceKey[] = ['silverPatientId', 'masterPatientId'];
 /** Several Silver patients share the MRN (one per source system): the user picks one. */
 type MrnChoice = { silverPatientId: number; masterPatientId: number | null; label: string };
 
-function TraceCard() {
+function TraceCard({ layer }: { layer: Layer }) {
   const api = useApi();
   const [params, setParams] = useSearchParams();
   const activeKind = TRACE_KINDS.find((k) => params.get(k.key));
   const activeId = activeKind ? (params.get(activeKind.key) ?? '') : '';
-  const [kind, setKind] = useState<TraceKey>(activeKind?.key ?? 'silverPatientId');
+  const [kind, setKind] = useState<TraceKey>(activeKind?.key ?? LAYER_KIND[layer]);
+  // Picking another layer card switches the box to that layer's kind — unless a trace is on screen: then the box
+  // keeps describing that trace.
+  const tracing = activeKind !== undefined;
+  useEffect(() => {
+    if (!tracing) setKind(LAYER_KIND[layer]);
+  }, [layer, tracing]);
   const [id, setId] = useState(activeId);
   const [note, setNote] = useState<string | null>(null);
   const [choices, setChoices] = useState<MrnChoice[]>([]);
@@ -248,7 +256,9 @@ function LayerTabs({ layer }: { layer: Layer }) {
       role="tab"
       aria-selected={layer === key}
       className={`layer layer-${key} layer-tab${layer === key ? ' selected' : ''}`}
-      onClick={() => set({ layer: key === 'bronze' ? '' : key, page: '', q: '', sourceSystem: '', validationStatus: '', masterStatus: '' })}
+      onClick={() =>
+        set({ layer: key === 'bronze' ? '' : key, page: '', q: '', sourceSystem: '', validationStatus: '', masterStatus: '', idFrom: '', idTo: '', order: '', size: '' })
+      }
     >
       <div className="layer-title">
         {title} <span className="muted">{subtitle}</span>
@@ -325,15 +335,20 @@ function SilverCard() {
   const sourceSystem = params.get('sourceSystem') ?? '';
   const validationStatus = params.get('validationStatus') ?? '';
   const page = Number(params.get('page') ?? '0');
+  const { window: win, size, keys } = readWindow(params);
   const [text, setText] = useState(q);
   const sources = useQuery({
     queryKey: ['silver', 'source-systems'],
     queryFn: ({ signal }) => api.get<SilverSourceCount[]>('/silver/source-systems', undefined, signal),
   });
   const patients = useQuery({
-    queryKey: ['silver', 'patients', q, sourceSystem, validationStatus, page],
+    queryKey: ['silver', 'patients', q, sourceSystem, validationStatus, win, size, page],
     queryFn: ({ signal }) =>
-      api.get<Page<SilverPatientSummary>>('/silver/patients', { q, sourceSystem, validationStatus, page, size: 15 }, signal),
+      api.get<Page<SilverPatientSummary>>(
+        '/silver/patients',
+        { q, sourceSystem, validationStatus, ...windowParams(win), page, size },
+        signal,
+      ),
     placeholderData: keepPreviousData,
   });
   function submit(e: FormEvent) {
@@ -343,9 +358,11 @@ function SilverCard() {
   return (
     <section className="card">
       <div className="card-head">
-        <h2>Silver patients</h2>
+        <div>
+          <ListSummary title="Silver patients" page={patients.data} noun="Silver patients" unit="Silver id" />
+        </div>
         <form className="filters inline" onSubmit={submit}>
-          <input aria-label="Silver patient search" placeholder="Name, MRN (exact) or Silver id" value={text} onChange={(e) => setText(e.target.value)} maxLength={100} />
+          <input className="search-box" aria-label="Silver patient search" placeholder="Name, MRN (exact) or Silver id #" value={text} onChange={(e) => setText(e.target.value)} maxLength={100} />
           <select aria-label="Silver source system" value={sourceSystem} onChange={(e) => set({ sourceSystem: e.target.value })}>
             <option value="">Any source</option>
             {(sources.data ?? []).map((s) => (
@@ -367,7 +384,11 @@ function SilverCard() {
           </button>
         </form>
       </div>
-      <p className="muted small">Newest first. One row per patient per source system; the same person at two hospitals is two Silver patients and one Gold master.</p>
+      <p className="muted small">
+        {win.order === 'oldest' ? 'Oldest first' : 'Newest first'} (by Silver id). One row per patient per source system; the same person at two hospitals is two
+        Silver patients and one Gold master.
+      </p>
+      <WindowFilter value={win} label="Silver id" onApply={(w) => set(windowChanges(keys, w))} />
       <QueryState query={patients} context="Loading Silver patients">
         {(data) =>
           data.items.length === 0 ? (
@@ -428,7 +449,7 @@ function SilverCard() {
                   ))}
                 </tbody>
               </table>
-              <Pager page={data} onPage={(n) => set({ page: String(n) })} />
+              <Pager page={data} onPage={(n) => set({ page: String(n) })} onSize={(n) => set({ [keys.size]: String(n) })} idOf={(p) => `#${p.id}`} />
             </>
           )
         }
@@ -443,10 +464,11 @@ function GoldCard() {
   const q = params.get('q') ?? '';
   const status = params.get('masterStatus') ?? '';
   const page = Number(params.get('page') ?? '0');
+  const { window: win, size, keys } = readWindow(params);
   const [text, setText] = useState(q);
   const masters = useQuery({
-    queryKey: ['gold', 'masters', q, status, page],
-    queryFn: ({ signal }) => api.get<Page<MasterSummary>>('/patients', { q, status, page, size: 15 }, signal),
+    queryKey: ['gold', 'masters', q, status, win, size, page],
+    queryFn: ({ signal }) => api.get<Page<MasterSummary>>('/patients', { q, status, ...windowParams(win), page, size }, signal),
     placeholderData: keepPreviousData,
   });
   function submit(e: FormEvent) {
@@ -456,12 +478,14 @@ function GoldCard() {
   return (
     <section className="card">
       <div className="card-head">
-        <h2>Gold master patients</h2>
+        <div>
+          <ListSummary title="Gold master patients" page={masters.data} noun="masters" unit="master" />
+        </div>
         <form className="filters inline" onSubmit={submit}>
-          <input aria-label="Master search" placeholder="Name or MRN (exact)" value={text} onChange={(e) => setText(e.target.value)} maxLength={100} />
+          <input className="search-box" aria-label="Master search" placeholder="Name or MRN (exact)" value={text} onChange={(e) => setText(e.target.value)} maxLength={100} />
           <select aria-label="Match status" value={status} onChange={(e) => set({ masterStatus: e.target.value })}>
             <option value="">Any match status</option>
-            {['PROVISIONAL', 'MATCHED'].map((v) => (
+            {['PROVISIONAL', 'MATCHED', 'MERGED'].map((v) => (
               <option key={v}>{v}</option>
             ))}
           </select>
@@ -470,7 +494,12 @@ function GoldCard() {
           </button>
         </form>
       </div>
-      <p className="muted small">One master per person, linking every source record the patient index matched to it. FHIR resources open in the FHIR Viewer.</p>
+      <p className="muted small">
+        {status === 'MERGED'
+          ? 'Masters absorbed by a merge: their source records and FHIR resources moved to the master named under Sources.'
+          : 'One master per person, linking every source record the patient index matched to it. FHIR resources open in the FHIR Viewer. Merged-away masters are listed under MERGED.'}
+      </p>
+      <WindowFilter value={win} label="Master #" orders={PERSON_ORDERS} onApply={(w) => set(windowChanges(keys, w))} />
       <QueryState query={masters} context="Loading master patients">
         {(data) =>
           data.items.length === 0 ? (
@@ -501,7 +530,15 @@ function GoldCard() {
                         <Badge value={m.matchStatus} />
                       </td>
                       <td>
-                        {m.sourcePatientCount} · <span className="muted">{(m.sourceSystems ?? []).join(', ')}</span>
+                        {m.mergedIntoMasterId != null ? (
+                          <>
+                            merged into <Link to={`/patients/${m.mergedIntoMasterId}`}>#{m.mergedIntoMasterId}</Link>
+                          </>
+                        ) : (
+                          <>
+                            {m.sourcePatientCount} · <span className="muted">{(m.sourceSystems ?? []).join(', ')}</span>
+                          </>
+                        )}
                       </td>
                       <td className="num">
                         {m.fhirResourceCount > 0 ? <Link to={`/fhir?masterPatientId=${m.id}`}>{m.fhirResourceCount}</Link> : <span className="muted">0</span>}
@@ -513,7 +550,7 @@ function GoldCard() {
                   ))}
                 </tbody>
               </table>
-              <Pager page={data} onPage={(n) => set({ page: String(n) })} />
+              <Pager page={data} onPage={(n) => set({ page: String(n) })} onSize={(n) => set({ [keys.size]: String(n) })} idOf={(m) => `#${m.id}`} />
             </>
           )
         }
@@ -625,11 +662,16 @@ function BronzeCard() {
   const hl7TypeDisabled = messageType !== '' && messageType !== 'HL7V2';
   const hl7Type = hl7TypeDisabled ? '' : (params.get('hl7Type') ?? '');
   const q = params.get('bronzeQ') ?? '';
+  const { window: win, size, keys } = readWindow(params, 'bronze');
   const [text, setText] = useState(q);
   const messages = useQuery({
-    queryKey: ['bronze', status, messageType, hl7Type, q, page],
+    queryKey: ['bronze', status, messageType, hl7Type, q, win, size, page],
     queryFn: ({ signal }) =>
-      api.get<Page<BronzeSummary>>('/bronze/messages', { status, messageType, hl7Type, q, page, size: 15 }, signal),
+      api.get<Page<BronzeSummary>>(
+        '/bronze/messages',
+        { status, messageType, hl7Type, q, ...windowParams(win), page, size },
+        signal,
+      ),
     placeholderData: keepPreviousData,
   });
   /** Applies filter changes to the URL (empty = removed); any filter change goes back to page 1. */
@@ -653,7 +695,9 @@ function BronzeCard() {
   return (
     <section className="card">
       <div className="card-head">
-        <h2>Bronze messages</h2>
+        <div>
+          <ListSummary title="Bronze messages" page={messages.data} noun="messages" unit="message" />
+        </div>
         <form
           className="filters inline"
           onSubmit={(e) => {
@@ -662,8 +706,9 @@ function BronzeCard() {
           }}
         >
           <input
+            className="search-box"
             aria-label="Bronze search"
-            placeholder="Patient name, MRN (exact) or message id"
+            placeholder="Patient name, MRN (exact) or message #"
             value={text}
             onChange={(e) => setText(e.target.value)}
             maxLength={100}
@@ -701,7 +746,11 @@ function BronzeCard() {
           </button>
         </form>
       </div>
-      <p className="muted small">Newest first. Patient = the PID segment as the message carries it; the name links to that Silver patient.</p>
+      <p className="muted small">
+        {win.order === 'oldest' ? 'Oldest first' : 'Newest first'} (by message #). Patient = the PID segment as an HL7 message carries it; for FHIR, claims and C-CDA, the
+        Silver patient built from the message. The name links to that Silver patient.
+      </p>
+      <WindowFilter value={win} label="Message #" onApply={(w) => set(windowChanges(keys, w))} />
       <QueryState query={messages} context="Loading Bronze messages">
         {(data) =>
           data.items.length === 0 ? (
@@ -709,7 +758,12 @@ function BronzeCard() {
           ) : (
             <>
               <BronzeTable items={data.items} />
-              <Pager page={data} onPage={(p) => set({ bronzePage: String(p) })} />
+              <Pager
+                page={data}
+                onPage={(p) => set({ bronzePage: String(p) })}
+                onSize={(n) => set({ [keys.size]: String(n) })}
+                idOf={(m) => `#${m.id}`}
+              />
             </>
           )
         }

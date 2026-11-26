@@ -1,5 +1,6 @@
 package com.clinicalharmony.gateway.web;
 
+import com.clinicalharmony.gateway.read.ListWindow;
 import com.clinicalharmony.gateway.read.Page;
 import com.clinicalharmony.gateway.read.PatientQueries;
 import jakarta.validation.constraints.Max;
@@ -37,10 +38,14 @@ public class PatientController {
             @RequestParam(required = false) @DateTimeFormat(iso = DateTimeFormat.ISO.DATE) LocalDate dob,
             @RequestParam(required = false) @Pattern(regexp = "PROVISIONAL|MATCHED|MERGED") String status,
             @RequestParam(defaultValue = "false") boolean includeMerged,
+            @RequestParam(required = false) @Min(1) Long idFrom,
+            @RequestParam(required = false) @Min(1) Long idTo,
+            @RequestParam(required = false) @Pattern(regexp = ListWindow.PERSON_ORDERS) String order,
             @RequestParam(defaultValue = "0") @Min(0) int page,
             @RequestParam(defaultValue = "25") @Min(1) @Max(200) int size) {
         // Asking for MERGED masters only makes sense with the inactive ones included.
-        return patients.search(q, dob, status, includeMerged || "MERGED".equals(status), page, size);
+        return patients.search(q, dob, status, includeMerged || "MERGED".equals(status),
+                new ListWindow(idFrom, idTo, order), page, size);
     }
 
     @GetMapping("/{masterId}")

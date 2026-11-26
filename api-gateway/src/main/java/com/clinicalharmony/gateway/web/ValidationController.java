@@ -1,5 +1,6 @@
 package com.clinicalharmony.gateway.web;
 
+import com.clinicalharmony.gateway.read.ListWindow;
 import com.clinicalharmony.gateway.downstream.DownstreamClient;
 import com.clinicalharmony.gateway.downstream.RuleOwnership;
 import com.clinicalharmony.gateway.read.Page;
@@ -57,9 +58,13 @@ public class ValidationController {
             @Pattern(regexp = "CODE_VALIDATION|DATA_QUALITY|CLINICAL_LOGIC|IDENTITY") String category,
             @RequestParam(required = false) Long patientId,
             @RequestParam(required = false) Boolean resolved,
+            @RequestParam(required = false) @Min(1) Long idFrom,
+            @RequestParam(required = false) @Min(1) Long idTo,
+            @RequestParam(required = false) @Pattern(regexp = ListWindow.TIME_ORDERS) String order,
             @RequestParam(defaultValue = "0") @Min(0) int page,
             @RequestParam(defaultValue = "25") @Min(1) @Max(200) int size) {
-        return validation.findings(ruleCode, severity, entityType, category, patientId, resolved, page, size);
+        return validation.findings(ruleCode, severity, entityType, category, patientId, resolved,
+                new ListWindow(idFrom, idTo, order), page, size);
     }
 
     @GetMapping("/rules")

@@ -1,13 +1,13 @@
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import { useState } from 'react';
 import { Link, useParams, useSearchParams } from 'react-router';
-import type { MasterDetail, MergeEvent, Timeline, TimelineKind } from '../../api/types';
+import type { Allergy, MasterDetail, MergeEvent, Timeline, TimelineKind } from '../../api/types';
 import { useApi } from '../../app/context';
 import { Badge, Empty, PageHeader, QueryState } from '../../components/common';
 import { ConfirmDialog } from '../../components/ConfirmDialog';
 import { StewardButton } from '../../components/StewardButton';
 import { fhirRoute, fmtDate, fmtDateTime, fmtScore, fullName } from '../../format';
-import { eventDate, kindLabel, TimelineStrip } from './Timeline';
+import { eventDate, kindLabel, labFlag, referenceRange, TimelineStrip } from './Timeline';
 
 const KINDS: TimelineKind[] = ['CONDITION', 'OBSERVATION', 'MEDICATION'];
 const PMI = 'patient-index-service';
@@ -54,6 +54,7 @@ export function PatientDetailPage() {
             <SourcesCard detail={d} />
             <FhirCountsCard detail={d} />
           </div>
+          <AllergiesCard allergies={d.allergies ?? []} />
           <MergesCard detail={d} />
           <TimelineCard masterId={d.master.id} />
         </>
@@ -134,6 +135,97 @@ function FhirCountsCard({ detail }: { detail: MasterDetail }) {
             ))}
           </tbody>
         </table>
+      )}
+    </section>
+  );
+}
+
+const ALLERGY_TYPES: Record<string, string> = {
+  DA: 'drug',
+  FA: 'food',
+  EA: 'environmental',
+  MA: 'miscellaneous',
+  MC: 'misc. contraindication',
+  AA: 'animal',
+  PA: 'plant',
+  LA: 'pollen',
+};
+const SEVERITIES: Record<string, string> = { SV: 'severe', MO: 'moderate', MI: 'mild', U: 'unknown' };
+const CRITICALITY_TONE: Record<string, 'bad' | 'warn' | 'muted'> = { high: 'bad', low: 'warn' };
+
+/**
+ * Allergies across every source record. Criticality is what Gold's AllergyIntolerance says (the value the FHIR
+ * Viewer's Criticality filter matches); the source column keeps the HL7 AL1-4 severity it was mapped from.
+ */
+function AllergiesCard({ allergies }: { allergies: Allergy[] }) {
+  return (
+    <section className="card" aria-labelledby="allergies-heading">
+      <h2 id="allergies-heading">Allergies ({allergies.length})</h2>
+      {allergies.length === 0 ? (
+        <Empty>No allergies recorded in any source.</Empty>
+      ) : (
+        <>
+          <table className="table">
+            <thead>
+              <tr>
+                <th>Substance</th>
+                <th>Criticality (Gold)</th>
+                <th>Reaction</th>
+                <th>Source says</th>
+                <th>Status</th>
+                <th>Lineage</th>
+              </tr>
+            </thead>
+            <tbody>
+              {allergies.map((a) => {
+                const fhir = fhirRoute(a.fhirReference);
+                return (
+                  <tr key={a.id}>
+                    <td>
+                      <strong>{a.display ?? '(no display)'}</strong>
+                      <div className="muted small">
+                        {a.codeSystem ?? '—'} <code>{a.code || '(blank)'}</code>
+                        {a.allergyType && ` · ${ALLERGY_TYPES[a.allergyType] ?? a.allergyType}`}
+                      </div>
+                    </td>
+                    <td>
+                      {a.criticality ? (
+                        <Badge tone={CRITICALITY_TONE[a.criticality] ?? 'muted'}>{a.criticality}</Badge>
+                      ) : (
+                        <span className="muted">{fhir ? 'not stated' : '—'}</span>
+                      )}
+                    </td>
+                    <td>
+                      {a.reaction ?? '—'}
+                      {a.reactionSeverity && <div className="muted small">severity {a.reactionSeverity}</div>}
+                    </td>
+                    <td>
+                      {a.sourceSystem}
+                      <div className="muted small">
+                        AL1-4 {a.severity ? `${a.severity} (${SEVERITIES[a.severity] ?? a.severity})` : 'empty'}
+                      </div>
+                    </td>
+                    <td>{a.clinicalStatus ?? '—'}</td>
+                    <td>
+                      {a.rawMessageId && <Link to={`/lineage/bronze/${a.rawMessageId}`}>Bronze #{a.rawMessageId}</Link>}{' '}
+                      {fhir ? (
+                        <Link to={fhir}>
+                          {a.fhirReference} {a.usCoreCompliant === false && <Badge tone="bad">non-compliant</Badge>}
+                        </Link>
+                      ) : (
+                        <span className="muted">no Gold resource yet</span>
+                      )}
+                    </td>
+                  </tr>
+                );
+              })}
+            </tbody>
+          </table>
+          <p className="muted small">
+            Criticality is the Gold FHIR value (US Core maps the source severity SV → high, MO / MI → low); it is what the FHIR
+            Viewer's <strong>Criticality</strong> filter matches.
+          </p>
+        </>
       )}
     </section>
   );
@@ -289,6 +381,15 @@ function TimelineCard({ masterId }: { masterId: number }) {
                           <div className="event-title">
                             <Badge tone="info">{kindLabel(e.kind)}</Badge> <strong>{e.display ?? '(no display)'}</strong>
                             {e.value && <span className="event-value"> {e.value}</span>}
+                            {e.abnormalFlag && (
+                              <>
+                                {' '}
+                                <Badge tone={labFlag(e.abnormalFlag).tone}>{labFlag(e.abnormalFlag).text}</Badge>
+                              </>
+                            )}
+                            {referenceRange(e.referenceLow, e.referenceHigh) && (
+                              <span className="muted small"> {referenceRange(e.referenceLow, e.referenceHigh)}</span>
+                            )}
                           </div>
                           <div className="event-meta">
                             <span>

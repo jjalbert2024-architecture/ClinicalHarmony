@@ -8,6 +8,9 @@ export interface Page<T> {
   size: number;
   total: number;
   totalPages: number;
+  /** Lowest / highest record number in the WHOLE filtered result (lists whose records have a number). */
+  minId?: number | null;
+  maxId?: number | null;
 }
 
 /** RFC 7807 problem, as every gateway error is shaped. */
@@ -105,6 +108,8 @@ export interface MasterSummary {
   sourceSystems: string[] | null;
   updatedAt: string;
   fhirResourceCount: number;
+  /** For a MERGED (absorbed) master: the master its sources and FHIR resources moved to. */
+  mergedIntoMasterId: number | null;
 }
 
 export interface SourceRecord {
@@ -151,6 +156,32 @@ export interface MasterDetail {
   merges: MergeEvent[];
   fhirResources: ResourceCount[];
   pendingReviews: number;
+  /** Every allergy of every linked Silver record, high criticality first */
+  allergies: Allergy[];
+}
+
+/** An allergy: the source's AL1 values plus what its Gold AllergyIntolerance says (criticality, reaction severity). */
+export interface Allergy {
+  id: number;
+  codeSystem: string | null;
+  code: string | null;
+  display: string | null;
+  /** HL7 table 0127: DA drug, FA food, EA environmental… */
+  allergyType: string | null;
+  /** Source severity, HL7 AL1-4: SV / MO / MI / U */
+  severity: string | null;
+  reaction: string | null;
+  sourceSystem: string;
+  silverPatientId: number;
+  rawMessageId: number | null;
+  fhirResourceId: number | null;
+  fhirReference: string | null;
+  usCoreCompliant: boolean | null;
+  clinicalStatus: string | null;
+  /** Gold: high | low | unable-to-assess (SV → high, MO / MI → low) */
+  criticality: string | null;
+  reactionSeverity: string | null;
+  category: string | null;
 }
 
 export type TimelineKind = 'CONDITION' | 'OBSERVATION' | 'MEDICATION';
@@ -173,6 +204,10 @@ export interface TimelineEvent {
   fhirResourceId: number | null;
   fhirReference: string | null;
   usCoreCompliant: boolean | null;
+  /** Observations only: HL7 OBX-8 flag (N, H, L, HH, LL, A, AA) and OBX-7 range */
+  abnormalFlag?: string | null;
+  referenceLow?: number | null;
+  referenceHigh?: number | null;
 }
 
 export interface Timeline {
@@ -381,9 +416,22 @@ export interface ResourceSummary {
   /** Source system + id (MRN) of the Silver patient the resource is about; null when not about one */
   sourceSystem: string | null;
   sourcePatientId: string | null;
+  /** When the list is filtered to one type: that type's attribute values (key → value), absent elements left out */
+  attributes?: Record<string, string>;
 }
 
 export type ResourceOrigin = 'pipeline' | 'silver-seed' | 'api' | 'gold-seed';
+
+/** A per-type FHIR Viewer filter (GET /fhir/attributes?type=). Query it as attr.<key> or attr.<key>From/To (DATE). */
+export interface AttributeFacet {
+  key: string;
+  label: string;
+  /** The FHIR element, e.g. Patient.address.state */
+  path: string;
+  kind: 'CHOICE' | 'TEXT' | 'DATE' | 'FLAG';
+  /** CHOICE only: the values Gold holds, most common first */
+  values: { value: string; count: number }[];
+}
 
 export interface SourceCount {
   sourceSystem: string;
@@ -408,6 +456,17 @@ export interface ValidationOutcome {
   violations: Violation[];
 }
 
+/** One element of a resource's profile and whether the resource has it (fhir-compliance's "why compliant" checklist). */
+export interface ChecklistItem {
+  path: string;
+  label: string;
+  depth: number;
+  required: boolean;
+  mustSupport: boolean;
+  uscdi: boolean;
+  present: boolean;
+}
+
 export interface ComplianceNotes {
   profile?: string;
   compliant?: boolean;
@@ -416,6 +475,7 @@ export interface ComplianceNotes {
   errorCount?: number;
   warningCount?: number;
   violations?: Violation[];
+  checklist?: ChecklistItem[];
   [key: string]: unknown;
 }
 

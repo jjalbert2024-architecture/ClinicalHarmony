@@ -33,6 +33,7 @@ public final class ComplianceNotes {
         notes.put("errorCount", outcome.errorCount());
         notes.put("warningCount", outcome.warningCount());
         notes.put("violations", outcome.violations());
+        notes.put("checklist", outcome.checklist());
         try {
             return objectMapper.writeValueAsString(notes);
         } catch (JsonProcessingException e) {

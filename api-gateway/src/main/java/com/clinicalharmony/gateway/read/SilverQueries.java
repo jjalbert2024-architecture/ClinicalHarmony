@@ -100,9 +100,10 @@ public class SilverQueries {
      * Newest first. {@code q}: part of the name, or EXACTLY (any case) the MRN / source patient id — the Patient
      * Timeline rule — or the Silver id itself when it's a number.
      */
-    public Page<SilverPatientSummary> patients(String q, String sourceSystem, String validationStatus, int page, int size) {
+    public Page<SilverPatientSummary> patients(String q, String sourceSystem, String validationStatus, ListWindow window,
+                                               int page, int size) {
         String text = Sql.has(q) ? q.trim() : null;
-        Long numeric = text != null && text.matches("\\d{1,18}") ? Long.parseLong(text) : null;
+        Long numeric = text != null && text.matches("#?\\d{1,18}") ? Long.parseLong(text.replace("#", "")) : null;
         Sql.Where where = new Sql.Where()
                 .and(text != null, """
                         ((p.first_name || ' ' || p.last_name) ILIKE :qLike OR p.last_name ILIKE :qLike
@@ -112,15 +113,16 @@ public class SilverQueries {
                 .and("NOT_TRACKED".equals(validationStatus), "p.validation_status IS NULL", null, null)
                 .and(Sql.has(validationStatus) && !"NOT_TRACKED".equals(validationStatus),
                         "p.validation_status = :vstatus", "vstatus", validationStatus);
+        window.restrict(where, "p.id");
         if (text != null) {
             where.params.addValue("qLike", Sql.contains(text)).addValue("qId", numeric == null ? -1L : numeric);
         }
-        Long total = jdbc.queryForObject("SELECT count(*)" + FROM + where.sql(), where.params, Long.class);
+        Sql.Counted counted = Sql.count(jdbc, "p.id", FROM + where.sql(), where.params);
         where.params.addValue("limit", size).addValue("offset", (long) page * size);
         List<SilverPatientSummary> items = jdbc.query("SELECT " + SUMMARY_COLUMNS + FROM + where.sql()
-                        + " ORDER BY p.updated_at DESC, p.id DESC LIMIT :limit OFFSET :offset", where.params,
+                        + window.idOrder("p.id") + " LIMIT :limit OFFSET :offset", where.params,
                 (rs, i) -> summary(rs));
-        return Page.of(items, page, size, total == null ? 0 : total);
+        return Page.of(items, page, size, counted);
     }
 
     public List<SourceCount> sourceSystems() {

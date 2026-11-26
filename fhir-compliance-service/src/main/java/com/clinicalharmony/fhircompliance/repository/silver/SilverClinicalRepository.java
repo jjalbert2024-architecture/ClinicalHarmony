@@ -73,7 +73,8 @@ public class SilverClinicalRepository {
 
     public List<SilverObservationRow> findObservations(long patientId) {
         return jdbcTemplate.query("""
-                        SELECT id, patient_id, code, display, value_numeric, value_text, unit, status, effective_date
+                        SELECT id, patient_id, code, display, value_numeric, value_text, unit, status, effective_date,
+                               reference_low, reference_high, abnormal_flag
                         FROM silver.observations WHERE patient_id = ? ORDER BY id
                         """,
                 (rs, n) -> new SilverObservationRow(
@@ -85,7 +86,10 @@ public class SilverClinicalRepository {
                         rs.getString("value_text"),
                         rs.getString("unit"),
                         rs.getString("status"),
-                        rs.getObject("effective_date", OffsetDateTime.class)),
+                        rs.getObject("effective_date", OffsetDateTime.class),
+                        rs.getBigDecimal("reference_low"),
+                        rs.getBigDecimal("reference_high"),
+                        rs.getString("abnormal_flag")),
                 patientId);
     }
 

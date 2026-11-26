@@ -1,0 +1,94 @@
+[
+  {
+    "key": "gender",
+    "label": "Gender",
+    "path": "Patient.gender",
+    "kind": "CHOICE",
+    "values": [
+      {
+        "value": "male",
+        "count": 142
+      },
+      {
+        "value": "female",
+        "count": 110
+      },
+      {
+        "value": "unknown",
+        "count": 1
+      }
+    ]
+  },
+  {
+    "key": "birthDate",
+    "label": "Birth date",
+    "path": "Patient.birthDate",
+    "kind": "DATE",
+    "values": []
+  },
+  {
+    "key": "state",
+    "label": "State",
+    "path": "Patient.address.state",
+    "kind": "CHOICE",
+    "values": [
+      {
+        "value": "WY",
+        "count": 41
+      },
+      {
+        "value": "WI",
+        "count": 36
+      },
+      {
+        "value": "OR",
+        "count": 34
+      },
+      {
+        "value": "IL",
+        "count": 32
+      },
+      {
+        "value": "SC",
+        "count": 31
+      },
+      {
+        "value": "GA",
+        "count": 12
+      },
+      {
+        "value": "TX",
+        "count": 4
+      },
+      {
+        "value": "MA",
+        "count": 3
+      },
+      {
+        "value": "AZ",
+        "count": 1
+      }
+    ]
+  },
+  {
+    "key": "city",
+    "label": "City",
+    "path": "Patient.address.city",
+    "kind": "TEXT",
+    "values": []
+  },
+  {
+    "key": "postalCode",
+    "label": "Postal code",
+    "path": "Patient.address.postalCode",
+    "kind": "TEXT",
+    "values": []
+  },
+  {
+    "key": "phone",
+    "label": "Has a phone",
+    "path": "Patient.telecom (system phone)",
+    "kind": "FLAG",
+    "values": []
+  }
+]

@@ -41,7 +41,7 @@ class CcdaConversionControllerTest {
 
     private static CcdaConversionResult result(boolean compliant) throws Exception {
         FhirValidationOutcome outcome = new FhirValidationOutcome("Patient", "p1",
-                "http://hl7.org/fhir/us/core/StructureDefinition/us-core-patient", compliant, compliant ? 0 : 1, 0, List.of());
+                "http://hl7.org/fhir/us/core/StructureDefinition/us-core-patient", compliant, compliant ? 0 : 1, 0, List.of(), List.of());
         return new CcdaConversionResult("1.2.3^DOC", "Test CCD", 1, compliant ? 1 : 0, compliant,
                 List.of("Problems (11450-4): not present"),
                 List.of(new ConversionNote("Problems (11450-4)", "Section not present in document")),

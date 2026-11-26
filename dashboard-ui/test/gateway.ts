@@ -6,6 +6,7 @@ import { setupServer } from 'msw/node';
 import bronzeMessage from './fixtures/bronze-message.json';
 import bronzeMessages from './fixtures/bronze-messages.json';
 import config from './fixtures/config.json';
+import fhirAttributesPatient from './fixtures/fhir-attributes-patient.json';
 import fhirResourceCondition from './fixtures/fhir-resource-condition.json';
 import fhirResources from './fixtures/fhir-resources.json';
 import fhirSourceSystems from './fixtures/fhir-source-systems.json';
@@ -36,7 +37,7 @@ export const GATEWAY = 'http://gateway.test';
 export const API = `${GATEWAY}/api/v1`;
 
 export const fixtures = {
-  bronzeMessage, bronzeMessages, config, fhirResourceCondition, fhirResources, fhirSourceSystems, fhirTypes, fhirValidate, health,
+  bronzeMessage, bronzeMessages, config, fhirAttributesPatient, fhirResourceCondition, fhirResources, fhirSourceSystems, fhirTypes, fhirValidate, health,
   lineageFhir, lineageSilver, lineageSummary, meDana, ontologyCoverage, patientMerged, patients, pmiCandidate, pmiCandidates,
   pmiDecided, pmiRuns, silverPatient, silverPatients, silverSourceSystems, summary, timeline, validationFindings, validationRules, validationSummary,
 };
@@ -116,6 +117,7 @@ export const defaultHandlers = [
   get('/fhir/resource-types', fixtures.fhirTypes),
   get('/fhir/resources', fixtures.fhirResources),
   get('/fhir/source-systems', fixtures.fhirSourceSystems),
+  get('/fhir/attributes', fixtures.fhirAttributesPatient),
   get('/fhir/resources/:type/:id', fixtures.fhirResourceCondition),
   // a Silver-patient trace gets the Silver lineage fixture; every other trace the FHIR-resource one
   http.get(`${API}/lineage`, ({ request }) =>

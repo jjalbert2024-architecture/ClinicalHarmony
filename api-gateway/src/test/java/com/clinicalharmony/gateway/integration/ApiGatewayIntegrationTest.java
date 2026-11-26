@@ -188,6 +188,97 @@ class ApiGatewayIntegrationTest {
     // ---- read models over real SQL ---------------------------------------------------------------
 
     @Test
+    void listsTakeANumberRangeAndOrderAndAClaimsLineNamesItsMember() throws Exception {
+        JdbcTemplate admin = new JdbcTemplate(new DriverManagerDataSource(POSTGRES.getJdbcUrl(), "clinicalharmony",
+                "clinicalharmony"));
+        long claimsRow = admin.queryForObject("""
+                INSERT INTO bronze.raw_messages (source_system, message_type, message_format, raw_payload, processing_status)
+                VALUES ('WINDOW_TEST', 'CLAIMS_CSV', 'CSV', 'claim_id,member_id\\nCW-1,MWIN1', 'PROCESSED') RETURNING id""", Long.class);
+        long member = admin.queryForObject("""
+                INSERT INTO silver.patients (source_system, source_patient_id, first_name, last_name, date_of_birth, gender,
+                                             raw_message_id)
+                VALUES ('WINDOW_TEST', 'MWIN1', 'Wendy', 'Windowtest', DATE '1960-02-02', 'female', ?) RETURNING id""", Long.class, claimsRow);
+        long secondLine = admin.queryForObject("""
+                INSERT INTO bronze.raw_messages (source_system, message_type, message_format, raw_payload, processing_status)
+                VALUES ('WINDOW_TEST', 'CLAIMS_CSV', 'CSV', 'claim_id,member_id\\nCW-2,MWIN1', 'PROCESSED') RETURNING id""", Long.class);
+        admin.update("""
+                INSERT INTO silver.claims (patient_id, claim_id, service_date, icd10_code, billed_amount, raw_message_id)
+                VALUES (?, 'CW-2', DATE '2026-11-01', 'I10', 10.00, ?)""", member, secondLine);
+
+        // A claims line has no PID: its member is the patient — the line that wrote the patient row, and a later one
+        // that only added a claim
+        JsonNode both = getJson("/api/v1/bronze/messages?sourceSystem=WINDOW_TEST&order=oldest");
+        assertThat(both.at("/total").asInt()).isEqualTo(2);
+        assertThat(both.at("/items/0/id").asLong()).isEqualTo(claimsRow);
+        // the lowest / highest number of the whole result, whichever page is shown
+        assertThat(both.at("/minId").asLong()).isEqualTo(claimsRow);
+        assertThat(both.at("/maxId").asLong()).isEqualTo(secondLine);
+        assertThat(getJson("/api/v1/bronze/messages?sourceSystem=WINDOW_TEST&size=1&page=1").at("/maxId").asLong())
+                .isEqualTo(secondLine);
+        for (int i = 0; i < 2; i++) {
+            assertThat(both.at("/items/" + i + "/patientName").asText()).isEqualTo("Wendy Windowtest");
+            assertThat(both.at("/items/" + i + "/patientMrn").asText()).isEqualTo("MWIN1");
+            assertThat(both.at("/items/" + i + "/silverPatientId").asLong()).isEqualTo(member);
+        }
+        // and the member's name or id finds them
+        assertThat(getJson("/api/v1/bronze/messages?q=windowtest").at("/total").asInt()).isEqualTo(2);
+        assertThat(getJson("/api/v1/bronze/messages?q=mwin1").at("/total").asInt()).isEqualTo(2);
+        // "#<number>" in the search box is the message number
+        String byNumber = as(TestJwts.viewer()).getForEntity("/api/v1/bronze/messages?q={q}", String.class, "#" + claimsRow).getBody();
+        assertThat(objectMapper.readTree(byNumber).at("/items/0/id").asLong()).isEqualTo(claimsRow);
+
+        // number range: just the second line; newest first by default
+        JsonNode one = getJson("/api/v1/bronze/messages?sourceSystem=WINDOW_TEST&idFrom=" + secondLine);
+        assertThat(one.at("/total").asInt()).isEqualTo(1);
+        assertThat(one.at("/items/0/id").asLong()).isEqualTo(secondLine);
+        assertThat(getJson("/api/v1/bronze/messages?sourceSystem=WINDOW_TEST").at("/items/0/id").asLong()).isEqualTo(secondLine);
+
+        // "newest" = by message number, not receipt time: rows from parallel Kafka partitions get numbers out of
+        // receipt order, and a page reading #1141, #1117, #1148 … can't be read as a range
+        long laterNumberEarlierReceipt = admin.queryForObject("""
+                INSERT INTO bronze.raw_messages (source_system, message_type, message_format, raw_payload, processing_status,
+                                                 received_at)
+                VALUES ('ORDER_TEST', 'HL7V2', 'TEXT', 'MSH|x', 'PROCESSED', now() - interval '1 hour') RETURNING id""", Long.class);
+        JsonNode byNumberOrder = getJson("/api/v1/bronze/messages?idFrom=" + secondLine + "&idTo=" + laterNumberEarlierReceipt);
+        assertThat(byNumberOrder.at("/items").findValuesAsText("id")) // secondLine was received now, after it
+                .containsExactly(String.valueOf(laterNumberEarlierReceipt), String.valueOf(secondLine));
+
+        // Silver patients: the same range on the Silver id
+        assertThat(getJson("/api/v1/silver/patients?idFrom=" + member + "&idTo=" + member).at("/items/0/id").asLong())
+                .isEqualTo(member);
+        // masters: newest / oldest master number instead of name order
+        JsonNode newest = getJson("/api/v1/patients?order=newest&size=200");
+        JsonNode oldest = getJson("/api/v1/patients?order=oldest&size=200");
+        assertThat(newest.at("/items/0/id").asLong()).isGreaterThan(newest.at("/items/1/id").asLong());
+        assertThat(oldest.at("/items/0/id").asLong()).isLessThan(oldest.at("/items/1/id").asLong());
+        // findings: a range nothing falls in
+        assertThat(getJson("/api/v1/validation/findings?idFrom=999999999").at("/total").asInt()).isZero();
+    }
+
+    @Test
+    void mergedMastersAreListedOnlyWhenAskedForAndSayWhichMasterAbsorbedThem() throws Exception {
+        JdbcTemplate admin = new JdbcTemplate(new DriverManagerDataSource(POSTGRES.getJdbcUrl(), "clinicalharmony",
+                "clinicalharmony"));
+        long absorbed = admin.queryForObject("""
+                INSERT INTO gold.master_patients (first_name, last_name, date_of_birth, gender, match_status, is_active,
+                                                  source_patient_count)
+                VALUES ('Mergedaway', 'Testpatient', DATE '1950-01-01', 'female', 'MERGED', false, 0) RETURNING id""", Long.class);
+        admin.update("""
+                INSERT INTO gold.master_patient_merges (survivor_master_id, absorbed_master_id, moved_silver_patient_ids,
+                                                        match_method, decided_by)
+                VALUES (?, ?, '{}', 'MANUAL', 'test')""", maria, absorbed);
+
+        JsonNode merged = getJson("/api/v1/patients?q=Mergedaway&status=MERGED");
+        assertThat(merged.at("/total").asInt()).isEqualTo(1);
+        assertThat(merged.at("/items/0/id").asLong()).isEqualTo(absorbed);
+        assertThat(merged.at("/items/0/mergedIntoMasterId").asLong()).isEqualTo(maria);
+        // "Any match status" lists active masters only
+        assertThat(getJson("/api/v1/patients?q=Mergedaway").at("/total").asInt()).isZero();
+        // an active master was absorbed by nobody
+        assertThat(getJson("/api/v1/patients?q=mrn100001").at("/items/0/mergedIntoMasterId").isNull()).isTrue();
+    }
+
+    @Test
     void patientSearchFindsAMasterByAnyLinkedRecordsMrnOrSourceId() throws Exception {
         // "Name or MRN": SEED-0001's MRN, any case → Maria's master, and only her
         JsonNode byMrn = getJson("/api/v1/patients?q=mrn100001");
@@ -236,6 +327,56 @@ class ApiGatewayIntegrationTest {
         JsonNode medsOnly = getJson("/api/v1/patients/" + maria + "/timeline?types=MEDICATION&from=2016-01-01");
         assertThat(medsOnly.at("/eventCount").asInt()).isEqualTo(1);
         assertThat(medsOnly.at("/events/0/code").asText()).isEqualTo("83367");
+    }
+
+    @Test
+    void patientPageShowsAllergiesWithGoldCriticalityAndLabFlags() throws Exception {
+        JdbcTemplate admin = new JdbcTemplate(new DriverManagerDataSource(POSTGRES.getJdbcUrl(), "clinicalharmony",
+                "clinicalharmony"));
+        long silver = admin.queryForObject("""
+                INSERT INTO silver.patients (source_system, source_patient_id, mrn, first_name, last_name, date_of_birth, gender)
+                VALUES ('ALG_CLINIC', 'AL' || nextval('silver.patients_id_seq'), NULL, 'Alma', 'Allergic', '1960-01-02', 'female')
+                RETURNING id""", Long.class);
+        long master = admin.queryForObject("""
+                INSERT INTO gold.master_patients (first_name, last_name, date_of_birth, gender, match_status)
+                VALUES ('Alma', 'Allergic', '1960-01-02', 'female', 'MATCHED') RETURNING id""", Long.class);
+        admin.update("INSERT INTO gold.patient_source_xref (master_patient_id, silver_patient_id) VALUES (?, ?)", master, silver);
+        long[] allergy = new long[2];
+        String[][] allergies = {{"Penicillin", "MO", "low"}, {"Peanut", "SV", "high"}};
+        for (int i = 0; i < 2; i++) {
+            allergy[i] = admin.queryForObject("""
+                    INSERT INTO silver.allergies (patient_id, code_system, code, display, allergy_type, severity, reaction)
+                    VALUES (?, 'LOCAL', ?, ?, 'DA', ?, 'Hives') RETURNING id""", Long.class,
+                    silver, "ALG" + i + "-" + silver, allergies[i][0], allergies[i][1]);
+            long gold = admin.queryForObject("""
+                    INSERT INTO gold.fhir_resources (resource_type, fhir_id, resource_json, master_patient_id, is_us_core_compliant)
+                    VALUES ('AllergyIntolerance', ?, ?::jsonb, ?, true) RETURNING id""", Long.class,
+                    "alg-" + allergy[i], "{\"resourceType\":\"AllergyIntolerance\",\"criticality\":\"" + allergies[i][2]
+                            + "\",\"clinicalStatus\":{\"coding\":[{\"code\":\"active\"}]},\"category\":[\"medication\"]}", master);
+            admin.update("""
+                    INSERT INTO gold.data_lineage (source_schema, source_table, source_id, target_schema, target_table, target_id,
+                                                   transformation_step, transformation_details)
+                    VALUES ('silver', 'allergies', ?, 'gold', 'fhir_resources', ?, 'FHIR_MAP', '{}'::jsonb)""", allergy[i], gold);
+        }
+        admin.update("""
+                INSERT INTO silver.observations (patient_id, code, display, value_numeric, unit, status, effective_date,
+                                                 reference_low, reference_high, abnormal_flag)
+                VALUES (?, '2345-7', 'Glucose', 142, 'mg/dL', 'final', '2024-03-10T08:30:00Z', 70.0000, 99.0000, 'H')""", silver);
+
+        JsonNode detail = getJson("/api/v1/patients/" + master);
+        // high first, then low; criticality is Gold's, severity the source's
+        assertThat(detail.get("allergies").findValuesAsText("display")).containsExactly("Peanut", "Penicillin");
+        assertThat(detail.at("/allergies/0/criticality").asText()).isEqualTo("high");
+        assertThat(detail.at("/allergies/0/severity").asText()).isEqualTo("SV");
+        assertThat(detail.at("/allergies/1/criticality").asText()).isEqualTo("low");
+        assertThat(detail.at("/allergies/1/fhirReference").asText()).isEqualTo("AllergyIntolerance/alg-" + allergy[0]);
+        assertThat(detail.at("/allergies/1/clinicalStatus").asText()).isEqualTo("active");
+        assertThat(detail.at("/allergies/1/sourceSystem").asText()).isEqualTo("ALG_CLINIC");
+
+        JsonNode lab = getJson("/api/v1/patients/" + master + "/timeline").at("/events/0");
+        assertThat(lab.at("/abnormalFlag").asText()).isEqualTo("H");
+        assertThat(lab.at("/referenceLow").toString()).isEqualTo("70");      // trimmed, never 7E+1
+        assertThat(lab.at("/referenceHigh").toString()).isEqualTo("99");
     }
 
     @Test
@@ -298,6 +439,55 @@ class ApiGatewayIntegrationTest {
         JsonNode summary = getJson("/api/v1/lineage/summary");
         assertThat(summary.findValuesAsText("step"))
                 .containsSubsequence("FHIR_MAP", "PMI_PROVISIONAL", "PMI_MERGE", "SEED_LOAD", "API_GENERATE");
+    }
+
+    @Test
+    void fhirViewerAttributeFiltersMatchTheResourceJson() throws Exception {
+        JdbcTemplate admin = new JdbcTemplate(new DriverManagerDataSource(POSTGRES.getJdbcUrl(), "clinicalharmony",
+                "clinicalharmony"));
+        if (admin.queryForObject("SELECT count(*) FROM gold.fhir_resources WHERE fhir_id LIKE 'attr-%'", Integer.class) == 0) {
+            String[][] rows = {
+                    {"attr-pat-1", "Patient", "{\"resourceType\":\"Patient\",\"gender\":\"female\",\"birthDate\":\"1971-05-06\","
+                            + "\"address\":[{\"city\":\"Springfield\",\"state\":\"ZZ\"}],\"telecom\":[{\"system\":\"phone\",\"value\":\"555\"}]}"},
+                    {"attr-pat-2", "Patient", "{\"resourceType\":\"Patient\",\"gender\":\"male\",\"birthDate\":\"1985-12-01\","
+                            + "\"address\":[{\"city\":\"Shelbyville\",\"state\":\"ZZ\"}]}"},
+                    {"attr-obs-1", "Observation", "{\"resourceType\":\"Observation\",\"status\":\"final\",\"effectiveDateTime\":\"2024-03-10T08:30:00Z\","
+                            + "\"interpretation\":[{\"coding\":[{\"code\":\"H\"}]}],\"referenceRange\":[{\"high\":{\"value\":200}}]}"},
+                    {"attr-obs-2", "Observation", "{\"resourceType\":\"Observation\",\"status\":\"final\",\"effectiveDateTime\":\"2025-01-02\","
+                            + "\"interpretation\":[{\"coding\":[{\"code\":\"N\"}]}]}"}};
+            for (String[] r : rows) {
+                admin.update("INSERT INTO gold.fhir_resources (resource_type, fhir_id, resource_json, is_us_core_compliant)"
+                        + " VALUES (?, ?, ?::jsonb, true)", r[1], r[0], r[2]);
+            }
+        }
+        String base = "/api/v1/fhir/resources?q=attr-&type=";
+        assertThat(getJson(base + "Patient&attr.gender=female").get("items").findValuesAsText("fhirId")).containsExactly("attr-pat-1");
+        assertThat(getJson(base + "Patient&attr.city=shelby").get("items").findValuesAsText("fhirId")).containsExactly("attr-pat-2");
+        assertThat(getJson(base + "Patient&attr.phone=no").get("items").findValuesAsText("fhirId")).containsExactly("attr-pat-2");
+        assertThat(getJson(base + "Patient&attr.birthDateFrom=1980&attr.birthDateTo=1985-12").get("items").findValuesAsText("fhirId"))
+                .containsExactly("attr-pat-2");
+        assertThat(getJson(base + "Patient&attr.state=ZZ").at("/total").asInt()).isEqualTo(2);
+        // each row shows its type's attribute values: the filter proves itself in the list
+        JsonNode female = getJson(base + "Patient&attr.gender=female").at("/items/0/attributes");
+        assertThat(female.get("gender").asText()).isEqualTo("female");
+        assertThat(female.get("birthDate").asText()).isEqualTo("1971-05-06");
+        assertThat(female.get("phone").asText()).isEqualTo("yes");
+        assertThat(female.has("postalCode")).isFalse();                   // absent elements are left out
+        assertThat(getJson(base + "Observation&attr.abnormal=yes").at("/items/0/attributes/effective").asText())
+                .isEqualTo("2024-03-10");
+        assertThat(getJson("/api/v1/fhir/resources?q=attr-").at("/items/0/attributes").size()).isZero();   // no type
+        assertThat(getJson(base + "Observation&attr.abnormal=yes").get("items").findValuesAsText("fhirId")).containsExactly("attr-obs-1");
+        assertThat(getJson(base + "Observation&attr.interpretation=N&attr.referenceRange=no").get("items").findValuesAsText("fhirId"))
+                .containsExactly("attr-obs-2");
+        assertThat(getJson(base + "Observation&attr.effectiveFrom=2024-03-10&attr.effectiveTo=2024-03-10").at("/total").asInt())
+                .isEqualTo(1);
+
+        JsonNode facets = getJson("/api/v1/fhir/attributes?type=Patient");
+        assertThat(facets.findValuesAsText("key")).containsExactly("gender", "birthDate", "state", "city", "postalCode", "phone");
+        JsonNode state = facets.get(2);
+        assertThat(state.get("kind").asText()).isEqualTo("CHOICE");
+        assertThat(state.get("values").findValuesAsText("value")).contains("ZZ");
+        assertThat(facets.get(1).get("values").size()).isZero();   // a DATE has no value list
     }
 
     @Test

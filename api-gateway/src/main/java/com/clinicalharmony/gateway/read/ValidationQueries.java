@@ -71,7 +71,7 @@ public class ValidationQueries {
     }
 
     public Page<Finding> findings(String ruleCode, String severity, String entityType, String category, Long patientId,
-                                  Boolean resolved, int page, int size) {
+                                  Boolean resolved, ListWindow window, int page, int size) {
         Sql.Where where = new Sql.Where()
                 .and(Sql.has(ruleCode), "v.rule_code = :ruleCode", "ruleCode", ruleCode)
                 .and(Sql.has(severity), "v.severity = :severity", "severity", severity)
@@ -79,19 +79,20 @@ public class ValidationQueries {
                 .and(Sql.has(category), "r.rule_category = :category", "category", category)
                 .and(patientId != null, "v.patient_id = :patientId", "patientId", patientId)
                 .and(resolved != null, "v.is_resolved = :resolved", "resolved", resolved);
+        window.restrict(where, "v.id");
         String from = " FROM silver.validation_reports v LEFT JOIN ontology.clinical_rules r ON r.rule_code = v.rule_code";
-        Long total = jdbc.queryForObject("SELECT count(*)" + from + where.sql(), where.params, Long.class);
+        Sql.Counted counted = Sql.count(jdbc, "v.id", from + where.sql(), where.params);
         where.params.addValue("limit", size).addValue("offset", (long) page * size);
         List<Finding> items = jdbc.query("""
                 SELECT v.id, v.rule_code, r.rule_name, r.rule_category, v.severity, v.entity_type, v.entity_id,
                        v.patient_id, v.message, v.bad_value, v.suggested_value, v.is_resolved, v.resolved_at, v.validated_at
-                """ + from + where.sql() + " ORDER BY v.validated_at DESC, v.id DESC LIMIT :limit OFFSET :offset",
+                """ + from + where.sql() + window.idOrder("v.id") + " LIMIT :limit OFFSET :offset",
                 where.params, (rs, i) -> new Finding(rs.getLong("id"), rs.getString("rule_code"),
                         rs.getString("rule_name"), rs.getString("rule_category"), rs.getString("severity"),
                         rs.getString("entity_type"), rs.getLong("entity_id"), Sql.longOrNull(rs, "patient_id"),
                         rs.getString("message"), rs.getString("bad_value"), rs.getString("suggested_value"),
                         rs.getBoolean("is_resolved"), Sql.ts(rs, "resolved_at"), Sql.ts(rs, "validated_at")));
-        return Page.of(items, page, size, total == null ? 0 : total);
+        return Page.of(items, page, size, counted);
     }
 
     public List<Rule> rules() {

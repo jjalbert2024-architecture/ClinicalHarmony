@@ -47,13 +47,15 @@ public class UsCoreFhirValidator {
     private final FhirValidator validator;
     private final SuggestedFixAdvisor fixAdvisor;
     private final ObjectMapper objectMapper;
+    private final ProfileChecklistBuilder checklistBuilder;
 
     public UsCoreFhirValidator(FhirContext fhirContext, FhirValidator validator, SuggestedFixAdvisor fixAdvisor,
-                               ObjectMapper objectMapper) {
+                               ObjectMapper objectMapper, ProfileChecklistBuilder checklistBuilder) {
         this.fhirContext = fhirContext;
         this.validator = validator;
         this.fixAdvisor = fixAdvisor;
         this.objectMapper = objectMapper;
+        this.checklistBuilder = checklistBuilder;
     }
 
     /** Validates a HAPI-built resource (the Silver → FHIR builders' path). */
@@ -92,7 +94,8 @@ public class UsCoreFhirValidator {
         log.info("Validated {}/{} against {} in {} ms: {} error(s), {} warning(s)",
                 resourceType, resourceId, profile == null ? "base FHIR R4" : profile,
                 System.currentTimeMillis() - start, errors, warnings);
-        return new FhirValidationOutcome(resourceType, resourceId, profile, errors == 0, errors, warnings, violations);
+        return new FhirValidationOutcome(resourceType, resourceId, profile, errors == 0, errors, warnings, violations,
+                checklistBuilder.build(profile, root));
     }
 
     private JsonNode readEnvelope(String json) {

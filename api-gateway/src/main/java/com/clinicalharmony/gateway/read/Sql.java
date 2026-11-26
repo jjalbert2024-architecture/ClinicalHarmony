@@ -46,6 +46,17 @@ final class Sql {
         }
     }
 
+    /** A filtered list's size and the lowest / highest record number in it. */
+    record Counted(long total, Long minId, Long maxId) {
+    }
+
+    /** {@code SELECT count(*), min(id), max(id)} over {@code fromWhere} (a FROM … WHERE … built from trusted constants). */
+    static Counted count(org.springframework.jdbc.core.namedparam.NamedParameterJdbcTemplate jdbc, String idColumn,
+                         String fromWhere, MapSqlParameterSource params) {
+        return jdbc.queryForObject("SELECT count(*) AS n, min(" + idColumn + ") AS lo, max(" + idColumn + ") AS hi" + fromWhere,
+                params, (rs, i) -> new Counted(rs.getLong("n"), longOrNull(rs, "lo"), longOrNull(rs, "hi")));
+    }
+
     /** {@code %text%} for ILIKE with the user's own {@code %}, {@code _} and {@code \} escaped. */
     static String contains(String text) {
         return "%" + text.replace("\\", "\\\\").replace("%", "\\%").replace("_", "\\_") + "%";

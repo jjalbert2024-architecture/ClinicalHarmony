@@ -3,7 +3,7 @@ import { useRef, useState } from 'react';
 import { Link, useSearchParams } from 'react-router';
 import type { Bucket, Finding, Page, ValidationSummary } from '../../api/types';
 import { useApi } from '../../app/context';
-import { Badge, Bar, Empty, PageHeader, Pager, QueryState, Stat } from '../../components/common';
+import { Badge, Bar, Empty, PageHeader, Pager, QueryState, readWindow, Stat, WindowFilter, windowChanges, windowParams, ListSummary } from '../../components/common';
 import { fmtDateTime, fmtNumber } from '../../format';
 
 const FILTERS = ['ruleCode', 'severity', 'entityType', 'category', 'patientId', 'resolved'] as const;
@@ -35,6 +35,7 @@ export function ValidationPage() {
   const [params, setParams] = useSearchParams();
   const filters = Object.fromEntries(FILTERS.map((k) => [k, params.get(k) ?? ''])) as Record<(typeof FILTERS)[number], string>;
   const page = Number(params.get('page') ?? '0');
+  const { window: win, size, keys } = readWindow(params, '', 25);
   /** Active filters in the order they were applied (URL order: a newly added filter goes to the end). */
   const applied = [...new Set([...params.keys()])].filter((k): k is FilterKey => (FILTERS as readonly string[]).includes(k) && !!params.get(k));
   const filteredColumns = new Set(applied.map((k) => FILTER_COLUMN[k]));
@@ -44,8 +45,8 @@ export function ValidationPage() {
     queryFn: ({ signal }) => api.get<ValidationSummary>('/validation/summary', undefined, signal),
   });
   const findings = useQuery({
-    queryKey: ['validation', 'findings', filters, page],
-    queryFn: ({ signal }) => api.get<Page<Finding>>('/validation/findings', { ...filters, page, size: 25 }, signal),
+    queryKey: ['validation', 'findings', filters, win, size, page],
+    queryFn: ({ signal }) => api.get<Page<Finding>>('/validation/findings', { ...filters, ...windowParams(win), page, size }, signal),
     placeholderData: keepPreviousData,
   });
 
@@ -58,9 +59,15 @@ export function ValidationPage() {
   }
 
   function setFilter(key: string, value: string) {
+    setFilters({ [key]: value });
+  }
+  /** Any filter / range / order / rows-per-page change goes back to page 1. */
+  function setFilters(changes: Record<string, string>) {
     const next = new URLSearchParams(params);
-    if (value) next.set(key, value);
-    else next.delete(key);
+    for (const [key, value] of Object.entries(changes)) {
+      if (value) next.set(key, value);
+      else next.delete(key);
+    }
     next.delete('page');
     setParams(next);
   }
@@ -147,6 +154,8 @@ export function ValidationPage() {
           </div>
         </div>
         <ActiveFilters applied={applied} filters={filters} onClear={(k) => setFilter(k, '')} onReset={() => setParams({})} />
+        <ListSummary page={findings.data} noun="findings" unit="finding" />
+        <WindowFilter value={win} label="Finding #" onApply={(w) => setFilters(windowChanges(keys, w))} />
         <QueryState query={findings} context="Loading findings">
           {(data) =>
             data.items.length === 0 ? (
@@ -156,6 +165,7 @@ export function ValidationPage() {
                 <table className="table">
                   <thead>
                     <tr>
+                      <th className="num">Finding</th>
                       {COLUMNS.map((c) => (
                         <th key={c} className={filteredColumns.has(c) ? 'th-filtered' : undefined} title={filteredColumns.has(c) ? 'Filtered' : undefined}>
                           {c}
@@ -167,6 +177,7 @@ export function ValidationPage() {
                   <tbody>
                     {data.items.map((f) => (
                       <tr key={f.id} className={f.resolved ? 'inactive' : ''}>
+                        <td className="num muted">#{f.id}</td>
                         <td className={filteredColumns.has('Severity') ? 'td-filtered' : undefined}>
                           <Badge value={f.severity} />
                           {f.resolved && <Badge tone="muted">resolved</Badge>}
@@ -206,6 +217,8 @@ export function ValidationPage() {
                     next.set('page', String(p));
                     setParams(next);
                   }}
+                  onSize={(n) => setFilters({ [keys.size]: String(n) })}
+                  idOf={(f) => `#${f.id}`}
                 />
               </>
             )

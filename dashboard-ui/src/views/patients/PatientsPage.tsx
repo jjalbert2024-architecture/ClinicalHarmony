@@ -3,7 +3,7 @@ import { useState, type FormEvent } from 'react';
 import { Link, useSearchParams } from 'react-router';
 import type { MasterSummary, Page } from '../../api/types';
 import { useApi } from '../../app/context';
-import { Badge, Empty, PageHeader, Pager, QueryState } from '../../components/common';
+import { Badge, Empty, PageHeader, Pager, PERSON_ORDERS, QueryState, readWindow, WindowFilter, windowChanges, windowParams, ListSummary } from '../../components/common';
 import { fmtDate, fmtScore, fullName } from '../../format';
 
 export function PatientsPage() {
@@ -14,11 +14,16 @@ export function PatientsPage() {
   const status = params.get('status') ?? '';
   const includeMerged = params.get('includeMerged') === 'true';
   const page = Number(params.get('page') ?? '0');
+  const { window: win, size, keys } = readWindow(params, '', 25);
 
   const query = useQuery({
-    queryKey: ['patients', q, dob, status, includeMerged, page],
+    queryKey: ['patients', q, dob, status, includeMerged, win, size, page],
     queryFn: ({ signal }) =>
-      api.get<Page<MasterSummary>>('/patients', { q, dob, status, includeMerged: includeMerged || undefined, page, size: 25 }, signal),
+      api.get<Page<MasterSummary>>(
+        '/patients',
+        { q, dob, status, includeMerged: includeMerged || undefined, ...windowParams(win), page, size },
+        signal,
+      ),
     placeholderData: keepPreviousData,
   });
 
@@ -30,11 +35,26 @@ export function PatientsPage() {
     if (draft.dob) next.set('dob', draft.dob);
     if (draft.status) next.set('status', draft.status);
     if (draft.includeMerged) next.set('includeMerged', 'true');
+    // a new search keeps the list's range, order and rows per page
+    for (const key of Object.values(keys)) {
+      const value = params.get(key);
+      if (value) next.set(key, value);
+    }
     setParams(next);
   }
   function goPage(p: number) {
     const next = new URLSearchParams(params);
     next.set('page', String(p));
+    setParams(next);
+  }
+  /** Range / order / rows per page: back to page 1. */
+  function setWindow(changes: Record<string, string>) {
+    const next = new URLSearchParams(params);
+    for (const [key, value] of Object.entries(changes)) {
+      if (value) next.set(key, value);
+      else next.delete(key);
+    }
+    next.delete('page');
     setParams(next);
   }
 
@@ -72,6 +92,8 @@ export function PatientsPage() {
         </button>
       </form>
       <section className="card">
+        <ListSummary page={query.data} noun="masters" unit="master" />
+        <WindowFilter value={win} label="Master #" orders={PERSON_ORDERS} onApply={(w) => setWindow(windowChanges(keys, w))} />
         <QueryState query={query} context="Searching patients">
           {(data) =>
             data.items.length === 0 ? (
@@ -113,7 +135,7 @@ export function PatientsPage() {
                     ))}
                   </tbody>
                 </table>
-                <Pager page={data} onPage={goPage} />
+                <Pager page={data} onPage={goPage} onSize={(n) => setWindow({ [keys.size]: String(n) })} idOf={(m) => `#${m.id}`} />
               </>
             )
           }

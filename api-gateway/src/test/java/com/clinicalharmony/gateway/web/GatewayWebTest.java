@@ -8,7 +8,9 @@ import com.clinicalharmony.gateway.downstream.DownstreamClient;
 import com.clinicalharmony.gateway.downstream.DownstreamException;
 import com.clinicalharmony.gateway.downstream.ServiceHealthService;
 import com.clinicalharmony.gateway.read.FhirQueries;
+import com.clinicalharmony.gateway.read.InvalidFilterException;
 import com.clinicalharmony.gateway.read.LineageQueries;
+import com.clinicalharmony.gateway.read.ListWindow;
 import com.clinicalharmony.gateway.read.NotFoundException;
 import com.clinicalharmony.gateway.read.OntologyQueries;
 import com.clinicalharmony.gateway.read.Page;
@@ -322,11 +324,11 @@ class GatewayWebTest {
 
     @Test
     void bronzeListPassesTheHl7TypeFilterAndRejectsMalformedOnes() throws Exception {
-        when(lineage.bronzeMessages(any(), any(), any(), any(), any(), anyInt(), anyInt())).thenReturn(Page.of(List.of(), 0, 15, 0));
+        when(lineage.bronzeMessages(any(), any(), any(), any(), any(), any(), anyInt(), anyInt())).thenReturn(Page.of(List.of(), 0, 15, 0));
         mvc.perform(get("/api/v1/bronze/messages?messageType=HL7V2&hl7Type=ORU&size=15")
                         .header(HttpHeaders.AUTHORIZATION, bearer(TestJwts.viewer())))
                 .andExpect(status().isOk());
-        verify(lineage).bronzeMessages(null, "HL7V2", "ORU", null, null, 0, 15);
+        verify(lineage).bronzeMessages(null, "HL7V2", "ORU", null, null, ListWindow.NONE, 0, 15);
         for (String bad : List.of("oru", "ORU%5ER01", "ORUX", "'--")) {
             mvc.perform(get("/api/v1/bronze/messages?hl7Type=" + bad).header(HttpHeaders.AUTHORIZATION, bearer(TestJwts.viewer())))
                     .andExpect(status().isBadRequest());
@@ -335,12 +337,33 @@ class GatewayWebTest {
     }
 
     @Test
+    void everyPagedListTakesANumberRangeAndAnOrder() throws Exception {
+        when(lineage.bronzeMessages(any(), any(), any(), any(), any(), any(), anyInt(), anyInt())).thenReturn(Page.of(List.of(), 0, 50, 0));
+        when(silver.patients(any(), any(), any(), any(), anyInt(), anyInt())).thenReturn(Page.of(List.of(), 0, 50, 0));
+        when(patients.search(any(), any(), any(), anyBoolean(), any(), anyInt(), anyInt())).thenReturn(Page.of(List.of(), 0, 50, 0));
+        String viewer = bearer(TestJwts.viewer());
+        mvc.perform(get("/api/v1/bronze/messages?idFrom=990&idTo=1003&order=oldest&size=50").header(HttpHeaders.AUTHORIZATION, viewer))
+                .andExpect(status().isOk());
+        verify(lineage).bronzeMessages(null, null, null, null, null, new ListWindow(990L, 1003L, "oldest"), 0, 50);
+        // a reversed range is read the way it was meant
+        mvc.perform(get("/api/v1/silver/patients?idFrom=900&idTo=800").header(HttpHeaders.AUTHORIZATION, viewer)).andExpect(status().isOk());
+        verify(silver).patients(null, null, null, new ListWindow(800L, 900L, null), 0, 25);
+        // people also sort by name; time-ordered lists don't
+        mvc.perform(get("/api/v1/patients?order=name&idFrom=40").header(HttpHeaders.AUTHORIZATION, viewer)).andExpect(status().isOk());
+        verify(patients).search(null, null, null, false, new ListWindow(40L, null, "name"), 0, 25);
+        for (String bad : List.of("order=name", "order=random", "idFrom=0", "idTo=-5", "idFrom=abc")) {
+            mvc.perform(get("/api/v1/bronze/messages?" + bad).header(HttpHeaders.AUTHORIZATION, viewer))
+                    .andExpect(status().isBadRequest());
+        }
+    }
+
+    @Test
     void bronzeListAcceptsTheCcdaFormatAndRejectsUnknownOnes() throws Exception {
-        when(lineage.bronzeMessages(any(), any(), any(), any(), any(), anyInt(), anyInt())).thenReturn(Page.of(List.of(), 0, 15, 0));
+        when(lineage.bronzeMessages(any(), any(), any(), any(), any(), any(), anyInt(), anyInt())).thenReturn(Page.of(List.of(), 0, 15, 0));
         mvc.perform(get("/api/v1/bronze/messages?messageType=CCDA_XML&size=15")
                         .header(HttpHeaders.AUTHORIZATION, bearer(TestJwts.viewer())))
                 .andExpect(status().isOk());
-        verify(lineage).bronzeMessages(null, "CCDA_XML", null, null, null, 0, 15);
+        verify(lineage).bronzeMessages(null, "CCDA_XML", null, null, null, ListWindow.NONE, 0, 15);
         mvc.perform(get("/api/v1/bronze/messages?messageType=PDF").header(HttpHeaders.AUTHORIZATION, bearer(TestJwts.viewer())))
                 .andExpect(status().isBadRequest());
     }
@@ -372,11 +395,11 @@ class GatewayWebTest {
 
     @Test
     void silverEndpointsValidateTheirInputs() throws Exception {
-        when(silver.patients(any(), any(), any(), anyInt(), anyInt())).thenReturn(Page.of(List.of(), 0, 25, 0));
+        when(silver.patients(any(), any(), any(), any(), anyInt(), anyInt())).thenReturn(Page.of(List.of(), 0, 25, 0));
         mvc.perform(get("/api/v1/silver/patients?q=NC700343&sourceSystem=NORTH_CLINIC&validationStatus=NOT_TRACKED")
                         .header(HttpHeaders.AUTHORIZATION, bearer(TestJwts.viewer())))
                 .andExpect(status().isOk());
-        verify(silver).patients("NC700343", "NORTH_CLINIC", "NOT_TRACKED", 0, 25);
+        verify(silver).patients("NC700343", "NORTH_CLINIC", "NOT_TRACKED", ListWindow.NONE, 0, 25);
         mvc.perform(get("/api/v1/silver/patients?validationStatus=MAYBE").header(HttpHeaders.AUTHORIZATION, bearer(TestJwts.viewer())))
                 .andExpect(status().isBadRequest());
         mvc.perform(get("/api/v1/silver/rows/pg_user/1").header(HttpHeaders.AUTHORIZATION, bearer(TestJwts.viewer())))
@@ -394,6 +417,27 @@ class GatewayWebTest {
                 .andExpect(jsonPath("$.totalPages").value(0));
         verify(fhir).search(new FhirQueries.Filter("Patient", null, false, null, null, null, null, null),
                 "updated", true, 0, 25);
+    }
+
+    @Test
+    void attributeFiltersArePassedThroughAndUnknownOnesAre400() throws Exception {
+        when(fhir.search(any(), any(), anyBoolean(), anyInt(), anyInt())).thenReturn(Page.of(List.of(), 0, 25, 0));
+        mvc.perform(get("/api/v1/fhir/resources?type=Patient&attr.gender=female&attr.birthDateFrom=1970")
+                        .header(HttpHeaders.AUTHORIZATION, bearer(TestJwts.viewer())))
+                .andExpect(status().isOk());
+        verify(fhir).search(new FhirQueries.Filter("Patient", null, null, null, null, null, null, null,
+                Map.of("gender", "female", "birthDateFrom", "1970")), "updated", true, 0, 25);
+
+        when(fhir.search(any(), any(), anyBoolean(), anyInt(), anyInt()))
+                .thenThrow(new InvalidFilterException("Unknown attribute filter attr.shoeSize for Patient"));
+        mvc.perform(get("/api/v1/fhir/resources?type=Patient&attr.shoeSize=9")
+                        .header(HttpHeaders.AUTHORIZATION, bearer(TestJwts.viewer())))
+                .andExpect(status().isBadRequest())
+                .andExpect(jsonPath("$.type").value("urn:clinicalharmony:problem:invalid-request"))
+                .andExpect(jsonPath("$.detail").value("Unknown attribute filter attr.shoeSize for Patient"));
+        mvc.perform(get("/api/v1/fhir/attributes?type=patient;drop")
+                        .header(HttpHeaders.AUTHORIZATION, bearer(TestJwts.viewer())))
+                .andExpect(status().isBadRequest());
     }
 
     @Test

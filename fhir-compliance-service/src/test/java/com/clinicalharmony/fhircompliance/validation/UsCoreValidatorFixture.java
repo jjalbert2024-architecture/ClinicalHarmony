@@ -16,6 +16,7 @@ import java.io.UncheckedIOException;
 public final class UsCoreValidatorFixture {
 
     private static UsCoreFhirValidator instance;
+    private static ca.uhn.fhir.context.support.IValidationSupport support;
 
     private UsCoreValidatorFixture() {
     }
@@ -25,15 +26,20 @@ public final class UsCoreValidatorFixture {
             try {
                 FhirValidationConfig config = new FhirValidationConfig();
                 FhirContext ctx = config.fhirContext();
-                instance = new UsCoreFhirValidator(ctx,
-                        config.fhirValidator(ctx,
-                                config.usCoreValidationSupport(ctx, FhirValidationConfig.DEFAULT_IG_PACKAGES)),
-                        new SuggestedFixAdvisor(), new ObjectMapper());
+                support = config.usCoreValidationSupport(ctx, FhirValidationConfig.DEFAULT_IG_PACKAGES);
+                instance = new UsCoreFhirValidator(ctx, config.fhirValidator(ctx, support),
+                        new SuggestedFixAdvisor(), new ObjectMapper(), new ProfileChecklistBuilder(support));
             } catch (IOException e) {
                 throw new UncheckedIOException(e);
             }
         }
         return instance;
+    }
+
+    /** The same validation-support chain the shared validator uses (IG packages already loaded). */
+    public static synchronized ca.uhn.fhir.context.support.IValidationSupport validationSupport() {
+        validator();
+        return support;
     }
 
     public static FhirContext fhirContext() {

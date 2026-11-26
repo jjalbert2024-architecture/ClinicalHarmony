@@ -48,7 +48,7 @@ class FhirControllerTest {
         when(validator.validateJson(anyString())).thenReturn(new FhirValidationOutcome("Patient", null,
                 "http://hl7.org/fhir/us/core/StructureDefinition/us-core-patient", false, 1, 0,
                 List.of(new FhirViolation("ERROR", "Patient.gender", "Patient.gender: minimum required = 1",
-                        "Validation_VAL_Profile_Minimum", "Add a 'gender' element"))));
+                        "Validation_VAL_Profile_Minimum", "Add a 'gender' element")), List.of()));
 
         mockMvc.perform(post("/api/fhir/validate").contentType(MediaType.APPLICATION_JSON)
                         .content("{\"resourceType\":\"Patient\"}"))
@@ -63,7 +63,7 @@ class FhirControllerTest {
     @Test
     void validateAcceptsFhirJsonContentType() throws Exception {
         when(validator.validateJson(anyString())).thenReturn(
-                new FhirValidationOutcome("Patient", "p1", "x", true, 0, 0, List.of()));
+                new FhirValidationOutcome("Patient", "p1", "x", true, 0, 0, List.of(), List.of()));
 
         mockMvc.perform(post("/api/fhir/validate").contentType("application/fhir+json")
                         .content("{\"resourceType\":\"Patient\"}"))
@@ -91,7 +91,7 @@ class FhirControllerTest {
     @Test
     void responseEchoesCallerCorrelationId() throws Exception {
         when(validator.validateJson(anyString())).thenReturn(
-                new FhirValidationOutcome("Patient", "p1", "x", true, 0, 0, List.of()));
+                new FhirValidationOutcome("Patient", "p1", "x", true, 0, 0, List.of(), List.of()));
 
         mockMvc.perform(post("/api/fhir/validate").contentType(MediaType.APPLICATION_JSON)
                         .header("X-Correlation-Id", "trace-abc-123").content("{\"resourceType\":\"Patient\"}"))

@@ -8,6 +8,7 @@ import org.springframework.stereotype.Repository;
 
 import java.time.OffsetDateTime;
 import java.util.List;
+import java.util.Map;
 
 /**
  * FHIR Viewer: every Gold resource ({@code gold.fhir_resources}, all types — not just the CMS-0057
@@ -29,11 +30,14 @@ public class FhirQueries {
      * @param sourceSystem    source system of the Silver patient the resource is about (its
      *                        {@code Patient/silver-patient-N} reference); null when it isn't about one
      * @param sourcePatientId that patient's id in its source system (the MRN for the HL7 feeds)
+     * @param attributes      when the list is filtered to one type: that type's attribute values for this row, in
+     *                        catalog order (the same expressions the attr.* filters match, so a filter proves itself
+     *                        in the list); dates cut to the day, flags yes / no, absent elements left out. Else empty.
      */
     public record ResourceSummary(long id, String resourceType, String fhirId, Long masterPatientId,
                                   boolean usCoreCompliant, String complianceStatus, Integer errorCount,
                                   Integer warningCount, String profile, OffsetDateTime updatedAt, String origin,
-                                  String sourceSystem, String sourcePatientId) {
+                                  String sourceSystem, String sourcePatientId, Map<String, String> attributes) {
     }
 
     /** A source system with Gold resources about its patients — the FHIR Viewer's source dropdown. */
@@ -157,11 +161,40 @@ public class FhirQueries {
 
     /** Every filter is optional; values are bound, never concatenated. */
     public record Filter(String type, Long masterPatientId, Boolean compliant, String q, String patient, String origin,
-                         String sourceSystem, String code) {
+                         String sourceSystem, String code, Map<String, String> attributes) {
+
+        /** Without per-type attribute filters. */
+        public Filter(String type, Long masterPatientId, Boolean compliant, String q, String patient, String origin,
+                      String sourceSystem, String code) {
+            this(type, masterPatientId, compliant, q, patient, origin, sourceSystem, code, Map.of());
+        }
 
         public static Filter none() {
             return new Filter(null, null, null, null, null, null, null, null);
         }
+    }
+
+    /** One value of a CHOICE attribute and how many resources of the type have it. */
+    public record AttributeValue(String value, long count) {
+    }
+
+    /** An attribute filter offered for a type; {@code values} only for CHOICE (what our Gold data actually holds). */
+    public record AttributeFacet(String key, String label, String path, FhirAttributes.Kind kind,
+                                 List<AttributeValue> values) {
+    }
+
+    /** The per-type filters of the FHIR Viewer, with the values present in Gold (most common first). */
+    public List<AttributeFacet> attributes(String type) {
+        List<AttributeFacet> facets = new java.util.ArrayList<>();
+        for (FhirAttributes.Attribute a : FhirAttributes.of(type)) {
+            List<AttributeValue> values = a.kind() != FhirAttributes.Kind.CHOICE ? List.of() : jdbc.query(
+                    "SELECT " + a.sql() + " AS v, count(*) AS n FROM gold.fhir_resources f WHERE f.resource_type = :type"
+                            + " AND " + a.sql() + " IS NOT NULL GROUP BY 1 ORDER BY 2 DESC, 1 LIMIT 50",
+                    new MapSqlParameterSource("type", type),
+                    (rs, i) -> new AttributeValue(rs.getString("v"), rs.getLong("n")));
+            facets.add(new AttributeFacet(a.key(), a.label(), a.path(), a.kind(), values));
+        }
+        return facets;
     }
 
     public Page<ResourceSummary> search(Filter filter, String sort, boolean descending, int page, int size) {
@@ -176,6 +209,9 @@ public class FhirQueries {
                 .and(Sql.has(filter.origin()), ORIGIN + " = :origin", "origin", filter.origin())
                 .and(Sql.has(filter.sourceSystem()), "sp.source_system = :sourceSystem", "sourceSystem", filter.sourceSystem())
                 .and(code != null, CODE_MATCH, "code", code);
+        for (FhirAttributes.Condition c : FhirAttributes.parse(filter.type(), filter.attributes())) {
+            where.and(true, c.predicate(), c.param(), c.value());
+        }
         if (patient != null) {
             where.params.addValue("patientLike", Sql.contains(patient));
         }
@@ -184,8 +220,10 @@ public class FhirQueries {
         }
         Long total = jdbc.queryForObject("SELECT count(*)" + FROM + where.sql(), where.params, Long.class);
         where.params.addValue("limit", size).addValue("offset", (long) page * size);
-        List<ResourceSummary> items = jdbc.query("SELECT " + SUMMARY_COLUMNS + FROM + where.sql()
-                + " ORDER BY " + orderBy(sort, descending) + " LIMIT :limit OFFSET :offset", where.params, (rs, i) -> summary(rs));
+        List<FhirAttributes.Attribute> shown = FhirAttributes.of(filter.type());
+        List<ResourceSummary> items = jdbc.query("SELECT " + SUMMARY_COLUMNS + attributeColumns(shown) + FROM + where.sql()
+                        + " ORDER BY " + orderBy(sort, descending) + " LIMIT :limit OFFSET :offset",
+                where.params, (rs, i) -> summary(rs, shown));
         return Page.of(items, page, size, total == null ? 0 : total);
     }
 
@@ -193,7 +231,7 @@ public class FhirQueries {
         List<ResourceDetail> found = jdbc.query("SELECT " + SUMMARY_COLUMNS + ", f.resource_json, f.compliance_notes"
                         + FROM + " WHERE f.resource_type = :type AND f.fhir_id = :fhirId",
                 new MapSqlParameterSource("type", type).addValue("fhirId", fhirId),
-                (rs, i) -> new ResourceDetail(summary(rs), Sql.json(objectMapper, rs, "resource_json"),
+                (rs, i) -> new ResourceDetail(summary(rs, List.of()), Sql.json(objectMapper, rs, "resource_json"),
                         Sql.json(objectMapper, rs, "compliance_notes"), List.of()));
         if (found.isEmpty()) {
             throw new NotFoundException("No Gold FHIR resource " + type + "/" + fhirId);
@@ -207,11 +245,34 @@ public class FhirQueries {
         return Sql.has(s) ? s.trim() : null;
     }
 
-    private static ResourceSummary summary(java.sql.ResultSet rs) throws java.sql.SQLException {
+    /** One text column {@code attr_<n>} per attribute: the value as the list shows it. */
+    private static String attributeColumns(List<FhirAttributes.Attribute> attributes) {
+        StringBuilder sql = new StringBuilder();
+        for (int n = 0; n < attributes.size(); n++) {
+            FhirAttributes.Attribute a = attributes.get(n);
+            String value = switch (a.kind()) {
+                case FLAG -> "CASE WHEN coalesce(" + a.sql() + ", false) THEN 'yes' ELSE 'no' END";
+                case DATE -> "left(" + a.sql() + ", 10)";
+                default -> a.sql();
+            };
+            sql.append(", ").append(value).append(" AS attr_").append(n);
+        }
+        return sql.toString();
+    }
+
+    private static ResourceSummary summary(java.sql.ResultSet rs, List<FhirAttributes.Attribute> attributes)
+            throws java.sql.SQLException {
+        Map<String, String> values = new java.util.LinkedHashMap<>();
+        for (int n = 0; n < attributes.size(); n++) {
+            String value = rs.getString("attr_" + n);
+            if (value != null) {
+                values.put(attributes.get(n).key(), value);
+            }
+        }
         return new ResourceSummary(rs.getLong("id"), rs.getString("resource_type"), rs.getString("fhir_id"),
                 Sql.longOrNull(rs, "master_patient_id"), rs.getBoolean("is_us_core_compliant"),
                 rs.getString("compliance_status"), Sql.intOrNull(rs, "error_count"),
                 Sql.intOrNull(rs, "warning_count"), rs.getString("profile"), Sql.ts(rs, "updated_at"),
-                rs.getString("origin"), rs.getString("source_system"), rs.getString("source_patient_id"));
+                rs.getString("origin"), rs.getString("source_system"), rs.getString("source_patient_id"), values);
     }
 }

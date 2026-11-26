@@ -58,11 +58,94 @@
         "message": "Condition.code: minimum required = 1, but only found 0 (from http://hl7.org/fhir/us/core/StructureDefinition/us-core-condition-problems-health-concerns|6.1.0)",
         "location": "Condition.code",
         "severity": "ERROR",
-        "suggestedFix": "Add a 'code' element (Condition.code) \u2014 US Core requires it."
+        "suggestedFix": "Add a 'code' element (Condition.code) — US Core requires it."
       }
     ],
     "validatedAt": "2026-11-13T07:42:58.745189464Z",
-    "warningCount": 0
+    "warningCount": 0,
+    "checklist": [
+      {
+        "path": "Condition.extension:assertedDate",
+        "label": "assertedDate (extension)",
+        "depth": 1,
+        "required": false,
+        "mustSupport": true,
+        "uscdi": true,
+        "present": false
+      },
+      {
+        "path": "Condition.clinicalStatus",
+        "label": "clinicalStatus",
+        "depth": 1,
+        "required": false,
+        "mustSupport": true,
+        "uscdi": true,
+        "present": true
+      },
+      {
+        "path": "Condition.verificationStatus",
+        "label": "verificationStatus",
+        "depth": 1,
+        "required": false,
+        "mustSupport": true,
+        "uscdi": true,
+        "present": false
+      },
+      {
+        "path": "Condition.category",
+        "label": "category",
+        "depth": 1,
+        "required": true,
+        "mustSupport": true,
+        "uscdi": true,
+        "present": true
+      },
+      {
+        "path": "Condition.code",
+        "label": "code",
+        "depth": 1,
+        "required": true,
+        "mustSupport": true,
+        "uscdi": true,
+        "present": false
+      },
+      {
+        "path": "Condition.subject",
+        "label": "subject",
+        "depth": 1,
+        "required": true,
+        "mustSupport": true,
+        "uscdi": true,
+        "present": true
+      },
+      {
+        "path": "Condition.onset[x]",
+        "label": "onset[x]",
+        "depth": 1,
+        "required": false,
+        "mustSupport": true,
+        "uscdi": true,
+        "present": false
+      },
+      {
+        "path": "Condition.abatement[x]",
+        "label": "abatement[x]",
+        "depth": 1,
+        "required": false,
+        "mustSupport": true,
+        "uscdi": true,
+        "present": false
+      },
+      {
+        "path": "Condition.recordedDate",
+        "label": "recordedDate",
+        "depth": 1,
+        "required": false,
+        "mustSupport": true,
+        "uscdi": true,
+        "present": true
+      }
+    ]
   },
   "lineage": [
     {

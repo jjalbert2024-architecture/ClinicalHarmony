@@ -912,13 +912,20 @@ schema **`pmi`** (`match_runs`, `match_candidates` with a partial unique index o
   patient-index (`PmiMatcherIntegrationTest`) via `@ServiceConnection`. The topic the service consumes but doesn't own
   is declared by a `@TestConfiguration` `NewTopic` in the test.
 - **UI tests** (dashboard-ui, `test/*.test.ts(x)`): Vitest + jsdom + Testing Library against an MSW gateway stub serving real captured `/api/v1` responses; run in `node:24-alpine` via `docker run` (no host Node).
-- **Black-box smoke test** (`scripts/smoke-test.sh`): once the stack is up (`docker-compose up -d`), this hits all four implemented services' REST endpoints over HTTP and asserts on real responses — accept/quarantine outcomes, ontology validation results, all 7 rule-engine evaluations and live rule-toggle behavior, US Core structural validation (including a `requiredAnyOf` choice-type check), and FHIR generation round-tripped back through validation to cross-check the generator against the validator. Fixture payloads live in `scripts/fixtures/`. This replaces the earlier "verified manually" note — it's now a repeatable, scriptable check (451 assertions as of PR #20 — 9d follow-ups: claim lifecycle, dashboard ↔ Splunk links, legacy rows closed, RDE check PROCESSED-only; 444 as of Phase 9e — section 24 = Splunk: HEC, app, indexes, dashboards, alerts provisioned, logs from all 8 services, a correlation-id trace, metrics + consumer lag + health checks, and each of the three alerts made to fire (~15 min per run); 423 as of 9d part 2 — section 23 = the full generator: every feed PROCESSED into Silver and Gold, cross-feed duplicates at their expected PMI outcome, planted defects as open findings, backlog sweeper, --reset, --trickle; sections 18/20 run the generator with `--feeds hl7`; section 22 = REST intake over Kafka for all four formats, run-unique payloads; sections 1–3 expect 202/422 — section 20 = Gold over Kafka: a random seed guaranteed to hold one IDENTICAL and one FUZZY cross-facility duplicate, every Silver patient built into Gold with no manual build, one resource per Silver row, AllergyIntolerance compliant, lineage from the raw HL7 via Kafka, one gold event per silver event (causation + correlation), the debounced pmi-matcher run, identical pair auto-merged / fuzzy pair PENDING at 0.6190 (also via the gateway), a broken event → DLT, log events, Kafbat groups; section 18 runs the generator with a random seed over MLLP and checks Bronze/outbox/idempotency/Kafbat, expecting valid rows PROCESSED since 9b; section 19 = Silver: rows mapped, PID-3.4 patient keying, one silver event per row, a hand-sent allergy + conflicting order flagged against real Silver ids, an ADT without DOB → FAILED, both via the gateway; it fetches a Bearer token from the compose Keycloak for fhir-compliance-service and patient-index-service calls; section 15 = PMI, which inserts fresh random synthetic patients each run so it stays rerunnable; section 16 = api-gateway, with real dana/vic user tokens from the dev direct-grant client; section 17 = dashboard-ui's nginx: SPA fallback, caching, CSP/headers, runtime config, Keycloak accepting the dashboard's PKCE request and refusing it without PKCE or with a foreign redirect, CORS). Gold-layer checks with no HTTP surface yet (lineage, masters) use `check_sql` via `docker exec` into `clinicalharmony-postgres`.
+- **Black-box smoke test** (`scripts/smoke-test.sh`): once the stack is up (`docker-compose up -d`), this hits all four implemented services' REST endpoints over HTTP and asserts on real responses — accept/quarantine outcomes, ontology validation results, all 7 rule-engine evaluations and live rule-toggle behavior, US Core structural validation (including a `requiredAnyOf` choice-type check), and FHIR generation round-tripped back through validation to cross-check the generator against the validator. Fixture payloads live in `scripts/fixtures/`. This replaces the earlier "verified manually" note — it's now a repeatable, scriptable check (474 assertions as of the Phase 10 list controls, section 16 +7; 467 before — section 20 +16: checklist 2, FHIR Viewer per-type filters / lab flags / allergies 14; 453 after the checklist — section 20 +2 for the "why compliant" checklist; the legacy-REST-rows check in section 23 now also holds on a wiped DB with 0 legacy rows (it failed once after the 2026-11-24 `down -v`); clean run 2026-11-24: 452 + fix, then 453/453; 451 assertions as of PR #20 — 9d follow-ups: claim lifecycle, dashboard ↔ Splunk links, legacy rows closed, RDE check PROCESSED-only; 444 as of Phase 9e — section 24 = Splunk: HEC, app, indexes, dashboards, alerts provisioned, logs from all 8 services, a correlation-id trace, metrics + consumer lag + health checks, and each of the three alerts made to fire (~15 min per run); 423 as of 9d part 2 — section 23 = the full generator: every feed PROCESSED into Silver and Gold, cross-feed duplicates at their expected PMI outcome, planted defects as open findings, backlog sweeper, --reset, --trickle; sections 18/20 run the generator with `--feeds hl7`; section 22 = REST intake over Kafka for all four formats, run-unique payloads; sections 1–3 expect 202/422 — section 20 = Gold over Kafka: a random seed guaranteed to hold one IDENTICAL and one FUZZY cross-facility duplicate, every Silver patient built into Gold with no manual build, one resource per Silver row, AllergyIntolerance compliant, lineage from the raw HL7 via Kafka, one gold event per silver event (causation + correlation), the debounced pmi-matcher run, identical pair auto-merged / fuzzy pair PENDING at 0.6190 (also via the gateway), a broken event → DLT, log events, Kafbat groups; section 18 runs the generator with a random seed over MLLP and checks Bronze/outbox/idempotency/Kafbat, expecting valid rows PROCESSED since 9b; section 19 = Silver: rows mapped, PID-3.4 patient keying, one silver event per row, a hand-sent allergy + conflicting order flagged against real Silver ids, an ADT without DOB → FAILED, both via the gateway; it fetches a Bearer token from the compose Keycloak for fhir-compliance-service and patient-index-service calls; section 15 = PMI, which inserts fresh random synthetic patients each run so it stays rerunnable; section 16 = api-gateway, with real dana/vic user tokens from the dev direct-grant client; section 17 = dashboard-ui's nginx: SPA fallback, caching, CSP/headers, runtime config, Keycloak accepting the dashboard's PKCE request and refusing it without PKCE or with a foreign redirect, CORS). Gold-layer checks with no HTTP surface yet (lineage, masters) use `check_sql` via `docker exec` into `clinicalharmony-postgres`.
 
 ## Local Docker environment
 
 **Port conflicts**: an unrelated "medistream" project auto-starts containers on ports 5432, 3306, 9092, 2181, and 8083 whenever Docker Desktop restarts. Do not stop or reconfigure those containers without asking (on 2026-11-14 the user approved `docker stop` of all six medistream containers to run the stack — ask again each time). ClinicalHarmony's Kafka is on host 19092 (KRaft, no Zookeeper) to avoid 9092/2181, but Postgres 5432 and rules-engine 8083 still collide. Use a throwaway `docker network create` + `docker run` for isolated local verification rather than `docker-compose.override.yml` (Compose merges `ports:` by concatenation, so overrides can't replace conflicting mappings).
 
 **Apple Silicon image constraint**: `eclipse-temurin:*-alpine` tags have no arm64 manifest and will fail to pull on this machine. Always use the Debian-based tag (e.g. `eclipse-temurin:17-jre`) for all service Dockerfiles. This applies to Phase 3 onward, not just ingestion-service. (The `node:*-alpine` and `nginx:*-alpine` images used by dashboard-ui DO have arm64 manifests — the problem is specific to eclipse-temurin.)
+
+**Teardown with the Splunk log driver (found 2026-11-24)**: every service logs through Docker's `splunk` driver. If
+Splunk stops BEFORE the services (as `docker compose down` may do), a service with buffered logs can hang on stop while
+its driver retries the flush — `docker stop`, `docker kill` and `docker logs` all block, and the daemon can wedge
+(the clean-run wipe needed a Docker Desktop restart). Stop the services first, Splunk last:
+`docker compose stop $(docker compose config --services | grep -v -e splunk -e otel-collector)` then `docker compose down
+[-v]`. Remember `down -v` removes ALL three volumes: postgres-data, kafka-data AND splunk-var (Splunk's indexed history).
 
 **Network desync after multiple daemon restarts**: after several `open -a Docker` restarts in one session, a container's `HostConfig.NetworkMode` can say it's on `clinicalharmony_clinicalharmony-net` while `NetworkSettings.Networks` is actually empty (`{}`) — other containers then get `UnknownHostException` resolving it by service name, even though the container itself is `Up`/healthy. `docker network connect` and `docker restart` on just the affected container do **not** reliably fix this. The reliable fix: `docker compose down` (no `-v`, volume/data untouched) then `docker compose up -d` again — cheap since it doesn't touch the Postgres volume, and fully resets the network.
 
@@ -950,9 +957,9 @@ and 9e merged as PR #20 from branch `phase-9d-full-generator`, smoke 451/451; Ph
 - **Phase 7** (done, merged as PR #13): api-gateway — see its section above.
 - **Phase 8** (done, merged as PR #14): dashboard-ui — see its section above.
 - **Phase 9** (done — 9a–9c PRs #15/#17/#18, 9d + 9e PR #20; planned 2026-11-13): event-driven pipeline on Kafka + data-generator, one layer
-  at a time, each its own branch/PR (details in the README roadmap):
+  at a time, each its own branch/PR (details in `docs/build-history.md`):
   - Full per-layer design (topics, consumer groups, writes, partition keys, idempotency, outbox, DLTs,
-    log events, metrics, done-when) is the README's "Phase 9 design: one layer at a time" table — keep
+    log events, metrics, done-when) is `docs/architecture/event-pipeline.md` — keep
     it and the code in sync. Topic naming `clinicalharmony.<layer>.<entity>.<event>`, `<topic>.dlt`.
   - **9a** (done, merged as PR #15 on 2026-11-16, branch `data-generator`)
     Bronze: generator v1 (host python3, 100 seeded HL7 over MLLP) → ingestion-service publishes
@@ -1047,5 +1054,73 @@ and 9e merged as PR #20 from branch `phase-9d-full-generator`, smoke 451/451; Ph
     `silver-transformer-service` on port 8087, group `silver-transformer`, package `com.clinicalharmony.silver`;
     rules-engine down → Silver still written with `silver.patients.validation_status = PENDING_VALIDATION`, and a
     `@Scheduled` sweeper in the transformer re-validates (~30 s) — no DLT for that case.
-- **Phase 10**: Polish, final Docker test, interview demo script, the draw.io diagrams listed in the
-  README's "Design diagrams (to draw)" section.
+- **Phase 10**: Polish, final Docker test, interview demo script, the draw.io diagrams listed in `docs/diagrams/README.md`.
+  - **Decisions (2026-11-24, all recommended)**: build the FHIR Viewer "why compliant" checklist (done, below); stay on
+    Boot 3.5.16 and write a Boot 4 upgrade-path note; IntelliJ uses system `/usr/bin/python3` 3.9.6, no venv.
+  - **README trimmed (2026-11-24)**: roadmap → `docs/build-history.md`, Phase 9 design → `docs/architecture/
+    event-pipeline.md`, curl examples → `docs/try-it.md`, diagram to-do → `docs/diagrams/README.md`; architecture is a
+    Mermaid stage-card diagram (GitHub renders it).
+  - **"Why compliant" checklist**: `validation/ProfileChecklistBuilder` reads the profile's snapshot from the SAME
+    validation-support chain (cached per profile) and lists depth-1 elements + their children that are required
+    (min ≥ 1), must-support, or an Additional USCDI Requirement (`uscdi-requirement` extension — US Core 6.1 race /
+    ethnicity / telecom are USCDI, NOT must-support), plus extension slices (by URL) and CodeableConcept pattern slices;
+    presence is evaluated on the raw JSON (`_element` counts). `FhirValidationOutcome.checklist` →
+    `compliance_notes.checklist` (also in `/api/fhir/validate`); gateway passes it through unchanged; UI
+    `views/fhir/Checklist.tsx` card "Why it is compliant" / "What it was checked for". Tests: fhir-compliance
+    `ProfileChecklistBuilderTest` (6, real US Core snapshots; fhir-compliance 283 total), UI 88; smoke section 20 +2; CHECKLIST row 54.
+  - **FHIR Viewer per-type filters** (user's request 2026-11-24, after testing the checklist): gateway
+    `read/FhirAttributes` = a FIXED catalog per resource type (Patient gender / birthDate / address state, city,
+    postalCode / has phone; Observation status / category / interpretation / abnormal / has referenceRange / effective;
+    Condition clinical + verification status / category / code system / onset; MedicationRequest status / intent /
+    authoredOn; AllergyIntolerance clinicalStatus / type / category / criticality; CMS types status or active), kinds
+    CHOICE (exact) / TEXT (contains) / DATE (`attr.<key>From/To`, `YYYY[-MM[-DD]]` prefix compare) / FLAG (yes|no); SQL
+    lives in the catalog, values are bound; unknown key / no type / bad date → `InvalidFilterException` → 400.
+    `GET /api/v1/fhir/attributes?type=` returns the catalog + CHOICE values present in Gold with counts;
+    `/fhir/resources` takes `attr.*`. UI `views/fhir/AttributeFilters.tsx`: a "<Type> attributes" row (dropdowns at
+    once, text/date boxes on Search), changing type drops `attr.*`. Left out on purpose (our sources never send them):
+    encounter, performer, generalPractitioner, maritalStatus, deceased, contact, race.
+    **Gap found + fixed**: Gold Observations had no `interpretation` / `referenceRange` although Silver holds OBX-8 /
+    OBX-7 (516 of 522 flagged) — `ObservationResourceBuilder` now maps both (v3 ObservationInterpretation for
+    N/H/L/HH/LL/A/AA, any other flag text-only; range in the result's UCUM unit), validator-clean. Resources built
+    earlier change only when their patient is rebuilt. Tests: fhir-compliance +2 (`ObservationResourceBuilderTest` 6),
+    gateway 67 (`FhirAttributesTest` 4, web +1, integration +1), UI 90 (fixture `fhir-attributes-patient.json` from the
+    live DB; the sort test no longer depends on test order); smoke section 20 +8 (461); CHECKLIST row 55.
+  - **Showing what the filters match** (user's follow-up 2026-11-24: "Criticality low → #346, but nothing on its page
+    says low"): the patient page read conditions / observations / medications only — allergies appeared nowhere and lab
+    flags weren't shown. Gateway: `MasterDetail.allergies` (every linked Silver allergy + its Gold AllergyIntolerance via
+    the FHIR_MAP lineage row: clinicalStatus, **criticality**, reaction severity; high first), `TimelineEvent`
+    `abnormalFlag` / `referenceLow` / `referenceHigh` (observations; `trim_scale` in SQL — `stripTrailingZeros()` would
+    serialize 200 as `2E+2`), FHIR list rows `attributes` = the type's catalog values (same SQL as the filters; dates to
+    the day, flags yes/no, absent left out; empty without a type). UI: **Allergies** card (criticality badge, "AL1-4 SV
+    (severe)" source severity, Bronze + FHIR links), flag badge + "ref low–high" on timeline labs, **Key attributes**
+    column (filtered values bold), US Core no-filter option renamed **Any**. Tests: gateway 68, UI 94; smoke section 20
+    +6 (467); CHECKLIST rows 56–57.
+  - **Gold masters list: MERGED filter** (found by the user in the CHECKLIST walk, row 31, 2026-11-26): the Data Lineage
+    Gold card's status dropdown lacked MERGED (the gateway already took it). Added it; `MasterSummary.mergedIntoMasterId`
+    (live merge's survivor, same rule as the detail page) → Sources reads "merged into #N"; "Any" = active masters only,
+    said in the card's note. Tests: gateway 69 (integration +1), UI 95. CHECKLIST rows 32–53 re-pointed at post-wipe ids.
+  - **FHIR Viewer type totals** (user's idea, same day): the Resource types list is a table Type · Compliant · Not ·
+    Total with a Total row (sums of `/fhir/resource-types`, = the Lineage Gold card's resource count); a non-zero Not is a
+    link to that type + `compliant=false`; a "Gold totals" line under the heading shows the selected type's (or all)
+    numbers. UI only. Tests: UI 96. CHECKLIST row 58.
+  - **Trace kind follows the layer card** (user, same day): `TraceCard` defaults its kind to the selected layer's
+    (bronze → bronzeMessageId, silver → silverPatientId, gold → masterPatientId) instead of always Silver; while a trace
+    is in the URL it keeps that trace's kind. Tests: UI 98 (2 new; 2 MRN tests now start on `?layer=silver`).
+  - **List controls on every paged list** (user, same day, finding Bronze #996 among 173 claims rows; rule: a list fix
+    goes to EVERY list): gateway `read/ListWindow(idFrom, idTo, order)` on `/bronze/messages`, `/silver/patients`,
+    `/patients` (orders `name|newest|oldest`, default name) and `/validation/findings` (`newest|oldest`): range on the
+    list's own id (reversed = swapped, `@Min(1)`), `timeOrder()` on its time column. Bronze `own` lateral: a FHIR /
+    claims / C-CDA row (no PID) shows + is searchable by the Silver patient it built (patient row, else a claim /
+    condition / observation it wrote). UI `components/common.tsx`: `Pager` (ids on screen via `idOf`, Rows 15/25/50/100,
+    First / Previous / go-to-page / Next / Last), `WindowFilter` (from / to / Apply / Clear range / Order),
+    `readWindow` / `windowKeys(prefix)` — URL keys `idFrom/idTo/order/size` (Bronze `bronzeFrom/…`); Validation findings
+    gain a Finding # column; FHIR Viewer gets rows per page + ids on screen only (text ids). Follow-up: `Page.minId/maxId`
+    (`Sql.count` = count + min + max of the list's id over the filtered result) → `ListSummary` under each list's title
+    next to its search box (one line with the title: "Bronze messages | Total # messages: 1,039 | Range: #1 (oldest) → #1148 (newest)";
+    ids have gaps — ON CONFLICT DO NOTHING still burns a sequence value — so count < span; on-screen ids stay in the pager); newest / oldest = ORDER BY the list's own id (`ListWindow.idOrder`), not a time column — Bronze rows from
+    parallel partitions were received out of number order, so a page read #1141, #1117, #1148 … (user, 2026-11-26); search boxes `.search-box`
+    (min 300 px, whole hint visible); a `#996` search = message / Silver id 996. UI 107. Tests: gateway 71
+    (web +1, integration +1), UI 105 (+7, 107 with the summary); smoke section 16 +7 (474, not yet run); CHECKLIST row 59 (+ rows 34, 40).
+  - PMI Review run counts (found by the user in the CHECKLIST walk, row 15): clicking a run's To review / Auto-merged
+    number DID filter the queue, but the queue is the top card and the runs table the bottom one, so it changed off
+    screen. The link now scrolls the queue into view and focuses its heading (UI test extended).

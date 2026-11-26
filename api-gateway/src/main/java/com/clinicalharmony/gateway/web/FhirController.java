@@ -19,7 +19,9 @@ import org.springframework.web.bind.annotation.RequestMapping;
 import org.springframework.web.bind.annotation.RequestParam;
 import org.springframework.web.bind.annotation.RestController;
 
+import java.util.LinkedHashMap;
 import java.util.List;
+import java.util.Map;
 
 /**
  * FHIR Viewer. Gold resources are a read model; the HL7 validator debugger and the C-CDA converter
@@ -32,6 +34,7 @@ public class FhirController {
 
     static final String FHIR_JSON = "application/fhir+json";
     private static final String TYPE = "[A-Z][A-Za-z]{1,49}";
+    private static final String ATTR = "attr.";
 
     private final FhirQueries fhir;
     private final DownstreamClient downstream;
@@ -61,6 +64,7 @@ public class FhirController {
      * @param origin       pipeline | silver-seed | api | gold-seed
      * @param sourceSystem source system of the patient the resource is about, e.g. CITY_HOSPITAL
      * @param code         an exact code (e.g. 723) or part of its display (e.g. Amoxicillin)
+     * @param all          every parameter; the {@code attr.*} ones are the per-type filters of {@link #attributes}
      */
     @GetMapping("/resources")
     public Page<FhirQueries.ResourceSummary> resources(
@@ -75,10 +79,26 @@ public class FhirController {
             @RequestParam(defaultValue = "updated") @Pattern(regexp = FhirQueries.SORTS) String sort,
             @RequestParam(required = false) @Pattern(regexp = "asc|desc") String dir,
             @RequestParam(defaultValue = "0") @Min(0) int page,
-            @RequestParam(defaultValue = "25") @Min(1) @Max(200) int size) {
+            @RequestParam(defaultValue = "25") @Min(1) @Max(200) int size,
+            @RequestParam Map<String, String> all) {
         boolean descending = dir == null ? "updated".equals(sort) : "desc".equals(dir);
-        return fhir.search(new FhirQueries.Filter(type, masterPatientId, compliant, q, patient, origin, sourceSystem, code),
-                sort, descending, page, size);
+        Map<String, String> attributes = new LinkedHashMap<>();
+        all.forEach((name, value) -> {
+            if (name.startsWith(ATTR)) {
+                attributes.put(name.substring(ATTR.length()), value);
+            }
+        });
+        return fhir.search(new FhirQueries.Filter(type, masterPatientId, compliant, q, patient, origin, sourceSystem, code,
+                attributes), sort, descending, page, size);
+    }
+
+    /**
+     * The per-type attribute filters (key, label, FHIR path, kind) and, for dropdowns, the values Gold holds with
+     * their counts. Use them on {@code /resources} as {@code attr.<key>} or {@code attr.<key>From/To} (dates).
+     */
+    @GetMapping("/attributes")
+    public List<FhirQueries.AttributeFacet> attributes(@RequestParam @Pattern(regexp = TYPE) String type) {
+        return fhir.attributes(type);
     }
 
     @GetMapping("/resources/{type}/{fhirId}")

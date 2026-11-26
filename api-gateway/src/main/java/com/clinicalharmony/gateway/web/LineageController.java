@@ -1,5 +1,6 @@
 package com.clinicalharmony.gateway.web;
 
+import com.clinicalharmony.gateway.read.ListWindow;
 import com.clinicalharmony.gateway.read.LineageQueries;
 import com.clinicalharmony.gateway.read.Page;
 import com.clinicalharmony.gateway.read.SilverQueries;
@@ -64,9 +65,12 @@ public class LineageController {
             @RequestParam(required = false) @Size(max = 100) String q,
             @RequestParam(required = false) @Pattern(regexp = "[A-Za-z0-9_.-]{1,50}") String sourceSystem,
             @RequestParam(required = false) @Pattern(regexp = SilverQueries.VALIDATION_STATUSES) String validationStatus,
+            @RequestParam(required = false) @Min(1) Long idFrom,
+            @RequestParam(required = false) @Min(1) Long idTo,
+            @RequestParam(required = false) @Pattern(regexp = ListWindow.TIME_ORDERS) String order,
             @RequestParam(defaultValue = "0") @Min(0) int page,
             @RequestParam(defaultValue = "25") @Min(1) @Max(200) int size) {
-        return silver.patients(q, sourceSystem, validationStatus, page, size);
+        return silver.patients(q, sourceSystem, validationStatus, new ListWindow(idFrom, idTo, order), page, size);
     }
 
     @GetMapping("/silver/source-systems")
@@ -100,9 +104,13 @@ public class LineageController {
             @RequestParam(required = false) @Pattern(regexp = "[A-Z][A-Z0-9]{2}") String hl7Type,
             @RequestParam(required = false) @Size(max = 100) String sourceSystem,
             @RequestParam(required = false) @Size(max = 100) String q,
+            @RequestParam(required = false) @Min(1) Long idFrom,
+            @RequestParam(required = false) @Min(1) Long idTo,
+            @RequestParam(required = false) @Pattern(regexp = ListWindow.TIME_ORDERS) String order,
             @RequestParam(defaultValue = "0") @Min(0) int page,
             @RequestParam(defaultValue = "25") @Min(1) @Max(200) int size) {
-        return lineage.bronzeMessages(status, messageType, hl7Type, sourceSystem, q, page, size);
+        return lineage.bronzeMessages(status, messageType, hl7Type, sourceSystem, q, new ListWindow(idFrom, idTo, order), page,
+                size);
     }
 
     @GetMapping("/bronze/messages/{id}")

@@ -1,6 +1,7 @@
 package com.clinicalharmony.gateway.web;
 
 import com.clinicalharmony.gateway.downstream.DownstreamException;
+import com.clinicalharmony.gateway.read.InvalidFilterException;
 import com.clinicalharmony.gateway.read.NotFoundException;
 import jakarta.servlet.http.HttpServletRequest;
 import org.slf4j.Logger;
@@ -58,6 +59,11 @@ public class GlobalExceptionHandler extends ResponseEntityExceptionHandler {
     public ResponseEntity<ProblemDetail> notFound(NotFoundException e, HttpServletRequest request) {
         return ResponseEntity.status(HttpStatus.NOT_FOUND).body(Problems.of(HttpStatus.NOT_FOUND, "not-found",
                 "Not Found", e.getMessage(), request.getRequestURI()));
+    }
+
+    @ExceptionHandler(InvalidFilterException.class)
+    public ResponseEntity<ProblemDetail> invalidFilter(InvalidFilterException e, HttpServletRequest request) {
+        return api(ApiException.badRequest(e.getMessage()), request);
     }
 
     @ExceptionHandler(ApiException.class)

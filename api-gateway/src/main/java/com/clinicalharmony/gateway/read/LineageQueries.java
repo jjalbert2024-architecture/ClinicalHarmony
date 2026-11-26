@@ -81,12 +81,17 @@ public class LineageQueries {
     private static final String BRONZE_SUMMARY_COLUMNS = """
             b.id, b.source_system, b.message_type, b.message_format, b.processing_status, b.payload_checksum,
             length(b.raw_payload) AS payload_length, left(b.error_message, 300) AS error_message, b.received_at,
-            b.processed_at, pid.patient_name, pid.patient_mrn, sp.id AS silver_patient_id,""" + " " + HL7_TYPE_SQL
+            b.processed_at,
+            coalesce(pid.patient_name, NULLIF(btrim(own.first_name || ' ' || own.last_name), '')) AS patient_name,
+            coalesce(pid.patient_mrn, own.source_patient_id) AS patient_mrn,
+            coalesce(sp.id, own.id) AS silver_patient_id,""" + " " + HL7_TYPE_SQL
             + " AS hl7_message_type\n";
 
     /**
      * The PID segment's patient (first PID-3 repetition: id ^ … ^ assigning authority; PID-5 family ^ given), read
-     * from any line of an HL7 v2 payload, and the Silver patient with that key.
+     * from any line of an HL7 v2 payload, and the Silver patient with that key. A FHIR / claims / C-CDA payload has no
+     * PID: {@code own} = the Silver patient built from it (the patient row it wrote, else the owner of a claim,
+     * condition or observation it wrote — a claims line never rewrites the member's demographics).
      */
     private static final String BRONZE_FROM = " FROM bronze.raw_messages b" + " " + """
             LEFT JOIN LATERAL (
@@ -96,7 +101,15 @@ public class LineageQueries {
                 FROM (SELECT split_part(substring(b.raw_payload from '(?:^|[\\r\\n])PID\\|(?:[^|\\r\\n]*\\|){2}([^|\\r\\n]*)'), '~', 1) AS pid3,
                              split_part(substring(b.raw_payload from '(?:^|[\\r\\n])PID\\|(?:[^|\\r\\n]*\\|){4}([^|\\r\\n]*)'), '~', 1) AS pid5
                       WHERE b.message_type = 'HL7V2') x) pid ON true
-            LEFT JOIN silver.patients sp ON sp.source_system = pid.patient_source AND sp.source_patient_id = pid.patient_mrn""";
+            LEFT JOIN silver.patients sp ON sp.source_system = pid.patient_source AND sp.source_patient_id = pid.patient_mrn
+            LEFT JOIN LATERAL (
+                SELECT o.id, o.first_name, o.last_name, o.source_patient_id FROM silver.patients o
+                WHERE b.message_type <> 'HL7V2' AND o.id = coalesce(
+                    (SELECT p.id FROM silver.patients p WHERE p.raw_message_id = b.id ORDER BY p.id LIMIT 1),
+                    (SELECT c.patient_id FROM silver.claims c WHERE c.raw_message_id = b.id ORDER BY c.id LIMIT 1),
+                    (SELECT c.patient_id FROM silver.conditions c WHERE c.raw_message_id = b.id ORDER BY c.id LIMIT 1),
+                    (SELECT o2.patient_id FROM silver.observations o2 WHERE o2.raw_message_id = b.id ORDER BY o2.id LIMIT 1))
+            ) own ON true""";
 
     private final NamedParameterJdbcTemplate jdbc;
     private final ObjectMapper objectMapper;
@@ -184,26 +197,28 @@ public class LineageQueries {
      * message id itself.
      */
     public Page<BronzeSummary> bronzeMessages(String status, String messageType, String hl7Type, String sourceSystem,
-                                              String q, int page, int size) {
+                                              String q, ListWindow window, int page, int size) {
         String text = Sql.has(q) ? q.trim() : null;
         Sql.Where where = new Sql.Where()
                 .and(text != null, """
                         (pid.patient_name ILIKE :qLike OR (sp.first_name || ' ' || sp.last_name) ILIKE :qLike
-                         OR upper(pid.patient_mrn) = upper(:q) OR b.id = :qId)""", "q", text)
+                         OR (own.first_name || ' ' || own.last_name) ILIKE :qLike
+                         OR upper(pid.patient_mrn) = upper(:q) OR upper(own.source_patient_id) = upper(:q) OR b.id = :qId)""", "q", text)
                 .and(Sql.has(status), "b.processing_status = :status", "status", status)
                 .and(Sql.has(messageType), "b.message_type = :type", "type", messageType)
                 .and(Sql.has(hl7Type), "split_part(" + HL7_TYPE_SQL + ", '^', 1) = :hl7Type", "hl7Type", hl7Type)
                 .and(Sql.has(sourceSystem), "b.source_system = :source", "source", sourceSystem);
+        window.restrict(where, "b.id");
         if (text != null) {
             where.params.addValue("qLike", Sql.contains(text))
-                    .addValue("qId", text.matches("\\d{1,18}") ? Long.parseLong(text) : -1L);
+                    .addValue("qId", text.matches("#?\\d{1,18}") ? Long.parseLong(text.replace("#", "")) : -1L);
         }
-        Long total = jdbc.queryForObject("SELECT count(*)" + BRONZE_FROM + where.sql(), where.params, Long.class);
+        Sql.Counted counted = Sql.count(jdbc, "b.id", BRONZE_FROM + where.sql(), where.params);
         where.params.addValue("limit", size).addValue("offset", (long) page * size);
         List<BronzeSummary> items = jdbc.query("SELECT " + BRONZE_SUMMARY_COLUMNS + BRONZE_FROM
-                + where.sql() + " ORDER BY b.received_at DESC, b.id DESC LIMIT :limit OFFSET :offset", where.params,
+                + where.sql() + window.idOrder("b.id") + " LIMIT :limit OFFSET :offset", where.params,
                 (rs, i) -> bronzeSummary(rs));
-        return Page.of(items, page, size, total == null ? 0 : total);
+        return Page.of(items, page, size, counted);
     }
 
     public BronzeDetail bronzeMessage(long id) {

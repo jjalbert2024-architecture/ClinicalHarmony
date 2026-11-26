@@ -48,3 +48,27 @@ export function TimelineStrip({ events }: { events: TimelineEvent[] }) {
 export function kindLabel(kind: string): string {
   return KIND_LABEL[kind] ?? kind;
 }
+
+/** HL7 OBX-8 / FHIR interpretation codes in words; anything else shows as the bare code. */
+const FLAGS: Record<string, { text: string; tone: 'good' | 'warn' | 'bad' | 'muted' }> = {
+  N: { text: 'N · normal', tone: 'good' },
+  H: { text: 'H · high', tone: 'warn' },
+  L: { text: 'L · low', tone: 'warn' },
+  HH: { text: 'HH · critical high', tone: 'bad' },
+  LL: { text: 'LL · critical low', tone: 'bad' },
+  A: { text: 'A · abnormal', tone: 'warn' },
+  AA: { text: 'AA · critical abnormal', tone: 'bad' },
+};
+
+export function labFlag(flag: string) {
+  return FLAGS[flag.toUpperCase()] ?? { text: flag, tone: 'muted' as const };
+}
+
+/** "ref 70–99" / "ref ≥ 40" / "ref ≤ 200", or null without a range. */
+export function referenceRange(low: number | null | undefined, high: number | null | undefined): string | null {
+  const has = (n: number | null | undefined): n is number => n !== null && n !== undefined;
+  if (has(low) && has(high)) return `ref ${low}–${high}`;
+  if (has(low)) return `ref ≥ ${low}`;
+  if (has(high)) return `ref ≤ ${high}`;
+  return null;
+}

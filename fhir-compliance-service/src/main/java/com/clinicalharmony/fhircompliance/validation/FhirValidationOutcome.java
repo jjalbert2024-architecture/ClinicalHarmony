@@ -7,6 +7,8 @@ import java.util.List;
  *
  * @param compliant  true iff there are no ERROR-severity violations (warnings don't fail a resource)
  * @param profile    the US Core profile actually validated against
+ * @param checklist  the profile's required + must-support elements and whether each is present
+ *                   (empty when no profile applies); see {@link ProfileChecklistBuilder}
  */
 public record FhirValidationOutcome(
         String resourceType,
@@ -15,6 +17,7 @@ public record FhirValidationOutcome(
         boolean compliant,
         int errorCount,
         int warningCount,
-        List<FhirViolation> violations
+        List<FhirViolation> violations,
+        List<ChecklistItem> checklist
 ) {
 }
